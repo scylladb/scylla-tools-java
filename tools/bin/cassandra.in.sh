@@ -38,6 +38,36 @@ cassandra_storagedir="$CASSANDRA_HOME/data"
 # JAVA_HOME can optionally be set here
 #JAVA_HOME=/usr/local/jdk6
 
+# Scylla adaption. Some one will still have to find us SCYLLA_HOME
+# or place us there.
+if [ "x$SCYLLA_HOME" = "x" ]; then
+    SCYLLA_HOME="`dirname $0`/../.."
+fi
+if [ "x$SCYLLA_CONF" = "x" ]; then
+    SCYLLA_CONF="$SCYLLA_HOME/conf"
+fi
+if [ -f "$SCYLLA_CONF/scylla.yaml" ]; then
+    if [ -f "$SCYLLA_CONF/cassandra.yaml" ]; then
+	CASSANDRA_CONF=$SCYLLA_CONF
+    else
+	# Create a temp config dir for just this execution
+	TMPCONF=`mktemp -d`
+	trap "rm -rf $TMPCONF" EXIT
+	cp -a "$CASSANDRA_CONF"/* "$TMPCONF"
+	cp -a "$SCYLLA_CONF"/* "$TMPCONF"
+	# Filter out scylla specific options that make
+	# cassandra options parser go boom.
+	# Right now there is _one_, which is nice and easy.
+	# If more and bigger ones come up, we might need
+	# a proper yaml parser. Or simply replace the checker
+	# in the java code. Latter is simpler.
+	grep -v \
+	     -e compaction_large_partition_warning_threshold_mb \
+	     "$TMPCONF/scylla.yaml" > "$TMPCONF/cassandra.yaml"
+	CASSANDRA_CONF=$TMPCONF
+    fi
+fi
+
 # The java classpath (required)
 CLASSPATH="$CASSANDRA_CONF:$cassandra_bin"
 
