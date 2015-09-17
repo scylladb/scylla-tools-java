@@ -4,7 +4,7 @@ Name:           scylla-tools
 Version:        0.00
 Release:        1%{?dist}
 Summary:        Scylla Tools
-Group:          Applications/Dataases
+Group:          Applications/Databases
 
 License:        Apache
 URL:            http://www.seastar-project.org/
