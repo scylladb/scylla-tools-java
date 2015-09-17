@@ -7,9 +7,8 @@ Summary:        Scylla Tools
 Group:          Applications/Databases
 
 License:        Apache
-URL:            http://www.seastar-project.org/
+URL:            http://www.scylladb.com/
 Source0:        %{name}-@@VERSION@@-@@RELEASE@@.tar
-
 BuildArch:      noarch
 BuildRequires:  ant java-1.8.0-openjdk python
 Requires:       java-1.8.0-openjdk python
