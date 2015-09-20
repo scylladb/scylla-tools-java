@@ -24,7 +24,7 @@ if [ -f "$SCYLLA_CONF/scylla.yaml" ]; then
 fi
 
 
-CASSANDRA_HOME=/usr/share/cassandra
+CASSANDRA_HOME=/usr/share/scylla/cassandra
 
 # The java classpath (required)
 if [ -n "$CLASSPATH" ]; then
@@ -33,11 +33,11 @@ else
     CLASSPATH=$CASSANDRA_CONF
 fi
 
-for jar in /usr/share/cassandra/lib/*.jar; do
+for jar in /usr/share/scylla/cassandra/lib/*.jar; do
     CLASSPATH=$CLASSPATH:$jar
 done
 
-for jar in /usr/share/cassandra/*.jar; do
+for jar in /usr/share/scylla/cassandra/*.jar; do
     CLASSPATH=$CLASSPATH:$jar
 done
 

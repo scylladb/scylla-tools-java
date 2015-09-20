@@ -31,55 +31,47 @@ mkdir -p $RPM_BUILD_ROOT%{_datadir}
 
 cd pylib && python setup.py install --no-compile --root $RPM_BUILD_ROOT
 cd -
-install -d -m755 $RPM_BUILD_ROOT%{_sysconfdir}/cassandra
-install -m644 conf/cassandra-env.sh $RPM_BUILD_ROOT%{_sysconfdir}/cassandra/
-install -d -m755 $RPM_BUILD_ROOT%{_datadir}/cassandra/
-install -m644 debian/cassandra.in.sh $RPM_BUILD_ROOT%{_datadir}/cassandra/
+install -d -m755 $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra
+install -m644 conf/cassandra-env.sh $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
+install -d -m755 $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
+install -m644 debian/cassandra.in.sh $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
 install -m755 bin/nodetool $RPM_BUILD_ROOT%{_bindir}
-install -m755 bin/sstablekeys $RPM_BUILD_ROOT%{_bindir}
-install -m755 bin/sstableloader $RPM_BUILD_ROOT%{_bindir}
 install -m755 bin/cqlsh $RPM_BUILD_ROOT%{_bindir}
-install -m755 bin/sstablescrub $RPM_BUILD_ROOT%{_bindir}
-install -m755 bin/sstableupgrade $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/filter_cassandra_attributes.py $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/cassandra_attributes.py $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/cassandra-stress $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/cassandra-stressd $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/json2sstable $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/sstable2json $RPM_BUILD_ROOT%{_bindir}
-install -d -m755 $RPM_BUILD_ROOT%{_datadir}/cassandra/lib/
-install -m644 lib/*.jar $RPM_BUILD_ROOT%{_datadir}/cassandra/lib/
-install -m644 lib/*.zip $RPM_BUILD_ROOT%{_datadir}/cassandra/lib/
-install -d -m755 $RPM_BUILD_ROOT%{_docdir}/cassandra/licenses/
-install -m644 lib/licenses/* $RPM_BUILD_ROOT%{_docdir}/cassandra/licenses/
+install -d -m755 $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/lib/
+install -m644 lib/*.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/lib/
+install -m644 lib/*.zip $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/lib/
+install -d -m755 $RPM_BUILD_ROOT%{_docdir}/scylla/cassandra/licenses/
+install -m644 lib/licenses/* $RPM_BUILD_ROOT%{_docdir}/scylla/cassandra/licenses/
 
-install -m644 build/apache-cassandra-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_ROOT%{_datadir}/cassandra
-install -m644 build/apache-cassandra-thrift-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_ROOT%{_datadir}/cassandra
-install -m644 build/tools/lib/stress.jar $RPM_BUILD_ROOT%{_datadir}/cassandra
-install -m644 tools/lib/*.jar $RPM_BUILD_ROOT%{_datadir}/cassandra
+install -m644 build/apache-cassandra-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra
+install -m644 build/apache-cassandra-thrift-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra
+install -m644 build/tools/lib/stress.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra
+install -m644 tools/lib/*.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra
 
 cd $RPM_BUILD_ROOT
-ln -s %{_datadir}/apache-cassandra-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_ROOT%{_datadir}/cassandra/apache-cassandra.jar
+ln -s %{_datadir}/apache-cassandra-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/apache-cassandra.jar
 
 %files
-%{_sysconfdir}/cassandra/cassandra-env.sh
-%{_datadir}/cassandra/cassandra.in.sh
+%{_sysconfdir}/scylla/cassandra/cassandra-env.sh
+%{_datadir}/scylla/cassandra/cassandra.in.sh
 %{_bindir}/nodetool
-%{_bindir}/sstablekeys
-%{_bindir}/sstableloader
 %{_bindir}/cqlsh
-%{_bindir}/sstablescrub
-%{_bindir}/sstableupgrade
 %{_bindir}/cassandra-stress
 %{_bindir}/filter_cassandra_attributes.py
 %{_bindir}/cassandra_attributes.py
 %{_bindir}/cassandra-stressd
 %{_bindir}/json2sstable
 %{_bindir}/sstable2json
-%{_datadir}/cassandra/lib/*.jar
-%{_datadir}/cassandra/lib/*.zip
-%{_docdir}/cassandra/licenses
-%{_datadir}/cassandra/*.jar
+%{_datadir}/scylla/cassandra/lib/*.jar
+%{_datadir}/scylla/cassandra/lib/*.zip
+%{_docdir}/scylla/cassandra/licenses
+%{_datadir}/scylla/cassandra/*.jar
 %{_prefix}/lib/python2.7/site-packages/cassandra_pylib-0.0.0-py2.7.egg-info
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/__init__.py
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/__init__.pyc
