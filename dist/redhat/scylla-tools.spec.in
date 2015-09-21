@@ -1,4 +1,4 @@
-%define     origin_version  2.1.9
+%define     origin_version  2.1.8
 
 Name:           scylla-tools
 Version:        @@VERSION@@
