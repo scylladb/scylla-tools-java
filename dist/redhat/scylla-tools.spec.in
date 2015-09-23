@@ -33,6 +33,7 @@ cd pylib && python setup.py install --no-compile --root $RPM_BUILD_ROOT
 cd -
 install -d -m755 $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra
 install -m644 conf/cassandra-env.sh $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
+install -m644 conf/logback.xml $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
 install -d -m755 $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
 install -m644 debian/cassandra.in.sh $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
 install -m755 bin/nodetool $RPM_BUILD_ROOT%{_bindir}
@@ -59,6 +60,7 @@ ln -s %{_datadir}/apache-cassandra-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_ROO
 
 %files
 %{_sysconfdir}/scylla/cassandra/cassandra-env.sh
+%{_sysconfdir}/scylla/cassandra/logback.xml
 %{_datadir}/scylla/cassandra/cassandra.in.sh
 %{_bindir}/nodetool
 %{_bindir}/cqlsh
