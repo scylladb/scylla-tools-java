@@ -10,7 +10,7 @@ License:        Apache
 URL:            http://www.scylladb.com/
 Source0:        %{name}-@@VERSION@@-@@RELEASE@@.tar
 BuildArch:      noarch
-BuildRequires:  ant java-1.8.0-openjdk python
+BuildRequires:  ant java-1.8.0-openjdk-devel python
 Requires:       java-1.8.0-openjdk python python-yaml
 
 %description
