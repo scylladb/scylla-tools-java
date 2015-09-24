@@ -74,7 +74,7 @@ CASSANDRA_PATH = os.path.join(os.path.dirname(os.path.realpath(__file__)), '..')
 ZIPLIB_DIRS = [os.path.join(CASSANDRA_PATH, 'lib')]
 myplatform = platform.system()
 if myplatform == 'Linux':
-    ZIPLIB_DIRS.append('/usr/share/cassandra/lib')
+    ZIPLIB_DIRS.append('/usr/share/scylla/cassandra/lib')
 
 if os.environ.get('CQLSH_NO_BUNDLED', ''):
     ZIPLIB_DIRS = ()
