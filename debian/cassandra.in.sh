@@ -20,6 +20,7 @@ if [ -f "$SCYLLA_CONF/scylla.yaml" ]; then
 		    "$TMPCONF/scylla.yaml" \
 		    > "$TMPCONF/cassandra.yaml"
 	cp /etc/scylla/cassandra/logback.xml $TMPCONF/logback.xml
+	cp /etc/scylla/cassandra/cassandra-env.sh $TMPCONF/cassandra-env.sh
 	CASSANDRA_CONF=$TMPCONF
     fi
 fi
