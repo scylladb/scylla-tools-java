@@ -18,4 +18,4 @@ cp dist/redhat/scylla-tools.spec.in $RPMBUILD/SPECS/scylla-tools.spec
 sed -i -e "s/@@VERSION@@/$SCYLLA_VERSION/g" $RPMBUILD/SPECS/scylla-tools.spec
 sed -i -e "s/@@RELEASE@@/$SCYLLA_RELEASE/g" $RPMBUILD/SPECS/scylla-tools.spec
 rpmbuild -bs --define "_topdir $RPMBUILD" $RPMBUILD/SPECS/scylla-tools.spec
-mock rebuild --resultdir=`pwd`/build/rpms $RPMBUILD/SRPMS/scylla-tools-$VERSION*.src.rpm
+/usr/bin/mock rebuild --resultdir=`pwd`/build/rpms $RPMBUILD/SRPMS/scylla-tools-$VERSION*.src.rpm
