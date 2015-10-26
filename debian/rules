@@ -3,8 +3,6 @@
 # Uncomment to enable verbose mode.
 #export DH_VERBOSE=1
 
-include /usr/share/dpatch/dpatch.make
-
 ANT = /usr/bin/ant
 VERSION = $(shell dpkg-parsechangelog | sed -ne 's/^Version: \([^-|~|+]*\).*/\1/p')
 
@@ -12,7 +10,7 @@ test:
 	dh_testdir
 	$(ANT) test
 
-clean: unpatch
+clean:
 	dh_testdir
 	dh_testroot
 	$(ANT) realclean
@@ -30,7 +28,7 @@ build-stamp: patch-stamp
 
 	$(ANT) jar
 	cd pylib && python setup.py install --no-compile --install-layout deb \
-		--root $(CURDIR)/debian/cassandra
+		--root $(CURDIR)/debian/scylla-tools
 
 	touch build-stamp
 
@@ -43,20 +41,18 @@ install: build
 
 	# Copy in the jar and symlink to something stable
 	dh_install build/apache-cassandra-$(VERSION).jar \
-		usr/share/cassandra
+		usr/share/scylla/cassandra
 	dh_install build/apache-cassandra-thrift-$(VERSION).jar \
-		usr/share/cassandra
+		usr/share/scylla/cassandra
 
 	# Copy stress jars
 	dh_install build/tools/lib/stress.jar \
-		usr/share/cassandra
+		usr/share/scylla/cassandra
 	dh_install tools/lib/*.jar \
-		usr/share/cassandra
+		usr/share/scylla/cassandra
 
-	dh_link usr/share/cassandra/apache-cassandra-$(VERSION).jar \
-		usr/share/cassandra/apache-cassandra.jar
-
-	cd debian/cassandra/etc/sysctl.d && mv cassandra-sysctl.conf cassandra.conf
+	dh_link usr/share/scylla/cassandra/apache-cassandra-$(VERSION).jar \
+		usr/share/scylla/cassandra/apache-cassandra.jar
 
 # Build architecture-independent files here.
 binary-indep: build install
