@@ -22,7 +22,7 @@ clean:
 	dh_clean
 
 build: build-stamp
-build-stamp: patch-stamp
+build-stamp:
 	dh_testdir
 	printf "version=%s" $(VERSION) > build.properties
 
