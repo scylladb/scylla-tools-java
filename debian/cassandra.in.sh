@@ -1,6 +1,6 @@
 # Settings for Scylla
 SCYLLA_HOME=/var/lib/scylla
-SCYLLA_CONF="$SCYLLA_HOME/conf"
+SCYLLA_CONF=/etc/scylla
 
 # Scylla adaption. Some one will still have to find us SCYLLA_HOME
 # or place us there.
