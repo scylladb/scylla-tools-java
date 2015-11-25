@@ -6,7 +6,7 @@ if [ ! -e dist/ubuntu/build_deb.sh ]; then
 fi
 
 if [ -e debian ] || [ -e build/release ]; then
-    rm -rf debian build
+    rm -rf debian build conf/hotspot_compiler
     mkdir build
 fi
 
