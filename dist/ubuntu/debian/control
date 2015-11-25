@@ -5,7 +5,7 @@ Maintainer: Takuya ASADA <syuu@scylladb.com>
 Uploaders: Takuya ASADA <syuu@scylladb.com>
 Build-Depends: debhelper (>= 5), openjdk-7-jdk | java7-jdk, ant (>= 1.7), ant-optional (>= 1.7), python-support, dpatch, bash-completion
 Homepage: http://www.scylladb.com
-Standards-Version: 3.8.3
+Standards-Version: 3.9.5
 
 Package: scylla-tools
 Architecture: all
