@@ -2,14 +2,14 @@ Source: scylla-tools
 Section: misc
 Priority: extra
 Maintainer: Takuya ASADA <syuu@scylladb.com>
-Uploaders: Takuya ASADA <syuu@scylladb.com>
-Build-Depends: debhelper (>= 5), openjdk-7-jdk | java7-jdk, ant (>= 1.7), ant-optional (>= 1.7), python-support, dpatch, bash-completion
+Build-Depends: debhelper (>= 5), openjdk-7-jdk | java7-jdk, ant (>= 1.7), ant-optional (>= 1.7), bash-completion, python | python-all | python-dev | python-all-dev
 Homepage: http://www.scylladb.com
-Standards-Version: 3.8.3
+Standards-Version: 3.9.5
 
 Package: scylla-tools
 Architecture: all
 Depends: openjdk-7-jre-headless | java7-runtime, python (>= 2.7), python-support (>= 0.90.0), python-yaml, scylla-server, ${misc:Depends}
 Recommends: ntp | time-daemon
 Description: Scylla database tools
- Scylla is a highly scalable, eventually consistent, distributed, partitioned row DB.
+ Scylla is a highly scalable, eventually consistent, distributed,
+ partitioned row DB.
