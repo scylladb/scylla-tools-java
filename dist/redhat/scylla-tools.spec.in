@@ -35,7 +35,7 @@ install -d -m755 $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra
 install -m644 conf/cassandra-env.sh $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
 install -m644 conf/logback.xml $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
 install -d -m755 $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
-install -m644 debian/cassandra.in.sh $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
+install -m644 dist/common/cassandra.in.sh $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
 install -m755 bin/nodetool $RPM_BUILD_ROOT%{_bindir}
 install -m755 bin/cqlsh $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/filter_cassandra_attributes.py $RPM_BUILD_ROOT%{_bindir}

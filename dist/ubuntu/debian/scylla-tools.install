@@ -1,6 +1,6 @@
 conf/cassandra-env.sh etc/scylla/cassandra
 conf/logback.xml etc/scylla/cassandra
-debian/cassandra.in.sh usr/share/scylla/cassandra
+dist/common/cassandra.in.sh usr/share/scylla/cassandra
 bin/nodetool usr/bin
 bin/sstablekeys usr/bin
 bin/sstableloader usr/bin
