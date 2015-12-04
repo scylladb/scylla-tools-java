@@ -53,8 +53,10 @@ import com.datastax.driver.core.ColumnMetadata;
 import com.datastax.driver.core.ResultSet;
 import com.datastax.driver.core.Row;
 import com.datastax.driver.core.Session;
+import com.datastax.driver.core.Token;
 import com.datastax.driver.core.TupleValue;
 import com.datastax.driver.core.UDTValue;
+import com.google.common.reflect.TypeToken;
 
 /**
  * CqlRecordReader reads the rows return from the CQL query
@@ -327,6 +329,18 @@ public class CqlRecordReader extends RecordReader<Long, Row>
         }
 
         @Override
+        public Object getObject(int i)
+        {
+            return row.getObject(i);
+        }
+
+        @Override
+        public Object getObject(String s)
+        {
+            return row.getObject(s);
+        }
+
+        @Override
         public boolean getBool(int i)
         {
             return row.getBool(i);
@@ -489,9 +503,21 @@ public class CqlRecordReader extends RecordReader<Long, Row>
         }
 
         @Override
+        public <T> List<T> getList(int i, TypeToken<T> typeToken)
+        {
+            return row.getList(i, typeToken);
+        }
+
+        @Override
         public <T> List<T> getList(String name, Class<T> elementsClass)
         {
             return row.getList(name, elementsClass);
+        }
+
+        @Override
+        public <T> List<T> getList(String s, TypeToken<T> typeToken)
+        {
+            return row.getList(s, typeToken);
         }
 
         @Override
@@ -501,9 +527,21 @@ public class CqlRecordReader extends RecordReader<Long, Row>
         }
 
         @Override
+        public <T> Set<T> getSet(int i, TypeToken<T> typeToken)
+        {
+            return row.getSet(i, typeToken);
+        }
+
+        @Override
         public <T> Set<T> getSet(String name, Class<T> elementsClass)
         {
             return row.getSet(name, elementsClass);
+        }
+
+        @Override
+        public <T> Set<T> getSet(String s, TypeToken<T> typeToken)
+        {
+            return row.getSet(s, typeToken);
         }
 
         @Override
@@ -513,9 +551,21 @@ public class CqlRecordReader extends RecordReader<Long, Row>
         }
 
         @Override
+        public <K, V> Map<K, V> getMap(int i, TypeToken<K> typeToken, TypeToken<V> typeToken1)
+        {
+            return row.getMap(i, typeToken, typeToken1);
+        }
+
+        @Override
         public <K, V> Map<K, V> getMap(String name, Class<K> keysClass, Class<V> valuesClass)
         {
             return row.getMap(name, keysClass, valuesClass);
+        }
+
+        @Override
+        public <K, V> Map<K, V> getMap(String s, TypeToken<K> typeToken, TypeToken<V> typeToken1)
+        {
+            return row.getMap(s, typeToken, typeToken1);
         }
 
         @Override
@@ -540,6 +590,25 @@ public class CqlRecordReader extends RecordReader<Long, Row>
         public TupleValue getTupleValue(String name)
         {
             return row.getTupleValue(name);
+        }
+
+        @Override
+        public Token getToken(int i)
+        {
+            return row.getToken(i);
+        }
+
+        @Override
+        public Token getToken(String name)
+        {
+            return row.getToken(name);
+        }
+
+
+        @Override
+        public Token getPartitionKeyToken()
+        {
+            return row.getPartitionKeyToken();
         }
     }
 
