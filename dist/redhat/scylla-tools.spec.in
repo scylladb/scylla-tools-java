@@ -26,11 +26,12 @@ env LANG=en_US.UTF-8 JAVA_HOME=/usr/lib/jvm/java-1.8.0-openjdk ant jar
 %install
 rm -rf $RPM_BUILD_ROOT
 mkdir -p $RPM_BUILD_ROOT%{_bindir}
-mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}
+mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/bash_completion.d
 mkdir -p $RPM_BUILD_ROOT%{_datadir}
 
 cd pylib && python setup.py install --no-compile --root $RPM_BUILD_ROOT
 cd -
+install -m644 dist/common/nodetool-completion $RPM_BUILD_ROOT%{_sysconfdir}/bash_completion.d
 install -d -m755 $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra
 install -m644 conf/cassandra-env.sh $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
 install -m644 conf/logback.xml $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
@@ -61,6 +62,7 @@ ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.j
 %files
 %{_sysconfdir}/scylla/cassandra/cassandra-env.sh
 %{_sysconfdir}/scylla/cassandra/logback.xml
+%{_sysconfdir}/bash_completion.d/nodetool-completion
 %{_datadir}/scylla/cassandra/cassandra.in.sh
 %{_bindir}/nodetool
 %{_bindir}/cqlsh
