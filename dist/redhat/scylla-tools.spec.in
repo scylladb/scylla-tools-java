@@ -38,7 +38,11 @@ install -m644 conf/logback.xml $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
 install -d -m755 $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
 install -m644 dist/common/cassandra.in.sh $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
 install -m755 bin/nodetool $RPM_BUILD_ROOT%{_bindir}
+install -m755 bin/sstablekeys $RPM_BUILD_ROOT%{_bindir}
+install -m755 bin/sstableloader $RPM_BUILD_ROOT%{_bindir}
 install -m755 bin/cqlsh $RPM_BUILD_ROOT%{_bindir}
+install -m755 bin/sstablescrub $RPM_BUILD_ROOT%{_bindir}
+install -m755 bin/sstableupgrade $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/filter_cassandra_attributes.py $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/cassandra_attributes.py $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/cassandra-stress $RPM_BUILD_ROOT%{_bindir}
@@ -65,7 +69,11 @@ ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.j
 %{_sysconfdir}/bash_completion.d/nodetool-completion
 %{_datadir}/scylla/cassandra/cassandra.in.sh
 %{_bindir}/nodetool
+%{_bindir}/sstablekeys
+%{_bindir}/sstableloader
 %{_bindir}/cqlsh
+%{_bindir}/sstablescrub
+%{_bindir}/sstableupgrade
 %{_bindir}/cassandra-stress
 %{_bindir}/filter_cassandra_attributes.py
 %{_bindir}/cassandra_attributes.py
