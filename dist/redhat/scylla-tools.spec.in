@@ -10,8 +10,8 @@ License:        Apache
 URL:            http://www.scylladb.com/
 Source0:        %{name}-@@VERSION@@-@@RELEASE@@.tar
 BuildArch:      noarch
-BuildRequires:  ant java-1.8.0-openjdk-devel python
-Requires:       java-1.8.0-openjdk python python-yaml scylla-server
+BuildRequires:  ant java-devel python
+Requires:       java-headless python python-yaml scylla-server
 
 %description
 
@@ -21,7 +21,7 @@ Requires:       java-1.8.0-openjdk python python-yaml scylla-server
 
 
 %build
-env LANG=en_US.UTF-8 JAVA_HOME=/usr/lib/jvm/java-1.8.0-openjdk ant jar
+env LANG=en_US.UTF-8 JAVA_HOME=/usr/lib/jvm/java ant jar
 
 %install
 rm -rf $RPM_BUILD_ROOT
