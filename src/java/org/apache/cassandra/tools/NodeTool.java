@@ -133,7 +133,7 @@ public class NodeTool
                 DisableGossip.class,
                 // Remove for GA: EnableHandoff.class,
                 // Remove for GA: EnableThrift.class,
-                GcStats.class,
+                // Remove for GA: GcStats.class,
                 // Remove for GA: GetCompactionThreshold.class,
                 // Remove for GA: GetCompactionThroughput.class,
                 // Remove for GA: GetStreamThroughput.class,
@@ -182,7 +182,7 @@ public class NodeTool
                 // Remove for GA: DisableHandoff.class,
                 Drain.class,
                 // Remove for GA: TruncateHints.class,
-                TpStats.class,
+                // Remove for GA: TpStats.class,
                 // Remove for GA: TopPartitions.class,
                 SetLoggingLevel.class,
                 GetLoggingLevels.class
