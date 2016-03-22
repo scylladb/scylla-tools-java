@@ -120,70 +120,70 @@ public class NodeTool
                 Compact.class,
                 Scrub.class,
                 Flush.class,
-                UpgradeSSTable.class,
-                DisableAutoCompaction.class,
-                EnableAutoCompaction.class,
+                // Remove for GA: UpgradeSSTable.class,
+                // Remove for GA: DisableAutoCompaction.class,
+                // Remove for GA: EnableAutoCompaction.class,
                 CompactionStats.class,
                 CompactionHistory.class,
                 Decommission.class,
                 DescribeCluster.class,
-                DisableBinary.class,
-                EnableBinary.class,
+                // Remove for GA: DisableBinary.class,
+                // Remove for GA: EnableBinary.class,
                 EnableGossip.class,
                 DisableGossip.class,
-                EnableHandoff.class,
-                EnableThrift.class,
+                // Remove for GA: EnableHandoff.class,
+                // Remove for GA: EnableThrift.class,
                 GcStats.class,
-                GetCompactionThreshold.class,
-                GetCompactionThroughput.class,
-                GetStreamThroughput.class,
+                // Remove for GA: GetCompactionThreshold.class,
+                // Remove for GA: GetCompactionThroughput.class,
+                // Remove for GA: GetStreamThroughput.class,
                 GetEndpoints.class,
-                GetSSTables.class,
+                // Remove for GA: GetSSTables.class,
                 GossipInfo.class,
-                InvalidateKeyCache.class,
-                InvalidateRowCache.class,
-                InvalidateCounterCache.class,
-                Join.class,
+                // Remove for GA: InvalidateKeyCache.class,
+                // Remove for GA: InvalidateRowCache.class,
+                // Remove for GA: InvalidateCounterCache.class,
+                // Remove for GA: Join.class,
                 Move.class,
-                PauseHandoff.class,
-                ResumeHandoff.class,
+                // Remove for GA: PauseHandoff.class,
+                // Remove for GA: ResumeHandoff.class,
                 ProxyHistograms.class,
                 Rebuild.class,
                 Refresh.class,
-                RemoveToken.class,
+                // Remove for GA: RemoveToken.class,
                 RemoveNode.class,
                 Repair.class,
-                SetCacheCapacity.class,
-                SetHintedHandoffThrottleInKB.class,
-                SetCompactionThreshold.class,
-                SetCompactionThroughput.class,
-                SetStreamThroughput.class,
-                SetTraceProbability.class,
+                // Remove for GA: SetCacheCapacity.class,
+                // Remove for GA: SetHintedHandoffThrottleInKB.class,
+                // Remove for GA: SetCompactionThreshold.class,
+                // Remove for GA: SetCompactionThroughput.class,
+                // Remove for GA: SetStreamThroughput.class,
+                // Remove for GA: SetTraceProbability.class,
                 Snapshot.class,
                 ListSnapshots.class,
                 Status.class,
-                StatusBinary.class,
+                // Remove for GA: StatusBinary.class,
                 StatusGossip.class,
-                StatusThrift.class,
-                StatusBackup.class,
-                StatusHandoff.class,
+                // Remove for GA: StatusThrift.class,
+                // Remove for GA: StatusBackup.class,
+                // Remove for GA: StatusHandoff.class,
                 Stop.class,
-                StopDaemon.class,
+                // Remove for GA: StopDaemon.class,
                 Version.class,
                 DescribeRing.class,
-                RebuildIndex.class,
-                RangeKeySample.class,
-                EnableBackup.class,
-                DisableBackup.class,
-                ResetLocalSchema.class,
-                ReloadTriggers.class,
-                SetCacheKeysToSave.class,
-                DisableThrift.class,
-                DisableHandoff.class,
+                // Remove for GA: RebuildIndex.class,
+                // Remove for GA: RangeKeySample.class,
+                // Remove for GA: EnableBackup.class,
+                // Remove for GA: DisableBackup.class,
+                // Remove for GA: ResetLocalSchema.class,
+                // Remove for GA: ReloadTriggers.class,
+                // Remove for GA: SetCacheKeysToSave.class,
+                // Remove for GA: DisableThrift.class,
+                // Remove for GA: DisableHandoff.class,
                 Drain.class,
-                TruncateHints.class,
+                // Remove for GA: TruncateHints.class,
                 TpStats.class,
-                TopPartitions.class,
+                // Remove for GA: TopPartitions.class,
                 SetLoggingLevel.class,
                 GetLoggingLevels.class
         );
@@ -538,20 +538,20 @@ public class NodeTool
             try
             {
                 ownerships = probe.effectiveOwnership(keyspace);
-            } 
+            }
             catch (IllegalStateException ex)
             {
                 ownerships = probe.getOwnership();
                 errors.append("Note: " + ex.getMessage() + "%n");
                 showEffectiveOwnership = false;
-            } 
+            }
             catch (IllegalArgumentException ex)
             {
                 System.out.printf("%nError: " + ex.getMessage() + "%n");
                 return;
             }
 
-            
+
             System.out.println();
             for (Entry<String, SetHostStat> entry : getOwnershipByDc(probe, resolveIp, tokensToEndpoints, ownerships).entrySet())
                 printDc(probe, format, entry.getKey(), endpointsToTokens, entry.getValue(),showEffectiveOwnership);
@@ -2128,7 +2128,7 @@ public class NodeTool
             unreachableNodes = probe.getUnreachableNodes();
             hostIDMap = probe.getHostIdMap();
             epSnitchInfo = probe.getEndpointSnitchInfoProxy();
-            
+
             StringBuffer errors = new StringBuffer();
 
             Map<InetAddress, Float> ownerships = null;
@@ -2180,9 +2180,9 @@ public class NodeTool
                     printNode(endpoint.getHostAddress(), owns, tokens, hasEffectiveOwns, isTokenPerNode);
                 }
             }
-            
+
             System.out.printf("%n" + errors.toString());
-            
+
         }
 
         private void findMaxAddressLength(Map<String, SetHostStat> dcs)
@@ -2268,7 +2268,7 @@ public class NodeTool
         }
     }
 
-    private static Map<String, SetHostStat> getOwnershipByDc(NodeProbe probe, boolean resolveIp, 
+    private static Map<String, SetHostStat> getOwnershipByDc(NodeProbe probe, boolean resolveIp,
                                                              Map<String, String> tokenToEndpoint,
                                                              Map<InetAddress, Float> ownerships)
     {
@@ -2657,7 +2657,7 @@ public class NodeTool
                 probe.truncateHints(endpoint);
         }
     }
-    
+
     @Command(name = "setlogginglevel", description = "Set the log level threshold for a given class. If both class and level are empty/null, it will reset to the initial configuration")
     public static class SetLoggingLevel extends NodeToolCmd
     {
@@ -2672,7 +2672,7 @@ public class NodeTool
             probe.setLoggingLevel(classQualifier, level);
         }
     }
-    
+
     @Command(name = "getlogginglevels", description = "Get the runtime logging levels")
     public static class GetLoggingLevels extends NodeToolCmd
     {
