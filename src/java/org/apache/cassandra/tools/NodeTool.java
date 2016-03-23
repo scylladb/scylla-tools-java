@@ -118,7 +118,7 @@ public class NodeTool
                 Cleanup.class,
                 ClearSnapshot.class,
                 Compact.class,
-                Scrub.class,
+                // Remove for GA: Scrub.class,
                 Flush.class,
                 // Remove for GA: UpgradeSSTable.class,
                 // Remove for GA: DisableAutoCompaction.class,
