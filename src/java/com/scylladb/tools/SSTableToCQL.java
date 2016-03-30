@@ -32,11 +32,15 @@ import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
@@ -108,6 +112,8 @@ public class SSTableToCQL {
     private static class RowBuilder {
         /** Interface for partial generating CQL statements */
         private static interface ColumnOp {
+            boolean canDoInsert();
+
             String apply(ColumnDefinition c, List<Object> params);
         }
 
@@ -123,11 +129,16 @@ public class SSTableToCQL {
                 params.add(Collections.singleton(key));
                 return " = " + c.name.toString() + " - ?";
             }
+
+            @Override
+            public boolean canDoInsert() {
+                return false;
+            }
         }
 
         // CQL operations
         private static enum Op {
-            NONE, UPDATE, DELETE,
+            NONE, UPDATE, DELETE, INSERT
         }
 
         private static class SetColumn implements ColumnOp {
@@ -142,7 +153,19 @@ public class SSTableToCQL {
                 params.add(value);
                 return " = ?";
             }
+
+            @Override
+            public boolean canDoInsert() {
+                return true;
+            }
         }
+
+        private static final SetColumn SET_NULL = new SetColumn(null) {
+            @Override
+            public boolean canDoInsert() {
+                return false;
+            }
+        };
 
         private static class SetMapEntry implements ColumnOp {
             private final Object key;
@@ -159,6 +182,11 @@ public class SSTableToCQL {
                 params.add(key);
                 params.add(value);
                 return "[?] = ?";
+            }
+
+            @Override
+            public boolean canDoInsert() {
+                return false;
             }
         }
 
@@ -177,8 +205,13 @@ public class SSTableToCQL {
                 params.add(value);
                 return "[SCYLLA_TIMEUUID_LIST_INDEX(?)] = ?";
             }
+
+            @Override
+            public boolean canDoInsert() {
+                return false;
+            }
         }
-        
+
         private static class SetSetEntry implements ColumnOp {
             private final Object key;
 
@@ -190,6 +223,11 @@ public class SSTableToCQL {
             public String apply(ColumnDefinition c, List<Object> params) {
                 params.add(Collections.singleton(key));
                 return " = " + c.name.toString() + " + ?";
+            }
+
+            @Override
+            public boolean canDoInsert() {
+                return false;
             }
         }
 
@@ -206,6 +244,16 @@ public class SSTableToCQL {
         int ttl;
         Map<ColumnDefinition, ColumnOp> values = new HashMap<>();
         Map<ColumnDefinition, Object> where = new HashMap<>();
+        TreeSet<OnDiskAtom> sortedAtoms = new TreeSet<>(new Comparator<OnDiskAtom>() {
+            @Override
+            public int compare(OnDiskAtom o1, OnDiskAtom o2) {
+                int diff = (int) (o1.timestamp() - o2.timestamp());
+                if (diff == 0) {
+                    diff = o1.name().toByteBuffer().compareTo(o2.name().toByteBuffer());
+                }
+                return diff;
+            }
+        });
 
         public RowBuilder(Client client) {
             this.client = client;
@@ -223,41 +271,39 @@ public class SSTableToCQL {
             updateTimestamp(timestamp);
             updateTTL(ttl);
 
-            int i = 0, n = composite.size();
-
+            if (composite.isStatic()) {
+                return;
+            }
             // Either we have nothing, or we have the same
             // number of columns. Or else, reset
-            if (!where.isEmpty() && n != where.size()) {
+            List<ColumnDefinition> cluster = cfMetaData.clusteringColumns();
+            if (!where.isEmpty() && cluster.size() != where.size()) {
                 finish();
             }
-            outer: for (;;) {
+            outer: for (int i = 0;;) {
                 for (ColumnDefinition c : cfMetaData.clusteringColumns()) {
-                    if (i++ == n) {
-                        break;
-                    }
-
                     Object value = c.type.compose(composite.get(i));
                     Object oldValue = where.get(c);
 
                     // If we get clustering that differ from already
                     // existing data, we need to flush the row
-                    if (oldValue != null
-                            && (value == null || !oldValue.equals(value))) {
+                    if (oldValue != null && (value == null || !oldValue.equals(value))) {
                         finish();
                         continue outer;
                     }
                     where.put(c, value);
+                    ++i;
                 }
                 break;
             }
         }
 
         // Begin a new partition (cassandra "Row")
-        private void begin(Object callback, DecoratedKey key,
-                CFMetaData cfMetaData) {
+        private void begin(Object callback, DecoratedKey key, CFMetaData cfMetaData) {
             this.callback = callback;
             this.key = key;
             this.cfMetaData = cfMetaData;
+            sortedAtoms.clear();
             clear();
         }
 
@@ -270,13 +316,11 @@ public class SSTableToCQL {
         }
 
         // Delete a whole cql colummn
-        private void deleteColumn(Composite composite, ColumnDefinition c,
-                ColumnOp object, long timestamp) {
+        private void deleteColumn(Composite composite, ColumnDefinition c, ColumnOp object, long timestamp) {
             if (values.containsKey(c)) {
                 finish();
             }
-            if (c.type.isCollection() && !c.type.isMultiCell()
-                    && object != null) {
+            if (c.type.isCollection() && !c.type.isMultiCell() && object != null) {
                 updateColumn(composite, c, object, timestamp, invalidTTL);
             } else {
                 setOp(Op.DELETE, timestamp);
@@ -295,8 +339,7 @@ public class SSTableToCQL {
         }
 
         // Delete the whole partition
-        private void deletePartition(DecoratedKey key,
-                DeletionTime topLevelDeletion) {
+        private void deletePartition(DecoratedKey key, DeletionTime topLevelDeletion) {
             setOp(Op.DELETE, topLevelDeletion.markedForDeleteAt);
             finish();
         };
@@ -318,48 +361,45 @@ public class SSTableToCQL {
                 writeColumnFamily(buf);
                 // Timestamps can be sent using statement options.
                 // TTL cannot. But just to be extra funny, at least
-                // origin does not seem to respect the timestamp 
-                // in statement, so we'll add them to the CQL string as well. 
-                if (timestamp != invalidTimestamp) {
-                    buf.append("USING TIMESTAMP " + timestamp + " ");                    
-                }
-                if (ttl != invalidTTL) {
-                    if (timestamp == invalidTimestamp) {
-                        buf.append("USING ");
-                    } else {
-                        buf.append("AND ");
-                    }
-                    buf.append(" TTL " + ttl + " ");
-                }
-                buf.append("SET ");
+                // origin does not seem to respect the timestamp
+                // in statement, so we'll add them to the CQL string as well.
+                writeUsingTimestamp(buf);
+                writeUsingTTL(buf);
+                buf.append(" SET ");
+            }
+
+            if (op == Op.INSERT) {
+                buf.append(" INTO");
+                writeColumnFamily(buf);
             }
 
             int i = 0;
             for (Map.Entry<ColumnDefinition, ColumnOp> e : values.entrySet()) {
                 ColumnDefinition c = e.getKey();
                 ColumnOp o = e.getValue();
+                String s = o != null ? o.apply(c, params) : null;
 
-                if (i++ > 0) {
-                    buf.append(", ");
-                }
-
-                buf.append(c.name.toString());
-                if (o != null) {
-                    buf.append(o.apply(c, params));
-                } else if (op == Op.UPDATE) {
-                    buf.append(" = null");
+                if (op != Op.INSERT) {
+                    if (i++ > 0) {
+                        buf.append(", ");
+                    }
+                    ensureWhitespace(buf);
+                    buf.append(c.name.toString());
+                    if (s != null) {
+                        buf.append(s);
+                    }
                 }
             }
 
             if (op == Op.DELETE) {
                 buf.append(" FROM");
                 writeColumnFamily(buf);
-                if (timestamp != invalidTimestamp) {
-                    buf.append(" USING TIMESTAMP " + timestamp + " ");                    
-                }
+                writeUsingTimestamp(buf);
             }
 
-            buf.append(" WHERE ");
+            if (op != Op.INSERT) {
+                buf.append(" WHERE ");
+            }
 
             // Add "WHERE pk1 = , pk2 = "
             List<ColumnDefinition> pk = cfMetaData.partitionKeyColumns();
@@ -375,14 +415,41 @@ public class SSTableToCQL {
                 where.put(c, c.type.compose(bufs[k++]));
             }
 
+            params.addAll(where.values());
+
             i = 0;
-            for (Map.Entry<ColumnDefinition, Object> e : where.entrySet()) {
-                if (i++ > 0) {
-                    buf.append(" AND ");
+            if (op == Op.INSERT) {
+                buf.append('(');
+                for (ColumnDefinition c : values.keySet()) {
+                    if (i++ > 0) {
+                        buf.append(',');
+                    }
+                    buf.append(c.name.toString());
                 }
-                buf.append(e.getKey().name.toString());
-                buf.append(" = ?");
-                params.add(e.getValue());
+                for (ColumnDefinition c : where.keySet()) {
+                    if (i++ > 0) {
+                        buf.append(',');
+                    }
+                    buf.append(c.name.toString());
+                }
+                buf.append(") values (");
+                for (i = 0; i < values.size() + where.size(); ++i) {
+                    if (i > 0) {
+                        buf.append(',');
+                    }
+                    buf.append('?');
+                }
+                buf.append(')');
+                writeUsingTimestamp(buf);
+                writeUsingTTL(buf);
+            } else {
+                for (Map.Entry<ColumnDefinition, Object> e : where.entrySet()) {
+                    if (i++ > 0) {
+                        buf.append(" AND ");
+                    }
+                    buf.append(e.getKey().name.toString());
+                    buf.append(" = ?");
+                }
             }
             buf.append(';');
 
@@ -390,9 +457,33 @@ public class SSTableToCQL {
             clear();
         }
 
+        private void writeUsingTTL(StringBuilder buf) {
+            if (ttl != invalidTTL) {
+                ensureWhitespace(buf);
+                if (timestamp == invalidTimestamp) {
+                    buf.append("USING ");
+                } else {
+                    buf.append("AND ");
+                }
+                buf.append(" TTL " + ttl);
+            }
+        }
+
+        private void ensureWhitespace(StringBuilder buf) {
+            if (buf.length() > 0 && !Character.isWhitespace(buf.charAt(buf.length() - 1))) {
+                buf.append(' ');
+            }
+        }
+
+        private void writeUsingTimestamp(StringBuilder buf) {
+            if (timestamp != invalidTimestamp) {
+                ensureWhitespace(buf);
+                buf.append("USING TIMESTAMP " + timestamp);
+            }
+        }
+
         // Dispatch the CQL
-        private void makeStatement(DecoratedKey key, long timestamp,
-                String what, List<Object> objects) {
+        private void makeStatement(DecoratedKey key, long timestamp, String what, List<Object> objects) {
             client.processStatment(callback, key, timestamp, what, objects);
         }
 
@@ -401,13 +492,18 @@ public class SSTableToCQL {
             CellNameType comparator = cfMetaData.comparator;
             CellName name = cell.name();
             ColumnDefinition c = cfMetaData.getColumnDefinition(name);
+
             if (c == null) {
                 ColumnIdentifier id = name.cql3ColumnName(cfMetaData);
                 if (id != null && name.size() > 1 && id.bytes.hasRemaining()) {
                     // not cql column marker. (?)
-                    logger.warn("No column found: {}",
-                            comparator.getString(name));
+                    logger.warn("No column found: {}", comparator.getString(name));
                 }
+                if (cfMetaData.clusteringColumns().isEmpty()) {
+                    return;
+                }
+                setOp(Op.INSERT, cell.timestamp());
+                addWhere(cell.name(), cell.timestamp(), ttlFor(cell));
                 return;
             }
             if (logger.isTraceEnabled()) {
@@ -421,11 +517,8 @@ public class SSTableToCQL {
                 if (cell.name().isCollectionCell()) {
                     CollectionType<?> ctype = (CollectionType<?>) type;
 
-                    Object key = ctype.nameComparator()
-                            .compose(cell.name().collectionElement());
-                    Object val = cell.isLive()
-                            ? ctype.valueComparator().compose(cell.value())
-                            : null;
+                    Object key = ctype.nameComparator().compose(cell.name().collectionElement());
+                    Object val = cell.isLive() ? ctype.valueComparator().compose(cell.value()) : null;
 
                     switch (ctype.kind) {
                     case MAP:
@@ -435,25 +528,29 @@ public class SSTableToCQL {
                         cop = new SetListEntry(key, val);
                         break;
                     case SET:
-                        cop = cell.isLive() ? new SetSetEntry(key)
-                                : new DeleteSetEntry(key);
+                        cop = cell.isLive() ? new SetSetEntry(key) : new DeleteSetEntry(key);
                         break;
                     }
                 } else if (cell.isLive()) {
                     cop = new SetColumn(type.compose(cell.value()));
+                } else {
+                    cop = SET_NULL;
                 }
 
             } catch (Exception e) {
-                logger.error("Could not compose value for "
-                        + comparator.getString(name), e);
+                logger.error("Could not compose value for " + comparator.getString(name), e);
                 throw e;
             }
 
+            updateColumn(cell.name(), c, cop, cell.timestamp(), ttlFor(cell));
+        }
+
+        private int ttlFor(Cell cell) {
             int ttl = invalidTTL;
             if (cell instanceof ExpiringCell) {
                 ttl = ((ExpiringCell) cell).getTimeToLive();
             }
-            updateColumn(cell.name(), c, cop, cell.timestamp(), ttl);
+            return ttl;
         }
 
         // Process an SSTable row (partial partition)
@@ -474,19 +571,26 @@ public class SSTableToCQL {
 
             while (row.hasNext()) {
                 OnDiskAtom atom = row.next();
-
                 if (atom instanceof Cell) {
                     Cell cell = (Cell) atom;
-                    if (prev != null && !cell.name().isSameCQL3RowAs(
-                            cfMetaData.comparator, prev.name())) {
-                        finish();
+                    if (prev != null && !cell.name().isSameCQL3RowAs(cfMetaData.comparator, prev.name())) {
+                        processAtoms();
                     }
-                    process(cell);
-                    prev = cell;
+                }
+                sortedAtoms.add(atom);
+            }
+            processAtoms();
+        }
+
+        private void processAtoms() {
+            for (OnDiskAtom atom : sortedAtoms) {
+                if (atom instanceof Cell) {
+                    process((Cell) atom);
                 } else {
                     process((RangeTombstone) atom);
                 }
             }
+            sortedAtoms.clear();
             finish();
         }
 
@@ -498,8 +602,7 @@ public class SSTableToCQL {
             Composite max = r.max;
 
             if (max.eoc() != EOC.END) {
-                logger.warn("RangeTombstone with non-open end {}",
-                        cfMetaData.comparator.getString(max));
+                logger.warn("RangeTombstone with non-open end {}", cfMetaData.comparator.getString(max));
                 return;
             }
 
@@ -508,8 +611,7 @@ public class SSTableToCQL {
             if (cn <= max.size()) {
                 deleteCqlRow(max, r.timestamp());
             } else {
-                ColumnDefinition c = cfMetaData
-                        .getColumnDefinition(max.get(max.size() - 1));
+                ColumnDefinition c = cfMetaData.getColumnDefinition(max.get(max.size() - 1));
                 deleteColumn(max, c, null, r.timestamp());
             }
         }
@@ -519,7 +621,7 @@ public class SSTableToCQL {
         private void setOp(Op op, long timestamp) {
             if (this.op != op) {
                 finish();
-		assert this.op == Op.NONE;
+                assert this.op == Op.NONE;
             }
             updateTimestamp(timestamp);
             this.op = op;
@@ -528,12 +630,15 @@ public class SSTableToCQL {
         // add a column value to update. If we already have one for this column,
         // flush. (Should never happen though, as long as CQL row detection is
         // valid)
-        private void updateColumn(Composite composite, ColumnDefinition c,
-                ColumnOp object, long timestamp, int ttl) {
+        private void updateColumn(Composite composite, ColumnDefinition c, ColumnOp object, long timestamp, int ttl) {
             if (values.containsKey(c)) {
                 finish();
             }
-            setOp(Op.UPDATE, timestamp);
+            if (object != null && object.canDoInsert() && this.op != Op.UPDATE) {
+                setOp(Op.INSERT, timestamp);
+            } else {
+                setOp(Op.UPDATE, timestamp);
+            }
             addWhere(composite, timestamp, ttl);
             values.put(c, object);
         }
@@ -542,8 +647,7 @@ public class SSTableToCQL {
         // timestamp, we must send old query once we
         // set a new timestamp
         private void updateTimestamp(long timestamp) {
-            if (this.timestamp != invalidTimestamp
-                    && this.timestamp != timestamp) {
+            if (this.timestamp != invalidTimestamp && this.timestamp != timestamp) {
                 finish();
             }
             this.timestamp = timestamp;
@@ -565,8 +669,7 @@ public class SSTableToCQL {
         }
     }
 
-    private static final Logger logger = LoggerFactory
-            .getLogger(SSTableToCQL.class);
+    private static final Logger logger = LoggerFactory.getLogger(SSTableToCQL.class);
 
     private final Client client;
 
@@ -595,26 +698,20 @@ public class SSTableToCQL {
                 if (new File(dir, name).isDirectory()) {
                     return false;
                 }
-                Pair<Descriptor, Component> p = SSTable
-                        .tryComponentFromFilename(dir, name);
+                Pair<Descriptor, Component> p = SSTable.tryComponentFromFilename(dir, name);
                 Descriptor desc = p == null ? null : p.left;
-                if (p == null || !p.right.equals(Component.DATA)
-                        || desc.type.isTemporary) {
+                if (p == null || !p.right.equals(Component.DATA) || desc.type.isTemporary) {
                     return false;
                 }
 
-                if (!new File(desc.filenameFor(Component.PRIMARY_INDEX))
-                        .exists()) {
-                    logger.info("Skipping file {} because index is missing",
-                            name);
+                if (!new File(desc.filenameFor(Component.PRIMARY_INDEX)).exists()) {
+                    logger.info("Skipping file {} because index is missing", name);
                     return false;
                 }
 
                 CFMetaData metadata = getCFMetaData(keyspace, desc.cfname);
                 if (metadata == null) {
-                    logger.info(
-                            "Skipping file {}: column family {}.{} doesn't exist",
-                            name, keyspace, desc.cfname);
+                    logger.info("Skipping file {}: column family {}.{} doesn't exist", name, keyspace, desc.cfname);
                     return false;
                 }
 
@@ -624,8 +721,7 @@ public class SSTableToCQL {
                 if (new File(desc.filenameFor(Component.SUMMARY)).exists()) {
                     components.add(Component.SUMMARY);
                 }
-                if (new File(desc.filenameFor(Component.COMPRESSION_INFO))
-                        .exists()) {
+                if (new File(desc.filenameFor(Component.COMPRESSION_INFO)).exists()) {
                     components.add(Component.COMPRESSION_INFO);
                 }
                 if (new File(desc.filenameFor(Component.STATS)).exists()) {
@@ -639,12 +735,10 @@ public class SSTableToCQL {
                     // stream and the estimated
                     // number of keys for each endpoint. See CASSANDRA-5555 for
                     // details.
-                    SSTableReader sstable = openForBatch(desc, components,
-                            metadata, getPartitioner());
+                    SSTableReader sstable = openForBatch(desc, components, metadata, getPartitioner());
                     sstables.add(sstable);
                 } catch (IOException e) {
-                    logger.warn("Skipping file {}, error opening it: {}", name,
-                            e.getMessage());
+                    logger.warn("Skipping file {}, error opening it: {}", name, e.getMessage());
                 }
                 return false;
             }
@@ -652,8 +746,7 @@ public class SSTableToCQL {
         return sstables;
     }
 
-    protected void process(RowBuilder builder, InetAddress address,
-            ISSTableScanner scanner) {
+    protected void process(RowBuilder builder, InetAddress address, ISSTableScanner scanner) {
         // collecting keys to export
         while (scanner.hasNext()) {
             OnDiskAtomIterator row = scanner.next();
@@ -661,14 +754,12 @@ public class SSTableToCQL {
         }
     }
 
-    public void stream(File directory)
-            throws IOException, ConfigurationException {
+    public void stream(File directory) throws IOException, ConfigurationException {
         RowBuilder builder = new RowBuilder(client);
 
         logger.info("Opening sstables and calculating sections to stream");
 
-        Map<InetAddress, Collection<Range<Token>>> ranges = client
-                .getEndpointRanges();
+        Map<InetAddress, Collection<Range<Token>>> ranges = client.getEndpointRanges();
         Collection<SSTableReader> sstables = openSSTables(directory);
 
         // Hack. Must do because Range mangling code in cassandra is
@@ -685,10 +776,8 @@ public class SSTableToCQL {
                         scanner.close();
                     }
                 } else {
-                    for (Map.Entry<InetAddress, Collection<Range<Token>>> e : ranges
-                            .entrySet()) {
-                        ISSTableScanner scanner = reader
-                                .getScanner(e.getValue(), null);
+                    for (Map.Entry<InetAddress, Collection<Range<Token>>> e : ranges.entrySet()) {
+                        ISSTableScanner scanner = reader.getScanner(e.getValue(), null);
                         try {
                             process(builder, e.getKey(), scanner);
                         } finally {
