@@ -36,7 +36,7 @@ import org.apache.cassandra.utils.PureJavaCrc32;
 public class CommitLogDescriptor
 {
     private static final String SEPARATOR = "-";
-    private static final String FILENAME_PREFIX = "CommitLog" + SEPARATOR;
+    private static final String FILENAME_PREFIX = "CassandraCommitLog" + SEPARATOR;
     private static final String FILENAME_EXTENSION = ".log";
     // match both legacy and new version of commitlogs Ex: CommitLog-12345.log and CommitLog-4-12345.log.
     private static final Pattern COMMIT_LOG_FILE_PATTERN = Pattern.compile(FILENAME_PREFIX + "((\\d+)(" + SEPARATOR + "\\d+)?)" + FILENAME_EXTENSION);
