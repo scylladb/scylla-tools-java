@@ -120,8 +120,8 @@ public class SSTableToCQL {
 
             @Override
             public String apply(ColumnDefinition c, List<Object> params) {
-                params.add(key);
-                return " = " + c.name.toString() + " - { ? }";
+                params.add(Collections.singleton(key));
+                return " = " + c.name.toString() + " - ?";
             }
         }
 
@@ -188,8 +188,8 @@ public class SSTableToCQL {
 
             @Override
             public String apply(ColumnDefinition c, List<Object> params) {
-                params.add(key);
-                return " = " + c.name.toString() + " + { ? }";
+                params.add(Collections.singleton(key));
+                return " = " + c.name.toString() + " + ?";
             }
         }
 
