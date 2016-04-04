@@ -244,6 +244,7 @@ public class SSTableToCQL {
         int ttl;
         Map<ColumnDefinition, ColumnOp> values = new HashMap<>();
         Map<ColumnDefinition, Object> where = new HashMap<>();
+        Map<ColumnDefinition, Object> tmp = new HashMap<>();
         TreeSet<OnDiskAtom> sortedAtoms = new TreeSet<>(new Comparator<OnDiskAtom>() {
             @Override
             public int compare(OnDiskAtom o1, OnDiskAtom o2) {
@@ -274,28 +275,27 @@ public class SSTableToCQL {
             if (composite.isStatic()) {
                 return;
             }
-            // Either we have nothing, or we have the same
-            // number of columns. Or else, reset
-            List<ColumnDefinition> cluster = cfMetaData.clusteringColumns();
-            if (!where.isEmpty() && cluster.size() != where.size()) {
-                finish();
-            }
-            outer: for (int i = 0;;) {
+            tmp.clear();
+            for (int i = 0;;) {
                 for (ColumnDefinition c : cfMetaData.clusteringColumns()) {
-                    Object value = c.type.compose(composite.get(i));
-                    Object oldValue = where.get(c);
-
-                    // If we get clustering that differ from already
-                    // existing data, we need to flush the row
-                    if (oldValue != null && (value == null || !oldValue.equals(value))) {
-                        finish();
-                        continue outer;
+                    if (i == composite.size()) {
+                        break;
                     }
-                    where.put(c, value);
+                    Object value = c.type.compose(composite.get(i));
+                    tmp.put(c, value);
                     ++i;
                 }
                 break;
             }
+            // If we get clustering that differ from already
+            // existing data, we need to flush the row
+            if (!where.isEmpty() && !where.equals(tmp)) {
+                finish();
+            }
+            Map<ColumnDefinition, Object> m = where;
+            where = tmp;
+            tmp = m;
+            tmp.clear();
         }
 
         // Begin a new partition (cassandra "Row")
@@ -330,12 +330,11 @@ public class SSTableToCQL {
 
         // Delete the whole cql row
         private void deleteCqlRow(Composite max, long timestamp) {
-            if (op != Op.NONE) {
+            if (!values.isEmpty()) {
                 finish();
             }
             setOp(Op.DELETE, timestamp);
             addWhere(max, timestamp, invalidTTL);
-            finish();
         }
 
         // Delete the whole partition
@@ -595,25 +594,39 @@ public class SSTableToCQL {
         }
 
         private void process(RangeTombstone r) {
-            // Cassandra comments say RT:s will always be
-            // open ended at min. We have no way of dealing
-            // with one that is not open ended at max also,
-            // but...
             Composite max = r.max;
+            Composite min = r.min;
+            EOC maxEoc = max.eoc();
+            EOC minEoc = min.eoc();
+            int maxSize = max.size();
+            int minSize = min.size();
 
-            if (max.eoc() != EOC.END) {
-                logger.warn("RangeTombstone with non-open end {}", cfMetaData.comparator.getString(max));
+            if (maxEoc == EOC.END && minEoc == EOC.START && maxSize == minSize) {
+                // simple delete row/column
+                int cn = cfMetaData.clusteringColumns().size();
+
+                if (cn <= max.size()) {
+                    deleteCqlRow(max, r.timestamp());
+                } else {
+                    ColumnDefinition c = cfMetaData.getColumnDefinition(max.get(max.size() - 1));
+                    deleteColumn(max, c, null, r.timestamp());
+                }
+                return;
+            }
+            if (maxEoc == minEoc && maxSize != minSize) {
+                // Cassandra creates weird range tombstones for delete on rows
+                // matching
+                // sub-set of clustering columns.
+                // But the pattern seems to be to match clustering on smallest
+                // prefix,
+                // and start/end combo tombstone
+                Composite match = maxSize < minSize ? max : min;
+                deleteCqlRow(match, r.timestamp());
                 return;
             }
 
-            int cn = cfMetaData.clusteringColumns().size();
-
-            if (cn <= max.size()) {
-                deleteCqlRow(max, r.timestamp());
-            } else {
-                ColumnDefinition c = cfMetaData.getColumnDefinition(max.get(max.size() - 1));
-                deleteColumn(max, c, null, r.timestamp());
-            }
+            logger.warn("Could not parse RangeTombstone {},{}", cfMetaData.comparator.getString(min),
+                    cfMetaData.comparator.getString(max));
         }
 
         // update the CQL operation. If we change, we need
