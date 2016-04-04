@@ -457,11 +457,7 @@ public class BulkLoader {
                 File dir = new File(dirname);
 
                 if (!dir.exists()) {
-                    errorMsg("Unknown directory: " + dirname, options);
-                }
-
-                if (!dir.isDirectory()) {
-                    errorMsg(dirname + " is not a directory", options);
+                    errorMsg("Unknown file/directory: " + dirname, options);
                 }
 
                 LoaderOptions opts = new LoaderOptions(dir);
@@ -666,7 +662,12 @@ public class BulkLoader {
         LoaderOptions options = LoaderOptions.parseArgs(args);
 
         try {
-            String keyspace = options.directory.getParentFile().getName();
+            File dir = options.directory;
+            if (dir.isFile()) {
+                dir = dir.getParentFile();
+            }
+
+            String keyspace = dir.getParentFile().getName();
 
             CQLClient client = new CQLClient(options, keyspace);
             SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client);

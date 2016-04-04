@@ -688,62 +688,73 @@ public class SSTableToCQL {
         return client.getPartitioner();
     }
 
-    protected Collection<SSTableReader> openSSTables(File directory) {
+    protected Collection<SSTableReader> openSSTables(File directoryOrSStable) {
         logger.info("Opening sstables and calculating sections to stream");
 
         final List<SSTableReader> sstables = new ArrayList<>();
-        directory.list(new FilenameFilter() {
-            @Override
-            public boolean accept(File dir, String name) {
-                if (new File(dir, name).isDirectory()) {
-                    return false;
-                }
-                Pair<Descriptor, Component> p = SSTable.tryComponentFromFilename(dir, name);
-                Descriptor desc = p == null ? null : p.left;
-                if (p == null || !p.right.equals(Component.DATA) || desc.type.isTemporary) {
-                    return false;
-                }
 
-                if (!new File(desc.filenameFor(Component.PRIMARY_INDEX)).exists()) {
-                    logger.info("Skipping file {} because index is missing", name);
+        if (!directoryOrSStable.isDirectory()) {
+            addFile(sstables, directoryOrSStable.getParentFile(), directoryOrSStable.getName());
+        } else {
+            directoryOrSStable.list(new FilenameFilter() {
+                @Override
+                public boolean accept(File dir, String name) {
+                    if (new File(dir, name).isDirectory()) {
+                        return false;
+                    }
+                    addFile(sstables, dir, name);
                     return false;
                 }
 
-                CFMetaData metadata = getCFMetaData(keyspace, desc.cfname);
-                if (metadata == null) {
-                    logger.info("Skipping file {}: column family {}.{} doesn't exist", name, keyspace, desc.cfname);
-                    return false;
-                }
+            });
+        }
 
-                Set<Component> components = new HashSet<>();
-                components.add(Component.DATA);
-                components.add(Component.PRIMARY_INDEX);
-                if (new File(desc.filenameFor(Component.SUMMARY)).exists()) {
-                    components.add(Component.SUMMARY);
-                }
-                if (new File(desc.filenameFor(Component.COMPRESSION_INFO)).exists()) {
-                    components.add(Component.COMPRESSION_INFO);
-                }
-                if (new File(desc.filenameFor(Component.STATS)).exists()) {
-                    components.add(Component.STATS);
-                }
-
-                try {
-                    // To conserve memory, open SSTableReaders without bloom
-                    // filters and discard
-                    // the index summary after calculating the file sections to
-                    // stream and the estimated
-                    // number of keys for each endpoint. See CASSANDRA-5555 for
-                    // details.
-                    SSTableReader sstable = openForBatch(desc, components, metadata, getPartitioner());
-                    sstables.add(sstable);
-                } catch (IOException e) {
-                    logger.warn("Skipping file {}, error opening it: {}", name, e.getMessage());
-                }
-                return false;
-            }
-        });
         return sstables;
+    }
+
+    private void addFile(final List<SSTableReader> sstables, File dir, String name) {
+        Pair<Descriptor, Component> p = SSTable.tryComponentFromFilename(dir, name);
+        Descriptor desc = p == null ? null : p.left;
+        if (p == null || !p.right.equals(Component.DATA) || desc.type.isTemporary) {
+            return;
+        }
+
+        if (!new File(desc.filenameFor(Component.PRIMARY_INDEX)).exists()) {
+            logger.info("Skipping file {} because index is missing", name);
+            return;
+        }
+
+        CFMetaData metadata = getCFMetaData(keyspace, desc.cfname);
+        if (metadata == null) {
+            logger.info("Skipping file {}: column family {}.{} doesn't exist", name, keyspace, desc.cfname);
+            return;
+        }
+
+        Set<Component> components = new HashSet<>();
+        components.add(Component.DATA);
+        components.add(Component.PRIMARY_INDEX);
+        if (new File(desc.filenameFor(Component.SUMMARY)).exists()) {
+            components.add(Component.SUMMARY);
+        }
+        if (new File(desc.filenameFor(Component.COMPRESSION_INFO)).exists()) {
+            components.add(Component.COMPRESSION_INFO);
+        }
+        if (new File(desc.filenameFor(Component.STATS)).exists()) {
+            components.add(Component.STATS);
+        }
+
+        try {
+            // To conserve memory, open SSTableReaders without bloom
+            // filters and discard
+            // the index summary after calculating the file sections to
+            // stream and the estimated
+            // number of keys for each endpoint. See CASSANDRA-5555 for
+            // details.
+            SSTableReader sstable = openForBatch(desc, components, metadata, getPartitioner());
+            sstables.add(sstable);
+        } catch (IOException e) {
+            logger.warn("Skipping file {}, error opening it: {}", name, e.getMessage());
+        }
     }
 
     protected void process(RowBuilder builder, InetAddress address, ISSTableScanner scanner) {
@@ -754,13 +765,13 @@ public class SSTableToCQL {
         }
     }
 
-    public void stream(File directory) throws IOException, ConfigurationException {
+    public void stream(File directoryOrSStable) throws IOException, ConfigurationException {
         RowBuilder builder = new RowBuilder(client);
 
         logger.info("Opening sstables and calculating sections to stream");
 
         Map<InetAddress, Collection<Range<Token>>> ranges = client.getEndpointRanges();
-        Collection<SSTableReader> sstables = openSSTables(directory);
+        Collection<SSTableReader> sstables = openSSTables(directoryOrSStable);
 
         // Hack. Must do because Range mangling code in cassandra is
         // broken, and does not preserve input range objects internal
