@@ -47,6 +47,8 @@ install: build
 		usr/share/scylla/cassandra
 	dh_install build/apache-cassandra-thrift-$(VERSION).jar \
 		usr/share/scylla/cassandra
+	dh_install build/scylla-tools-$(VERSION).jar \
+		usr/share/scylla/cassandra
 
 	# Copy stress jars
 	dh_install build/tools/lib/stress.jar \
