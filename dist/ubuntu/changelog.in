@@ -1,4 +1,4 @@
-scylla-tools (@@VERSION@@-@@RELEASE@@-ubuntu1) trusty; urgency=medium
+scylla-tools (@@VERSION@@-@@RELEASE@@-ubuntu1) @@CODENAME@@; urgency=medium
 
   * New release 
 
