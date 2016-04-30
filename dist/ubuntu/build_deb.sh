@@ -10,6 +10,10 @@ if [ -e debian ] || [ -e build/release ]; then
     mkdir build
 fi
 
+DISTRIBUTION=`lsb_release -i|awk '{print $3}'`
+RELEASE=`lsb_release -r|awk '{print $2}'`
+CODENAME=`lsb_release -c|awk '{print $2}'`
+
 VERSION=$(./SCYLLA-VERSION-GEN)
 SCYLLA_VERSION=$(cat build/SCYLLA-VERSION-FILE | sed 's/\.rc/~rc/')
 SCYLLA_RELEASE=$(cat build/SCYLLA-RELEASE-FILE)
@@ -24,6 +28,7 @@ cp -a dist/ubuntu/debian debian
 cp dist/ubuntu/changelog.in debian/changelog
 sed -i -e "s/@@VERSION@@/$SCYLLA_VERSION/g" debian/changelog
 sed -i -e "s/@@RELEASE@@/$SCYLLA_RELEASE/g" debian/changelog
+sed -i -e "s/@@CODENAME@@/$CODENAME/g" debian/changelog
 
 sudo apt-get -y install debhelper openjdk-7-jdk ant ant-optional python-support dpatch bash-completion devscripts
 
