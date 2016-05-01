@@ -1,4 +1,4 @@
-#!/bin/sh -e
+#!/bin/bash -e
 
 if [ ! -e dist/ubuntu/build_deb.sh ]; then
     echo "run build_deb.sh in top of scylla dir"
@@ -9,6 +9,10 @@ if [ -e debian ] || [ -e build/release ]; then
     rm -rf debian build conf/hotspot_compiler
     mkdir build
 fi
+
+DISTRIBUTION=`lsb_release -i|awk '{print $3}'`
+RELEASE=`lsb_release -r|awk '{print $2}'`
+CODENAME=`lsb_release -c|awk '{print $2}'`
 
 VERSION=$(./SCYLLA-VERSION-GEN)
 SCYLLA_VERSION=$(cat build/SCYLLA-VERSION-FILE | sed 's/\.rc/~rc/')
@@ -22,9 +26,16 @@ echo $VERSION > version
 cp -a dist/ubuntu/debian debian
 
 cp dist/ubuntu/changelog.in debian/changelog
+cp dist/ubuntu/control.in debian/control
 sed -i -e "s/@@VERSION@@/$SCYLLA_VERSION/g" debian/changelog
 sed -i -e "s/@@RELEASE@@/$SCYLLA_RELEASE/g" debian/changelog
+sed -i -e "s/@@CODENAME@@/$CODENAME/g" debian/changelog
+if [ "$RELEASE" != "16.04" ]; then
+    sed -i -e "s/@@BUILD_DEPENDS@@/python-support (>= 0.90.0)/g" debian/control
+    sudo apt-get -y install python-support
+else
+    sed -i -e "s/@@BUILD_DEPENDS@@//g" debian/control
+fi
 
-sudo apt-get -y install debhelper openjdk-7-jdk ant ant-optional python-support dpatch bash-completion devscripts
-
+echo Y | sudo mk-build-deps -i -r
 debuild -r fakeroot --no-tgz-check -us -uc
