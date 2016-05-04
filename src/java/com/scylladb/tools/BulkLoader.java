@@ -222,6 +222,9 @@ public class BulkLoader {
         // fixed-point algorithm until we either load all UDTs or fail to make
         // forward progress.
         private static void loadUserTypes(Collection<UserType> udts, KSMetaData ks) {
+            if (udts.isEmpty()) {
+                return;
+            }
             LinkedList<UserType> notLoaded = new LinkedList<UserType>();
             for (UserType ut : udts) {
                 try {
@@ -241,9 +244,7 @@ public class BulkLoader {
             if (notLoaded.size() == udts.size()) {
                 throw new RuntimeException("Unable to load user types " + notLoaded);
             }
-            if (notLoaded.size() > 0) {
-                loadUserTypes(notLoaded, ks);
-            }
+            loadUserTypes(notLoaded, ks);
         }
 
         private static CQL3Type.Raw getCql3Type(DataType dt) throws Exception {
