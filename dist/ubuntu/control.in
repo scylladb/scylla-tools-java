@@ -8,7 +8,7 @@ Standards-Version: 3.9.5
 
 Package: scylla-tools
 Architecture: all
-Depends: default-jre-headless | java7-runtime, python (>= 2.7), python-yaml, scylla-server, ${misc:Depends}, @@BUILD_DEPENDS@@
+Depends: default-jre-headless | java7-runtime, python (>= 2.7), python-yaml, scylla-conf, ${misc:Depends}, @@BUILD_DEPENDS@@
 Recommends: ntp | time-daemon
 Description: Scylla database tools
  Scylla is a highly scalable, eventually consistent, distributed,
