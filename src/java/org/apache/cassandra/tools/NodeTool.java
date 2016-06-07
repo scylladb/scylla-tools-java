@@ -158,7 +158,7 @@ public class NodeTool
                 // Remove for GA: SetCompactionThreshold.class,
                 // Remove for GA: SetCompactionThroughput.class,
                 // Remove for GA: SetStreamThroughput.class,
-                // Remove for GA: SetTraceProbability.class,
+                SetTraceProbability.class,
                 Snapshot.class,
                 ListSnapshots.class,
                 Status.class,
