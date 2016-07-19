@@ -112,6 +112,7 @@ import com.datastax.driver.core.TableMetadata;
 import com.datastax.driver.core.TokenRange;
 import com.datastax.driver.core.TupleType;
 import com.datastax.driver.core.UserType;
+import com.google.common.util.concurrent.RateLimiter;
 
 public class BulkLoader {
     public static class CmdLineOptions extends Options {
@@ -165,6 +166,9 @@ public class BulkLoader {
 
         private Object tokenKey;
 
+        private RateLimiter rateLimiter;
+        private int bytes;
+
         public CQLClient(LoaderOptions options, String keyspace)
                 throws NoSuchAlgorithmException, FileNotFoundException,
                 IOException, KeyStoreException, CertificateException,
@@ -214,6 +218,10 @@ public class BulkLoader {
             Schema.instance.load(ksMetaData);
             loadUserTypes(keyspaceMetadata.getUserTypes(), ksMetaData);
             partitioner = FBUtilities.newPartitioner(metadata.getPartitioner());
+
+            if (options.throttle != 0) {
+                rateLimiter = RateLimiter.create(options.throttle * 1024 * 1024);
+            }
         }
 
         // Load user defined types. Since loading a UDT entails validation
@@ -293,12 +301,18 @@ public class BulkLoader {
             		for (Statement s : batchStatement.getStatements()) {
                         System.out.print("  ");
                         System.out.println(s);
-            		}
-            		System.out.println("END");            		
-            	}
-            	if (!simulate) {
-            		session.execute(batchStatement);
-            	}
+                    }
+                    System.out.println("END");
+                }
+                if (!simulate) {
+                    session.execute(batchStatement);
+                    if (rateLimiter != null) {
+                        // Acquire after execute, since bytes used are
+                        // calculated there.
+                        rateLimiter.acquire(bytes);
+                        bytes = 0;
+                    }
+                }
             }
             batchStatement = new BatchStatement();
         }
@@ -366,8 +380,26 @@ public class BulkLoader {
                 }
                 System.out.println();
             }
-            
-            SimpleStatement s = new SimpleStatement(what, objects.toArray());
+
+            SimpleStatement s = new SimpleStatement(what, objects.toArray()) {
+                @Override
+                public ByteBuffer[] getValues(ProtocolVersion protocolVersion) {
+                    ByteBuffer[] values = super.getValues(protocolVersion);
+                    if (rateLimiter != null) {
+                        // Try to guesstimate the bytes payload of the query
+                        // and add to bytes consumed by this batch.
+                        bytes += getQueryString().length();
+                        if (values != null) {
+                            for (ByteBuffer buf : values) {
+                                if (buf != null) {
+                                    bytes += buf.remaining();
+                                }
+                            }
+                        }
+                    }
+                    return values;
+                }
+            };
             s.setDefaultTimestamp(timestamp);
             s.setKeyspace(getKeyspace());
             s.setRoutingKey(key.getKey());
