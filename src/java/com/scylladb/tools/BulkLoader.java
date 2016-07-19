@@ -77,8 +77,8 @@ import org.apache.cassandra.config.EncryptionOptions;
 import org.apache.cassandra.config.KSMetaData;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.config.YamlConfigurationLoader;
-import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.cql3.CQL3Type;
+import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.cql3.UTName;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.marshal.AbstractType;
@@ -99,7 +99,6 @@ import org.apache.commons.cli.ParseException;
 import com.datastax.driver.core.BatchStatement;
 import com.datastax.driver.core.Cluster;
 import com.datastax.driver.core.DataType;
-import com.datastax.driver.core.DataType.Name.*;
 import com.datastax.driver.core.Host;
 import com.datastax.driver.core.KeyspaceMetadata;
 import com.datastax.driver.core.Metadata;
@@ -212,7 +211,7 @@ public class BulkLoader {
             keyspaceMetadata = metadata.getKeyspace(keyspace);
             KSMetaData ksMetaData = KSMetaData.newKeyspace(
                 keyspaceMetadata.getName(),
-                "SimpleStrategy",
+                keyspaceMetadata.getReplication().get("class"),
                 keyspaceMetadata.getReplication(),
                 keyspaceMetadata.isDurableWrites());
             Schema.instance.load(ksMetaData);
