@@ -46,11 +46,52 @@ public abstract class UnfilteredRowIterators
 
     private UnfilteredRowIterators() {}
 
+    /**
+     * Interface for a listener interested in the result of merging multiple versions of a given row.
+     * <p>
+     * Implementors of this interface are given enough information that they can easily reconstruct the difference
+     * between the merged result and each individual input. This is used when reconciling results on replias for
+     * instance to figure out what to send as read-repair to each source.
+     */
     public interface MergeListener
     {
+        /**
+         * Called once for the merged partition.
+         *
+         * @param mergedDeletion the partition level deletion for the merged partition. Implementors can test if the
+         * merged partition actually has a partition level deletion or not by calling {@code mergedDeletion.isLive()}.
+         * @param versions the partition level deletion for the sources of the merge. Elements of the array will never
+         * be null, but be "live".
+         **/
         public void onMergedPartitionLevelDeletion(DeletionTime mergedDeletion, DeletionTime[] versions);
 
+        /**
+         * Called once for every row participating in the merge.
+         * <p>
+         * Note that this is called for every clustering where at least one of the source merged has a row. In
+         * particular, this may be called in cases where there is no row in the merged output (if a source has a row
+         * that is shadowed by another source range tombstone or partition level deletion).
+         *
+         * @param merged the result of the merge. This cannot be {@code null} but can be empty, in which case this is a
+         * placeholder for when at least one source has a row, but that row is shadowed in the merged output.
+         * @param versions for each source, the row in that source corresponding to {@code merged}. This can be
+         * {@code null} for some sources if the source has not such row.
+         */
         public void onMergedRows(Row merged, Row[] versions);
+
+        /**
+         * Called once for every range tombstone marker participating in the merge.
+         * <p>
+         * Note that this is called for every "clustering position" where at least one of the source merged has a range
+         * tombstone marker.
+         *
+         * @param merged the marker in the merged output. This can be {@code null} if there is no such marker, which
+         * means that at least one source has a marker in {@code versions} but the merged out has nothing corresponding
+         * (this basically mean the merged output has a currently open deletion that shadows whatever marker the source
+         * had).
+         * @param versions the marker for each source merged. This can be {@code null} for some source if that source
+         * has not such marker.
+         */
         public void onMergedRangeTombstoneMarkers(RangeTombstoneMarker merged, RangeTombstoneMarker[] versions);
 
         public void close();
@@ -118,7 +159,19 @@ public abstract class UnfilteredRowIterators
 
         digest.update(iterator.partitionKey().getKey().duplicate());
         iterator.partitionLevelDeletion().digest(digest);
-        iterator.columns().digest(digest);
+        iterator.columns().regulars.digest(digest);
+        // When serializing an iterator, we skip the static columns if the iterator has not static row, even if the
+        // columns() object itself has some (the columns() is a superset of what the iterator actually contains, and
+        // will correspond to the queried columns pre-serialization). So we must avoid taking the satic column names
+        // into account if there is no static row or we'd have a digest mismatch between depending on whether the digest
+        // is computed on an iterator that has been serialized or not (see CASSANDRA-12090)
+        // TODO: in practice we could completely skip digesting the columns since they are more informative of what the
+        // iterator may contain, and digesting the actual content is enough. And in fact, that would be more correct
+        // (since again, the columns could be different without the information represented by the iterator being
+        // different), but removing them entirely is stricly speaking a breaking change (it would create mismatches on
+        // upgrade) so we can only do on the next protocol version bump.
+        if (iterator.staticRow() != Rows.EMPTY_STATIC_ROW)
+            iterator.columns().statics.digest(digest);
         FBUtilities.updateWithBoolean(digest, iterator.isReverseOrder());
         iterator.staticRow().digest(digest);
 
@@ -370,7 +423,7 @@ public abstract class UnfilteredRowIterators
                 if (!delTime.supersedes(iterDeletion))
                     delTime = iterDeletion;
             }
-            if (listener != null && !delTime.isLive())
+            if (listener != null)
                 listener.onMergedPartitionLevelDeletion(delTime, versions);
             return delTime;
         }
@@ -487,7 +540,7 @@ public abstract class UnfilteredRowIterators
                 else
                 {
                     RangeTombstoneMarker merged = markerMerger.merge();
-                    if (merged != null && listener != null)
+                    if (listener != null)
                         listener.onMergedRangeTombstoneMarkers(merged, markerMerger.mergedMarkers());
                     return merged;
                 }

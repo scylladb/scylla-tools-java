@@ -264,6 +264,8 @@ public abstract class LegacyLayout
         // We use comparator.size() rather than clustering.size() because of static clusterings
         int clusteringSize = metadata.comparator.size();
         int size = clusteringSize + (metadata.isDense() ? 0 : 1) + (collectionElement == null ? 0 : 1);
+        if (metadata.isSuper())
+            size = clusteringSize + 1;
         ByteBuffer[] values = new ByteBuffer[size];
         for (int i = 0; i < clusteringSize; i++)
         {
@@ -282,10 +284,23 @@ public abstract class LegacyLayout
             values[i] = v;
         }
 
-        if (!metadata.isDense())
-            values[clusteringSize] = columnName;
-        if (collectionElement != null)
-            values[clusteringSize + 1] = collectionElement;
+        if (metadata.isSuper())
+        {
+            // We need to set the "column" (in thrift terms) name, i.e. the value corresponding to the subcomparator.
+            // What it is depends if this a cell for a declared "static" column or a "dynamic" column part of the
+            // super-column internal map.
+            assert columnName != null; // This should never be null for supercolumns, see decodeForSuperColumn() above
+            values[clusteringSize] = columnName.equals(CompactTables.SUPER_COLUMN_MAP_COLUMN)
+                                   ? collectionElement
+                                   : columnName;
+        }
+        else
+        {
+            if (!metadata.isDense())
+                values[clusteringSize] = columnName;
+            if (collectionElement != null)
+                values[clusteringSize + 1] = collectionElement;
+        }
 
         return CompositeType.build(isStatic, values);
     }
@@ -1205,9 +1220,26 @@ public abstract class LegacyLayout
         {
             if (tombstone.isRowDeletion(metadata))
             {
-                // If we're already within a row, it can't be the same one
                 if (clustering != null)
+                {
+                    // If we're already in the row, there might be a chance that there were two range tombstones
+                    // written, as 2.x storage format does not guarantee just one range tombstone, unlike 3.x.
+                    // We have to make sure that clustering matches, which would mean that tombstone is for the
+                    // same row.
+                    if (rowDeletion != null && clustering.equals(tombstone.start.getAsClustering(metadata)))
+                    {
+                        // If the tombstone superceeds the previous delete, we discard the previous one
+                        if (tombstone.deletionTime.supersedes(rowDeletion.deletionTime))
+                        {
+                            builder.addRowDeletion(Row.Deletion.regular(tombstone.deletionTime));
+                            rowDeletion = tombstone;
+                        }
+                        return true;
+                    }
+
+                    // If we're already within a row and there was no delete written before that one, it can't be the same one
                     return false;
+                }
 
                 clustering = tombstone.start.getAsClustering(metadata);
                 builder.newRow(clustering);

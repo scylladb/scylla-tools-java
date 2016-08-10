@@ -241,6 +241,9 @@ public abstract class AbstractCompactionStrategy
      */
     public void replaceFlushed(Memtable memtable, Collection<SSTableReader> sstables)
     {
+        cfs.getTracker().replaceFlushed(memtable, sstables);
+        if (sstables != null && !sstables.isEmpty())
+            CompactionManager.instance.submitBackground(cfs);
     }
 
     /**
@@ -380,7 +383,7 @@ public abstract class AbstractCompactionStrategy
         if (uncheckedTombstoneCompaction)
             return true;
 
-        Collection<SSTableReader> overlaps = cfs.getOverlappingSSTables(SSTableSet.CANONICAL, Collections.singleton(sstable));
+        Collection<SSTableReader> overlaps = cfs.getOverlappingLiveSSTables(Collections.singleton(sstable));
         if (overlaps.isEmpty())
         {
             // there is no overlap, tombstones are safely droppable

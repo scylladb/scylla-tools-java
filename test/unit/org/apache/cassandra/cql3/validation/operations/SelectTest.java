@@ -25,6 +25,7 @@ import org.junit.Test;
 import junit.framework.Assert;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.cql3.restrictions.StatementRestrictions;
+import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.cql3.CQLTester;
 
@@ -36,7 +37,6 @@ import static org.junit.Assert.assertTrue;
  */
 public class SelectTest extends CQLTester
 {
-    private static final ByteBuffer TOO_BIG = ByteBuffer.allocate(1024 * 65);
 
     @Test
     public void testSingleClustering() throws Throwable
@@ -1272,7 +1272,7 @@ public class SelectTest extends CQLTester
                              "SELECT DISTINCT k FROM %s WHERE k IN (1, 2, 3) AND a = 10");
 
         assertInvalidMessage(distinctQueryErrorMsg,
-                            "SELECT DISTINCT k FROM %s WHERE b = 5");
+                             "SELECT DISTINCT k FROM %s WHERE b = 5");
 
         assertRows(execute("SELECT DISTINCT k FROM %s WHERE k = 1"),
                    row(1));
@@ -1531,6 +1531,24 @@ public class SelectTest extends CQLTester
         assertInvalidMessage("Unsupported unset value for column c",
                              "SELECT * FROM %s WHERE c > ? ALLOW FILTERING",
                              unset());
+    }
+
+    @Test
+    public void testIndexQueryWithCompositePartitionKey() throws Throwable
+    {
+        createTable("CREATE TABLE %s (p1 int, p2 int, v int, PRIMARY KEY ((p1, p2)))");
+        assertInvalidMessage("Partition key parts: p2 must be restricted as other parts are",
+                             "SELECT * FROM %s WHERE p1 = 1 AND v = 3 ALLOW FILTERING");
+
+        createIndex("CREATE INDEX ON %s(v)");
+
+        execute("INSERT INTO %s(p1, p2, v) values (?, ?, ?)", 1, 1, 3);
+        execute("INSERT INTO %s(p1, p2, v) values (?, ?, ?)", 1, 2, 3);
+        execute("INSERT INTO %s(p1, p2, v) values (?, ?, ?)", 2, 1, 3);
+
+        assertRows(execute("SELECT * FROM %s WHERE p1 = 1 AND v = 3 ALLOW FILTERING"),
+                   row(1, 2, 3),
+                   row(1, 1, 3));
     }
 
     @Test
@@ -2256,6 +2274,23 @@ public class SelectTest extends CQLTester
     }
 
     @Test
+    public void testPKQueryWithValueOver64K() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a text, b text, PRIMARY KEY (a, b))");
+
+        assertInvalidThrow(InvalidRequestException.class,
+                           "SELECT * FROM %s WHERE a = ?", new String(TOO_BIG.array()));
+    }
+
+    @Test
+    public void testCKQueryWithValueOver64K() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a text, b text, PRIMARY KEY (a, b))");
+
+        execute("SELECT * FROM %s WHERE a = 'foo' AND b = ?", new String(TOO_BIG.array()));
+    }
+
+    @Test
     public void testFilteringOnCompactTablesWithoutIndicesAndWithMaps() throws Throwable
     {
         //----------------------------------------------
@@ -2497,5 +2532,48 @@ public class SelectTest extends CQLTester
                        row("a", 2, 4),
                        row("a", 3, 5));
         }
+    }
+
+    @Test
+    public void testFilteringWithSecondaryIndex() throws Throwable
+    {
+        createTable("CREATE TABLE %s (pk int, " +
+                    "c1 int, " +
+                    "c2 int, " +
+                    "c3 int, " +
+                    "v int, " +
+                    "PRIMARY KEY (pk, c1, c2, c3))");
+        createIndex("CREATE INDEX v_idx_1 ON %s (v);");
+
+        for (int i = 1; i <= 5; i++)
+        {
+            execute("INSERT INTO %s (pk, c1, c2, c3, v) VALUES (?, ?, ?, ?, ?)", 1, 1, 1, 1, i);
+            execute("INSERT INTO %s (pk, c1, c2, c3, v) VALUES (?, ?, ?, ?, ?)", 1, 1, 1, i, i);
+            execute("INSERT INTO %s (pk, c1, c2, c3, v) VALUES (?, ?, ?, ?, ?)", 1, 1, i, i, i);
+            execute("INSERT INTO %s (pk, c1, c2, c3, v) VALUES (?, ?, ?, ?, ?)", 1, i, i, i, i);
+        }
+
+        assertRows(execute("SELECT * FROM %s WHERE pk = 1 AND  c1 > 0 AND c1 < 5 AND c2 = 1 AND v = 3 ALLOW FILTERING;"),
+                   row(1, 1, 1, 3, 3));
+
+        assertEmpty(execute("SELECT * FROM %s WHERE pk = 1 AND  c1 > 1 AND c1 < 5 AND c2 = 1 AND v = 3 ALLOW FILTERING;"));
+
+        assertRows(execute("SELECT * FROM %s WHERE pk = 1 AND  c1 > 1 AND c2 > 2 AND c3 > 2 AND v = 3 ALLOW FILTERING;"),
+                   row(1, 3, 3, 3, 3));
+
+        assertRows(execute("SELECT * FROM %s WHERE pk = 1 AND  c1 > 1 AND c2 > 2 AND c3 = 3 AND v = 3 ALLOW FILTERING;"),
+                   row(1, 3, 3, 3, 3));
+
+        assertRows(execute("SELECT * FROM %s WHERE pk = 1 AND  c1 IN(0,1,2) AND c2 = 1 AND v = 3 ALLOW FILTERING;"),
+                   row(1, 1, 1, 3, 3));
+
+        assertRows(execute("SELECT * FROM %s WHERE pk = 1 AND  c1 IN(0,1,2) AND c2 = 1 AND v = 3"),
+                   row(1, 1, 1, 3, 3));
+
+        assertInvalidMessage("Clustering column \"c2\" cannot be restricted (preceding column \"c1\" is restricted by a non-EQ relation)",
+                             "SELECT * FROM %s WHERE pk = 1 AND  c1 > 0 AND c1 < 5 AND c2 = 1 ALLOW FILTERING;");
+
+        assertInvalidMessage("PRIMARY KEY column \"c2\" cannot be restricted as preceding column \"c1\" is not restricted",
+                             "SELECT * FROM %s WHERE pk = 1 AND  c2 = 1 ALLOW FILTERING;");
     }
 }

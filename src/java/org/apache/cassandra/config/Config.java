@@ -171,7 +171,12 @@ public class Config
     public Integer concurrent_compactors;
     public volatile Integer compaction_throughput_mb_per_sec = 16;
     public volatile Integer compaction_large_partition_warning_threshold_mb = 100;
+    public Integer min_free_space_per_drive_in_mb = 50;
 
+    /**
+     * @deprecated retry support removed on CASSANDRA-10992
+     */
+    @Deprecated
     public Integer max_streaming_retries = 3;
 
     public volatile Integer stream_throughput_outbound_megabits_per_sec = 200;
@@ -265,6 +270,7 @@ public class Config
     public volatile Long index_summary_capacity_in_mb;
     public volatile int index_summary_resize_interval_in_minutes = 60;
 
+    public int gc_log_threshold_in_ms = 200;
     public int gc_warn_threshold_in_ms = 0;
 
     // TTL for different types of trace events.

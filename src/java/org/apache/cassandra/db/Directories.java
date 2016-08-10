@@ -385,7 +385,7 @@ public class Directories
 
         if (candidates.isEmpty())
             if (tooBig)
-                throw new RuntimeException("Insufficient disk space to write " + writeSize + " bytes");
+                throw new FSWriteError(new IOException("Insufficient disk space to write " + writeSize + " bytes"), "");
             else
                 throw new FSWriteError(new IOException("All configured data directories have been blacklisted as unwritable for erroring out"), "");
 
@@ -516,7 +516,8 @@ public class Directories
 
         public long getAvailableSpace()
         {
-            return location.getUsableSpace();
+            long availableSpace = location.getUsableSpace() - DatabaseDescriptor.getMinFreeSpacePerDriveInBytes();
+            return availableSpace > 0 ? availableSpace : 0;
         }
 
         @Override

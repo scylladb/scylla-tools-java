@@ -33,7 +33,6 @@ import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.utils.Interval;
 
 import static com.google.common.base.Predicates.equalTo;
-import static com.google.common.base.Predicates.in;
 import static com.google.common.base.Predicates.not;
 import static com.google.common.collect.ImmutableList.copyOf;
 import static com.google.common.collect.ImmutableList.of;
@@ -70,7 +69,6 @@ public class View
     public final List<Memtable> flushingMemtables;
     final Set<SSTableReader> compacting;
     final Set<SSTableReader> sstables;
-    final Set<SSTableReader> premature;
     // we use a Map here so that we can easily perform identity checks as well as equality checks.
     // When marking compacting, we now  indicate if we expect the sstables to be present (by default we do),
     // and we then check that not only are they all present in the live set, but that the exact instance present is
@@ -80,7 +78,7 @@ public class View
 
     final SSTableIntervalTree intervalTree;
 
-    View(List<Memtable> liveMemtables, List<Memtable> flushingMemtables, Map<SSTableReader, SSTableReader> sstables, Map<SSTableReader, SSTableReader> compacting, Set<SSTableReader> premature, SSTableIntervalTree intervalTree)
+    View(List<Memtable> liveMemtables, List<Memtable> flushingMemtables, Map<SSTableReader, SSTableReader> sstables, Map<SSTableReader, SSTableReader> compacting, SSTableIntervalTree intervalTree)
     {
         assert liveMemtables != null;
         assert flushingMemtables != null;
@@ -95,7 +93,6 @@ public class View
         this.sstables = sstablesMap.keySet();
         this.compactingMap = compacting;
         this.compacting = compactingMap.keySet();
-        this.premature = premature;
         this.intervalTree = intervalTree;
     }
 
@@ -118,14 +115,9 @@ public class View
         return sstables;
     }
 
-    public Iterable<SSTableReader> sstables(SSTableSet sstableSet)
-    {
-        return select(sstableSet, sstables);
-    }
-
     public Iterable<SSTableReader> sstables(SSTableSet sstableSet, Predicate<SSTableReader> filter)
     {
-        return select(sstableSet, filter(sstables, filter));
+        return filter(select(sstableSet), filter);
     }
 
     // any sstable known by this tracker in any form; we have a special method here since it's only used for testing/debug
@@ -136,7 +128,7 @@ public class View
         return Iterables.concat(sstables, filterOut(compacting, sstables));
     }
 
-    private Iterable<SSTableReader> select(SSTableSet sstableSet, Iterable<SSTableReader> sstables)
+    public Iterable<SSTableReader> select(SSTableSet sstableSet)
     {
         switch (sstableSet)
         {
@@ -145,9 +137,18 @@ public class View
             case NONCOMPACTING:
                 return filter(sstables, (s) -> !compacting.contains(s));
             case CANONICAL:
-                return transform(filter(sstables,
-                                        (s) -> s.openReason != SSTableReader.OpenReason.EARLY),
-                                 (s) -> s.openReason != SSTableReader.OpenReason.MOVED_START ? s : compactingMap.get(s));
+                Set<SSTableReader> canonicalSSTables = new HashSet<>();
+                for (SSTableReader sstable : compacting)
+                    if (sstable.openReason != SSTableReader.OpenReason.EARLY)
+                        canonicalSSTables.add(sstable);
+                // reason for checking if compacting contains the sstable is that if compacting has an EARLY version
+                // of a NORMAL sstable, we still have the canonical version of that sstable in sstables.
+                // note that the EARLY version is equal, but not == since it is a different instance of the same sstable.
+                for (SSTableReader sstable : sstables)
+                    if (!compacting.contains(sstable) && sstable.openReason != SSTableReader.OpenReason.EARLY)
+                        canonicalSSTables.add(sstable);
+
+                return canonicalSSTables;
             default:
                 throw new IllegalStateException();
         }
@@ -182,7 +183,7 @@ public class View
      * Returns the sstables that have any partition between {@code left} and {@code right}, when both bounds are taken inclusively.
      * The interval formed by {@code left} and {@code right} shouldn't wrap.
      */
-    public Iterable<SSTableReader> sstablesInBounds(SSTableSet sstableSet, PartitionPosition left, PartitionPosition right)
+    public Iterable<SSTableReader> liveSSTablesInBounds(PartitionPosition left, PartitionPosition right)
     {
         assert !AbstractBounds.strictlyWrapsAround(left, right);
 
@@ -190,7 +191,7 @@ public class View
             return Collections.emptyList();
 
         PartitionPosition stopInTree = right.isMinimum() ? intervalTree.max() : right;
-        return select(sstableSet, intervalTree.search(Interval.create(left, stopInTree)));
+        return intervalTree.search(Interval.create(left, stopInTree));
     }
 
     public static List<SSTableReader> sstablesInBounds(PartitionPosition left, PartitionPosition right, SSTableIntervalTree intervalTree)
@@ -204,9 +205,9 @@ public class View
         return intervalTree.search(Interval.create(left, stopInTree));
     }
 
-    public static Function<View, Iterable<SSTableReader>> select(SSTableSet sstableSet)
+    public static Function<View, Iterable<SSTableReader>> selectFunction(SSTableSet sstableSet)
     {
-        return (view) -> view.sstables(sstableSet);
+        return (view) -> view.select(sstableSet);
     }
 
     public static Function<View, Iterable<SSTableReader>> select(SSTableSet sstableSet, Predicate<SSTableReader> filter)
@@ -228,14 +229,14 @@ public class View
      * @return a ViewFragment containing the sstables and memtables that may need to be merged
      * for rows within @param rowBounds, inclusive, according to the interval tree.
      */
-    public static Function<View, Iterable<SSTableReader>> select(SSTableSet sstableSet, AbstractBounds<PartitionPosition> rowBounds)
+    public static Function<View, Iterable<SSTableReader>> selectLive(AbstractBounds<PartitionPosition> rowBounds)
     {
         // Note that View.sstablesInBounds always includes it's bound while rowBounds may not. This is ok however
         // because the fact we restrict the sstables returned by this function is an optimization in the first
         // place and the returned sstables will (almost) never cover *exactly* rowBounds anyway. It's also
         // *very* unlikely that a sstable is included *just* because we consider one of the bound inclusively
         // instead of exclusively, so the performance impact is negligible in practice.
-        return (view) -> view.sstablesInBounds(sstableSet, rowBounds.left, rowBounds.right);
+        return (view) -> view.liveSSTablesInBounds(rowBounds.left, rowBounds.right);
     }
 
     // METHODS TO CONSTRUCT FUNCTIONS FOR MODIFYING A VIEW:
@@ -252,7 +253,7 @@ public class View
                 assert all(mark, Helpers.idIn(view.sstablesMap));
                 return new View(view.liveMemtables, view.flushingMemtables, view.sstablesMap,
                                 replace(view.compactingMap, unmark, mark),
-                                view.premature, view.intervalTree);
+                                view.intervalTree);
             }
         };
     }
@@ -266,7 +267,7 @@ public class View
             public boolean apply(View view)
             {
                 for (SSTableReader reader : readers)
-                    if (view.compacting.contains(reader) || view.sstablesMap.get(reader) != reader || reader.isMarkedCompacted() || view.premature.contains(reader))
+                    if (view.compacting.contains(reader) || view.sstablesMap.get(reader) != reader || reader.isMarkedCompacted())
                         return false;
                 return true;
             }
@@ -283,7 +284,7 @@ public class View
             public View apply(View view)
             {
                 Map<SSTableReader, SSTableReader> sstableMap = replace(view.sstablesMap, remove, add);
-                return new View(view.liveMemtables, view.flushingMemtables, sstableMap, view.compactingMap, view.premature,
+                return new View(view.liveMemtables, view.flushingMemtables, sstableMap, view.compactingMap,
                                 SSTableIntervalTree.build(sstableMap.keySet()));
             }
         };
@@ -298,7 +299,7 @@ public class View
             {
                 List<Memtable> newLive = ImmutableList.<Memtable>builder().addAll(view.liveMemtables).add(newMemtable).build();
                 assert newLive.size() == view.liveMemtables.size() + 1;
-                return new View(newLive, view.flushingMemtables, view.sstablesMap, view.compactingMap, view.premature, view.intervalTree);
+                return new View(newLive, view.flushingMemtables, view.sstablesMap, view.compactingMap, view.intervalTree);
             }
         };
     }
@@ -317,7 +318,7 @@ public class View
                                                            filter(flushing, not(lessThan(toFlush)))));
                 assert newLive.size() == live.size() - 1;
                 assert newFlushing.size() == flushing.size() + 1;
-                return new View(newLive, newFlushing, view.sstablesMap, view.compactingMap, view.premature, view.intervalTree);
+                return new View(newLive, newFlushing, view.sstablesMap, view.compactingMap, view.intervalTree);
             }
         };
     }
@@ -334,31 +335,14 @@ public class View
 
                 if (flushed == null || flushed.isEmpty())
                     return new View(view.liveMemtables, flushingMemtables, view.sstablesMap,
-                                    view.compactingMap, view.premature, view.intervalTree);
+                                    view.compactingMap, view.intervalTree);
 
                 Map<SSTableReader, SSTableReader> sstableMap = replace(view.sstablesMap, emptySet(), flushed);
-                Map<SSTableReader, SSTableReader> compactingMap = replace(view.compactingMap, emptySet(), flushed);
-                Set<SSTableReader> premature = replace(view.premature, emptySet(), flushed);
-                return new View(view.liveMemtables, flushingMemtables, sstableMap, compactingMap, premature,
+                return new View(view.liveMemtables, flushingMemtables, sstableMap, view.compactingMap,
                                 SSTableIntervalTree.build(sstableMap.keySet()));
             }
         };
     }
-
-    static Function<View, View> permitCompactionOfFlushed(final Collection<SSTableReader> readers)
-    {
-        Set<SSTableReader> expectAndRemove = ImmutableSet.copyOf(readers);
-        return new Function<View, View>()
-        {
-            public View apply(View view)
-            {
-                Set<SSTableReader> premature = replace(view.premature, expectAndRemove, emptySet());
-                Map<SSTableReader, SSTableReader> compactingMap = replace(view.compactingMap, expectAndRemove, emptySet());
-                return new View(view.liveMemtables, view.flushingMemtables, view.sstablesMap, compactingMap, premature, view.intervalTree);
-            }
-        };
-    }
-
 
     private static <T extends Comparable<T>> Predicate<T> lessThan(final T lessThan)
     {

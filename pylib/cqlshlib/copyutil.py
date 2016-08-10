@@ -205,7 +205,7 @@ class CopyTask(object):
         self.ks = ks
         self.table = table
         self.table_meta = self.shell.get_table_meta(self.ks, self.table)
-        self.local_dc = shell.conn.metadata.get_host(shell.hostname).datacenter
+        self.host = shell.conn.get_control_connection_host()
         self.fname = safe_normpath(fname)
         self.protocol_version = protocol_version
         self.config_file = config_file
@@ -441,11 +441,11 @@ class CopyTask(object):
 
         return dict(ks=self.ks,
                     table=self.table,
-                    local_dc=self.local_dc,
+                    local_dc=self.host.datacenter,
                     columns=self.columns,
                     options=self.options,
                     connect_timeout=shell.conn.connect_timeout,
-                    hostname=shell.hostname,
+                    hostname=self.host.address,
                     port=shell.port,
                     ssl=shell.ssl,
                     auth_provider=shell.auth_provider,
@@ -640,8 +640,8 @@ class ExportTask(CopyTask):
         we use the cqlsh session host.
         """
         shell = self.shell
-        hostname = shell.hostname
-        local_dc = self.local_dc
+        hostname = self.host.address
+        local_dc = self.host.datacenter
         ranges = dict()
         min_token = self.get_min_token()
         begin_token = self.begin_token
@@ -671,11 +671,11 @@ class ExportTask(CopyTask):
             hosts = []
             if replicas:
                 for r in replicas:
-                    if r.is_up and r.datacenter == local_dc:
+                    if r.is_up is not False and r.datacenter == local_dc:
                         hosts.append(r.address)
             if not hosts:
                 hosts.append(hostname)  # fallback to default host if no replicas in current dc
-            return {'hosts': tuple(hosts), 'attempts': 0, 'rows': 0}
+            return {'hosts': tuple(hosts), 'attempts': 0, 'rows': 0, 'workerno': -1}
 
         if begin_token and begin_token < min_token:
             shell.printerr('Begin token %d must be bigger or equal to min token %d' % (begin_token, min_token))
@@ -742,8 +742,11 @@ class ExportTask(CopyTask):
             return None
 
     def send_work(self, ranges, tokens_to_send):
-        i = 0
+        prev_worker_no = ranges[tokens_to_send[0]]['workerno']
+        i = prev_worker_no + 1 if -1 <= prev_worker_no < (self.num_processes - 1) else 0
+
         for token_range in tokens_to_send:
+            ranges[token_range]['workerno'] = i
             self.outmsg.channels[i].send((token_range, ranges[token_range]))
             ranges[token_range]['attempts'] += 1
 
@@ -1346,6 +1349,7 @@ class ChildProcess(mp.Process):
         self.thousands_sep = options.copy['thousandssep']
         self.boolean_styles = options.copy['boolstyle']
         self.max_attempts = options.copy['maxattempts']
+        self.encoding = options.copy['encoding']
         # Here we inject some failures for testing purposes, only if this environment variable is set
         if os.environ.get('CQLSH_COPY_TEST_FAILURES', ''):
             self.test_failures = json.loads(os.environ.get('CQLSH_COPY_TEST_FAILURES', ''))
@@ -1460,7 +1464,6 @@ class ExportProcess(ChildProcess):
     def __init__(self, params):
         ChildProcess.__init__(self, params=params, target=self.run)
         options = params['options']
-        self.encoding = options.copy['encoding']
         self.float_precision = options.copy['float_precision']
         self.nullval = options.copy['nullval']
         self.max_requests = options.copy['maxrequests']
@@ -1712,6 +1715,7 @@ class ImportConversion(object):
         self.boolean_styles = parent.boolean_styles
         self.date_time_format = parent.date_time_format.timestamp_format
         self.debug = parent.debug
+        self.encoding = parent.encoding
 
         self.table_meta = table_meta
         self.primary_key_indexes = [self.columns.index(col.name) for col in self.table_meta.primary_key]
@@ -1733,8 +1737,13 @@ class ImportConversion(object):
         # only when using prepared statements
         self.coltypes = [table_meta.columns[name].cql_type for name in parent.valid_columns]
         # these functions are used for non-prepared statements to protect values with quotes if required
-        self.protectors = [protect_value if t in ('ascii', 'text', 'timestamp', 'date', 'time', 'inet') else lambda v: v
-                           for t in self.coltypes]
+        self.protectors = [self._get_protector(t) for t in self.coltypes]
+
+    def _get_protector(self, t):
+        if t in ('ascii', 'text', 'timestamp', 'date', 'time', 'inet'):
+            return lambda v: unicode(protect_value(v), self.encoding)
+        else:
+            return lambda v: v
 
     @staticmethod
     def _get_primary_key_statement(parent, table_meta):
@@ -2067,7 +2076,7 @@ class TokenMap(object):
 
     def filter_replicas(self, hosts):
         shuffled = tuple(sorted(hosts, key=lambda k: random.random()))
-        return filter(lambda r: r.is_up and r.datacenter == self.local_dc, shuffled) if hosts else ()
+        return filter(lambda r: r.is_up is not False and r.datacenter == self.local_dc, shuffled) if hosts else ()
 
 
 class FastTokenAwarePolicy(DCAwareRoundRobinPolicy):
@@ -2443,7 +2452,7 @@ class ImportProcess(ChildProcess):
             future.add_callbacks(callback=self.result_callback, callback_args=(batch, chunk),
                                  errback=self.err_callback, errback_args=(batch, chunk, replicas))
 
-    def report_error(self, err, chunk, rows=None, attempts=1, final=True):
+    def report_error(self, err, chunk=None, rows=None, attempts=1, final=True):
         if self.debug and sys.exc_info()[1] == err:
             traceback.print_exc()
         self.outmsg.send(ImportTaskError(err.__class__.__name__, err.message, rows, attempts, final))

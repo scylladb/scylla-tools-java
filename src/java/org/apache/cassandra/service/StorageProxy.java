@@ -31,6 +31,7 @@ import javax.management.ObjectName;
 import com.google.common.base.Predicate;
 import com.google.common.cache.CacheLoader;
 import com.google.common.collect.*;
+import com.google.common.primitives.Ints;
 import com.google.common.util.concurrent.Uninterruptibles;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -382,8 +383,10 @@ public class StorageProxy implements StorageProxyMBean
             // in progress (#5667). Lastly, we don't want to use a timestamp that is older than the last one assigned by ClientState or operations may appear
             // out-of-order (#7801).
             long minTimestampMicrosToUse = summary == null ? Long.MIN_VALUE : 1 + UUIDGen.microsTimestamp(summary.mostRecentInProgressCommit.ballot);
-            long ballotMicros = state.getTimestamp(minTimestampMicrosToUse);
-            UUID ballot = UUIDGen.getTimeUUIDFromMicros(ballotMicros);
+            long ballotMicros = state.getTimestampForPaxos(minTimestampMicrosToUse);
+            // Note that ballotMicros is not guaranteed to be unique if two proposal are being handled concurrently by the same coordinator. But we still
+            // need ballots to be unique for each proposal so we have to use getRandomTimeUUIDFromMicros.
+            UUID ballot = UUIDGen.getRandomTimeUUIDFromMicros(ballotMicros);
 
             // prepare
             Tracing.trace("Preparing {}", ballot);
@@ -437,7 +440,8 @@ public class StorageProxy implements StorageProxyMBean
             // https://issues.apache.org/jira/browse/CASSANDRA-5062?focusedCommentId=13619810&page=com.atlassian.jira.plugin.system.issuetabpanels:comment-tabpanel#comment-13619810)
             // Since we waited for quorum nodes, if some of them haven't seen the last commit (which may just be a timing issue, but may also
             // mean we lost messages), we pro-actively "repair" those nodes, and retry.
-            Iterable<InetAddress> missingMRC = summary.replicasMissingMostRecentCommit();
+            int nowInSec = Ints.checkedCast(TimeUnit.MICROSECONDS.toSeconds(ballotMicros));
+            Iterable<InetAddress> missingMRC = summary.replicasMissingMostRecentCommit(metadata, nowInSec);
             if (Iterables.size(missingMRC) > 0)
             {
                 Tracing.trace("Repairing replicas that missed the most recent commit");

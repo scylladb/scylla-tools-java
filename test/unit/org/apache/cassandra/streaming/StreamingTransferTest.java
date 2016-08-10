@@ -46,6 +46,7 @@ import org.apache.cassandra.db.partitions.*;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.service.StorageService;
@@ -228,12 +229,58 @@ public class StreamingTransferTest
         List<Range<Token>> ranges = new ArrayList<>();
         // wrapped range
         ranges.add(new Range<Token>(p.getToken(ByteBufferUtil.bytes("key1")), p.getToken(ByteBufferUtil.bytes("key0"))));
-        new StreamPlan("StreamingTransferTest").transferRanges(LOCAL, cfs.keyspace.getName(), ranges, cfs.getColumnFamilyName()).execute().get();
+        StreamPlan streamPlan = new StreamPlan("StreamingTransferTest").transferRanges(LOCAL, cfs.keyspace.getName(), ranges, cfs.getColumnFamilyName());
+        streamPlan.execute().get();
+        verifyConnectionsAreClosed();
+
+        //cannot add ranges after stream session is finished
+        try
+        {
+            streamPlan.transferRanges(LOCAL, cfs.keyspace.getName(), ranges, cfs.getColumnFamilyName());
+            fail("Should have thrown exception");
+        }
+        catch (RuntimeException e)
+        {
+            //do nothing
+        }
     }
 
     private void transfer(SSTableReader sstable, List<Range<Token>> ranges) throws Exception
     {
-        new StreamPlan("StreamingTransferTest").transferFiles(LOCAL, makeStreamingDetails(ranges, Refs.tryRef(Arrays.asList(sstable)))).execute().get();
+        StreamPlan streamPlan = new StreamPlan("StreamingTransferTest").transferFiles(LOCAL, makeStreamingDetails(ranges, Refs.tryRef(Arrays.asList(sstable))));
+        streamPlan.execute().get();
+        verifyConnectionsAreClosed();
+
+        //cannot add files after stream session is finished
+        try
+        {
+            streamPlan.transferFiles(LOCAL, makeStreamingDetails(ranges, Refs.tryRef(Arrays.asList(sstable))));
+            fail("Should have thrown exception");
+        }
+        catch (RuntimeException e)
+        {
+            //do nothing
+        }
+    }
+
+    /**
+     * Test that finished incoming connections are removed from MessagingService (CASSANDRA-11854)
+     */
+    private void verifyConnectionsAreClosed() throws InterruptedException
+    {
+        //after stream session is finished, message handlers may take several milliseconds to be closed
+        outer:
+        for (int i = 0; i <= 10; i++)
+        {
+            for (MessagingService.SocketThread socketThread : MessagingService.instance().getSocketThreads())
+                if (!socketThread.connections.isEmpty())
+                {
+                    Thread.sleep(100);
+                    continue outer;
+                }
+            return;
+        }
+        fail("Streaming connections remain registered in MessagingService");
     }
 
     private Collection<StreamSession.SSTableStreamingSections> makeStreamingDetails(List<Range<Token>> ranges, Refs<SSTableReader> sstables)

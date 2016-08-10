@@ -281,7 +281,14 @@ Function ParseJVMInfo
     }
 
     $pa = $sa[1].Split("_")
-    $env:JVM_PATCH_VERSION=$pa[1]
+    $subVersion = $pa[1]
+    # Deal with -b (build) versions
+    if ($subVersion -contains '-')
+    {
+        $patchAndBuild = $subVersion.Split("-")
+        $subVersion = $patchAndBuild[0]
+    }
+    $env:JVM_PATCH_VERSION = $subVersion
 }
 
 #-----------------------------------------------------------------------------
@@ -406,6 +413,9 @@ Function SetCassandraEnvironment
         }
     }
 
+    # provides hints to the JIT compiler
+    $env:JVM_OPTS = "$env:JVM_OPTS -XX:CompileCommandFile=$env:CASSANDRA_CONF\hotspot_compiler"
+
     # add the jamm javaagent
     if (($env:JVM_VENDOR -ne "OpenJDK") -or ($env:JVM_VERSION.CompareTo("1.6.0") -eq 1) -or
         (($env:JVM_VERSION -eq "1.6.0") -and ($env:JVM_PATCH_VERSION.CompareTo("22") -eq 1)))
@@ -413,7 +423,14 @@ Function SetCassandraEnvironment
         $env:JVM_OPTS = "$env:JVM_OPTS -javaagent:""$env:CASSANDRA_HOME\lib\jamm-0.3.0.jar"""
     }
 
-    if ($env:JVM_VERSION.CompareTo("1.8.0_40") -eq -1)
+    # set jvm HeapDumpPath with CASSANDRA_HEAPDUMP_DIR
+    if ($env:CASSANDRA_HEAPDUMP_DIR)
+    {
+        $unixTimestamp = [int64](([datetime]::UtcNow)-(get-date "1/1/1970")).TotalSeconds
+        $env:JVM_OPTS="$env:JVM_OPTS -XX:HeapDumpPath=$env:CASSANDRA_HEAPDUMP_DIR\cassandra-$unixTimestamp-pid$pid.hprof"
+    }
+
+    if ($env:JVM_VERSION.CompareTo("1.8.0") -eq -1 -or [convert]::ToInt32($env:JVM_PATCH_VERSION) -lt 40)
     {
         echo "Cassandra 3.0 and later require Java 8u40 or later."
         exit
