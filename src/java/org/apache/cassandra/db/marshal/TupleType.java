@@ -18,14 +18,14 @@
 package org.apache.cassandra.db.marshal;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.List;
 
 import com.google.common.base.Objects;
 
-import org.apache.cassandra.exceptions.InvalidRequestException;
-
-import org.apache.cassandra.cql3.CQL3Type;
+import org.apache.cassandra.cql3.*;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.serializers.*;
@@ -41,6 +41,7 @@ public class TupleType extends AbstractType<ByteBuffer>
 
     public TupleType(List<AbstractType<?>> types)
     {
+        super(ComparisonType.CUSTOM);
         for (int i = 0; i < types.size(); i++)
             types.set(i, types.get(i).freeze());
         this.types = types;
@@ -52,6 +53,12 @@ public class TupleType extends AbstractType<ByteBuffer>
         for (int i = 0; i < types.size(); i++)
             types.set(i, types.get(i).freeze());
         return new TupleType(types);
+    }
+
+    @Override
+    public boolean referencesUserType(String name)
+    {
+        return allTypes().stream().anyMatch(f -> f.referencesUserType(name));
     }
 
     public AbstractType<?> type(int i)
@@ -69,7 +76,7 @@ public class TupleType extends AbstractType<ByteBuffer>
         return types;
     }
 
-    public int compare(ByteBuffer o1, ByteBuffer o2)
+    public int compareCustom(ByteBuffer o1, ByteBuffer o2)
     {
         if (!o1.hasRemaining() || !o2.hasRemaining())
             return o1.hasRemaining() ? 1 : o2.hasRemaining() ? -1 : 0;
@@ -229,6 +236,59 @@ public class TupleType extends AbstractType<ByteBuffer>
             fields[i] = type.fromString(fieldString.replaceAll("\\\\:", ":").replaceAll("\\\\@", "@"));
         }
         return buildValue(fields);
+    }
+
+    @Override
+    public Term fromJSONObject(Object parsed) throws MarshalException
+    {
+        if (parsed instanceof String)
+            parsed = Json.decodeJson((String) parsed);
+
+        if (!(parsed instanceof List))
+            throw new MarshalException(String.format(
+                    "Expected a list representation of a tuple, but got a %s: %s", parsed.getClass().getSimpleName(), parsed));
+
+        List list = (List) parsed;
+
+        if (list.size() > types.size())
+            throw new MarshalException(String.format("Tuple contains extra items (expected %s): %s", types.size(), parsed));
+        else if (types.size() > list.size())
+            throw new MarshalException(String.format("Tuple is missing items (expected %s): %s", types.size(), parsed));
+
+        List<Term> terms = new ArrayList<>(list.size());
+        Iterator<AbstractType<?>> typeIterator = types.iterator();
+        for (Object element : list)
+        {
+            if (element == null)
+            {
+                typeIterator.next();
+                terms.add(Constants.NULL_VALUE);
+            }
+            else
+            {
+                terms.add(typeIterator.next().fromJSONObject(element));
+            }
+        }
+
+        return new Tuples.DelayedValue(this, terms);
+    }
+
+    @Override
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
+    {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < types.size(); i++)
+        {
+            if (i > 0)
+                sb.append(", ");
+
+            ByteBuffer value = CollectionSerializer.readValue(buffer, protocolVersion);
+            if (value == null)
+                sb.append("null");
+            else
+                sb.append(types.get(i).toJSONString(value, protocolVersion));
+        }
+        return sb.append("]").toString();
     }
 
     public TypeSerializer<ByteBuffer> getSerializer()

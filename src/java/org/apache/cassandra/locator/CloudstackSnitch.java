@@ -44,9 +44,11 @@ import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 
 /**
+ * {@code
  * A snitch that assumes a Cloudstack Zone follows the typical convention
  * <country>-<location>-<availability zone> and uses the country/location
  * tuple as a datacenter and the availability zone as a rack
+ * }
  */
 
 public class CloudstackSnitch extends AbstractNetworkTopologySnitch
@@ -170,17 +172,14 @@ public class CloudstackSnitch extends AbstractNetworkTopologySnitch
         throw new ConfigurationException("No valid DHCP lease file could be found.");
     }
 
-    String csEndpointFromLease(File lease) throws ConfigurationException, IOException
+    String csEndpointFromLease(File lease) throws ConfigurationException
     {
-        BufferedReader reader = null;
-
-        String line = null;
+        String line;
         String endpoint = null;
         Pattern identifierPattern = Pattern.compile("^[ \t]*option dhcp-server-identifier (.*);$");
 
-        try 
+        try (BufferedReader reader = new BufferedReader(new FileReader(lease)))
         {
-            reader = new BufferedReader(new FileReader(lease));
             
             while ((line = reader.readLine()) != null) 
             {
@@ -192,14 +191,10 @@ public class CloudstackSnitch extends AbstractNetworkTopologySnitch
                     break;
                 }
             }
-        } 
+        }
         catch (Exception e)  
         {
             throw new ConfigurationException("CloudstackSnitch cannot access lease file.");
-        } 
-        finally
-        {
-        	FileUtils.closeQuietly(reader);
         }
 
         if (endpoint == null) 

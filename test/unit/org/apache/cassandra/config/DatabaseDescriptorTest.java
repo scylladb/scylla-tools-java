@@ -18,13 +18,12 @@
 */
 package org.apache.cassandra.config;
 
+import java.io.IOException;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.Enumeration;
-
-import junit.framework.Assert;
 
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -35,8 +34,10 @@ import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.gms.Gossiper;
-import org.apache.cassandra.locator.SimpleStrategy;
+import org.apache.cassandra.schema.KeyspaceMetadata;
+import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.service.MigrationManager;
+import org.apache.cassandra.thrift.ThriftConversion;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -51,9 +52,9 @@ public class DatabaseDescriptorTest
         // test serialization of all defined test CFs.
         for (String keyspaceName : Schema.instance.getNonSystemKeyspaces())
         {
-            for (CFMetaData cfm : Schema.instance.getKeyspaceMetaData(keyspaceName).values())
+            for (CFMetaData cfm : Schema.instance.getTablesAndViews(keyspaceName))
             {
-                CFMetaData cfmDupe = CFMetaData.fromThrift(cfm.toThrift());
+                CFMetaData cfmDupe = ThriftConversion.fromThrift(ThriftConversion.toThrift(cfm));
                 assertNotNull(cfmDupe);
                 assertEquals(cfm, cfmDupe);
             }
@@ -63,10 +64,11 @@ public class DatabaseDescriptorTest
     @Test
     public void testKSMetaDataSerialization() throws ConfigurationException
     {
-        for (KSMetaData ksm : Schema.instance.getKeyspaceDefinitions())
+        for (String ks : Schema.instance.getNonSystemKeyspaces())
         {
             // Not testing round-trip on the KsDef via serDe() because maps
-            KSMetaData ksmDupe = KSMetaData.fromThrift(ksm.toThrift());
+            KeyspaceMetadata ksm = Schema.instance.getKSMetaData(ks);
+            KeyspaceMetadata ksmDupe = ThriftConversion.fromThrift(ThriftConversion.toThrift(ksm));
             assertNotNull(ksmDupe);
             assertEquals(ksm, ksmDupe);
         }
@@ -74,10 +76,10 @@ public class DatabaseDescriptorTest
 
     // this came as a result of CASSANDRA-995
     @Test
-    public void testTransKsMigration() throws ConfigurationException
+    public void testTransKsMigration() throws ConfigurationException, IOException
     {
         SchemaLoader.cleanupAndLeaveDirs();
-        DatabaseDescriptor.loadSchemas();
+        Schema.instance.loadFromDisk();
         assertEquals(0, Schema.instance.getNonSystemKeyspaces().size());
 
         Gossiper.instance.start((int)(System.currentTimeMillis() / 1000));
@@ -86,19 +88,19 @@ public class DatabaseDescriptorTest
         try
         {
             // add a few.
-            MigrationManager.announceNewKeyspace(KSMetaData.testMetadata("ks0", SimpleStrategy.class, KSMetaData.optsWithRF(3)));
-            MigrationManager.announceNewKeyspace(KSMetaData.testMetadata("ks1", SimpleStrategy.class, KSMetaData.optsWithRF(3)));
+            MigrationManager.announceNewKeyspace(KeyspaceMetadata.create("ks0", KeyspaceParams.simple(3)));
+            MigrationManager.announceNewKeyspace(KeyspaceMetadata.create("ks1", KeyspaceParams.simple(3)));
 
             assertNotNull(Schema.instance.getKSMetaData("ks0"));
             assertNotNull(Schema.instance.getKSMetaData("ks1"));
 
-            Schema.instance.clearKeyspaceDefinition(Schema.instance.getKSMetaData("ks0"));
-            Schema.instance.clearKeyspaceDefinition(Schema.instance.getKSMetaData("ks1"));
+            Schema.instance.clearKeyspaceMetadata(Schema.instance.getKSMetaData("ks0"));
+            Schema.instance.clearKeyspaceMetadata(Schema.instance.getKSMetaData("ks1"));
 
             assertNull(Schema.instance.getKSMetaData("ks0"));
             assertNull(Schema.instance.getKSMetaData("ks1"));
 
-            DatabaseDescriptor.loadSchemas();
+            Schema.instance.loadFromDisk();
 
             assertNotNull(Schema.instance.getKSMetaData("ks0"));
             assertNotNull(Schema.instance.getKSMetaData("ks1"));
@@ -130,7 +132,7 @@ public class DatabaseDescriptorTest
         public Config loadConfig() throws ConfigurationException
         {
             Config testConfig = new Config();
-            testConfig.cluster_name = "ConfigurationLoader Test";;
+            testConfig.cluster_name = "ConfigurationLoader Test";
             return testConfig;
         }
     }
@@ -158,7 +160,7 @@ public class DatabaseDescriptorTest
                 boolean hasIPv6 = false;
                 Enumeration<InetAddress> addresses = suitableInterface.getInetAddresses();
                 while (addresses.hasMoreElements()) {
-                    if (addresses.nextElement().getClass() == Inet6Address.class)
+                    if (addresses.nextElement() instanceof Inet6Address)
                         hasIPv6 = true;
                     else
                         hasIPv4 = true;

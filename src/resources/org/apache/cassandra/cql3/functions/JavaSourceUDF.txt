@@ -1,0 +1,29 @@
+package #package_name#;
+
+import java.nio.ByteBuffer;
+import java.util.List;
+
+import org.apache.cassandra.cql3.functions.JavaUDF;
+
+import com.datastax.driver.core.TypeCodec;
+
+public final class #class_name# extends JavaUDF
+{
+    public #class_name#(TypeCodec<Object> returnCodec, TypeCodec<Object>[] argCodecs)
+    {
+        super(returnCodec, argCodecs);
+    }
+
+    protected ByteBuffer executeImpl(int protocolVersion, List<ByteBuffer> params)
+    {
+        #return_type# result = #execute_internal_name#(
+#arguments#
+        );
+        return super.decompose(protocolVersion, result);
+    }
+
+    private #return_type# #execute_internal_name#(#argument_list#)
+    {
+#body#
+    }
+}

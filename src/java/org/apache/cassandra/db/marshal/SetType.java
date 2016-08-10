@@ -20,9 +20,13 @@ package org.apache.cassandra.db.marshal;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import org.apache.cassandra.db.Cell;
+import org.apache.cassandra.cql3.Json;
+import org.apache.cassandra.cql3.Sets;
+import org.apache.cassandra.cql3.Term;
+import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
+import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.serializers.SetSerializer;
 
 public class SetType<T> extends CollectionType<Set<T>>
@@ -58,10 +62,16 @@ public class SetType<T> extends CollectionType<Set<T>>
 
     public SetType(AbstractType<T> elements, boolean isMultiCell)
     {
-        super(Kind.SET);
+        super(ComparisonType.CUSTOM, Kind.SET);
         this.elements = elements;
-        this.serializer = SetSerializer.getInstance(elements.getSerializer());
+        this.serializer = SetSerializer.getInstance(elements.getSerializer(), elements);
         this.isMultiCell = isMultiCell;
+    }
+
+    @Override
+    public boolean referencesUserType(String userTypeName)
+    {
+        return getElementsType().referencesUserType(userTypeName);
     }
 
     public AbstractType<T> getElementsType()
@@ -109,7 +119,7 @@ public class SetType<T> extends CollectionType<Set<T>>
     }
 
     @Override
-    public int compare(ByteBuffer o1, ByteBuffer o2)
+    public int compareCustom(ByteBuffer o1, ByteBuffer o2)
     {
         return ListType.compareListOrSet(elements, o1, o2);
     }
@@ -117,11 +127,6 @@ public class SetType<T> extends CollectionType<Set<T>>
     public SetSerializer<T> getSerializer()
     {
         return serializer;
-    }
-
-    public boolean isByteOrderComparable()
-    {
-        return elements.isByteOrderComparable();
     }
 
     @Override
@@ -139,11 +144,39 @@ public class SetType<T> extends CollectionType<Set<T>>
         return sb.toString();
     }
 
-    public List<ByteBuffer> serializedValues(List<Cell> cells)
+    public List<ByteBuffer> serializedValues(Iterator<Cell> cells)
     {
-        List<ByteBuffer> bbs = new ArrayList<ByteBuffer>(cells.size());
-        for (Cell c : cells)
-            bbs.add(c.name().collectionElement());
+        List<ByteBuffer> bbs = new ArrayList<ByteBuffer>();
+        while (cells.hasNext())
+            bbs.add(cells.next().path().get(0));
         return bbs;
+    }
+
+    @Override
+    public Term fromJSONObject(Object parsed) throws MarshalException
+    {
+        if (parsed instanceof String)
+            parsed = Json.decodeJson((String) parsed);
+
+        if (!(parsed instanceof List))
+            throw new MarshalException(String.format(
+                    "Expected a list (representing a set), but got a %s: %s", parsed.getClass().getSimpleName(), parsed));
+
+        List list = (List) parsed;
+        Set<Term> terms = new HashSet<>(list.size());
+        for (Object element : list)
+        {
+            if (element == null)
+                throw new MarshalException("Invalid null element in set");
+            terms.add(elements.fromJSONObject(element));
+        }
+
+        return new Sets.DelayedValue(elements, terms);
+    }
+
+    @Override
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
+    {
+        return ListType.setOrListToJsonString(buffer, elements, protocolVersion);
     }
 }

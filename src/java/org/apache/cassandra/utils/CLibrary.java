@@ -17,24 +17,29 @@
  */
 package org.apache.cassandra.utils;
 
+import java.io.File;
 import java.io.FileDescriptor;
-import java.io.FileNotFoundException;
+import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.RandomAccessFile;
 import java.lang.reflect.Field;
+import java.nio.channels.FileChannel;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.sun.jna.LastErrorException;
 import com.sun.jna.Native;
+import com.sun.jna.Pointer;
 
 public final class CLibrary
 {
     private static final Logger logger = LoggerFactory.getLogger(CLibrary.class);
 
-    private static final int MCL_CURRENT = 1;
-    private static final int MCL_FUTURE = 2;
+    private static final int MCL_CURRENT;
+    private static final int MCL_FUTURE;
 
     private static final int ENOMEM = 12;
 
@@ -68,12 +73,36 @@ public final class CLibrary
         catch (UnsatisfiedLinkError e)
         {
             logger.warn("JNA link failure, one or more native method will be unavailable.");
-            logger.debug("JNA link failure details: {}", e.getMessage());
+            logger.trace("JNA link failure details: {}", e.getMessage());
         }
         catch (NoSuchMethodError e)
         {
             logger.warn("Obsolete version of JNA present; unable to register C library. Upgrade to JNA 3.2.7 or later");
             jnaAvailable = false;
+        }
+
+        if (System.getProperty("os.arch").toLowerCase().contains("ppc"))
+        {
+            if (System.getProperty("os.name").toLowerCase().contains("linux"))
+            {
+               MCL_CURRENT = 0x2000;
+               MCL_FUTURE = 0x4000;
+            }
+            else if (System.getProperty("os.name").toLowerCase().contains("aix"))
+            {
+                MCL_CURRENT = 0x100;
+                MCL_FUTURE = 0x200;
+            }
+            else
+            {
+                MCL_CURRENT = 1;
+                MCL_FUTURE = 2;
+            }
+        }
+        else
+        {
+            MCL_CURRENT = 1;
+            MCL_FUTURE = 2;
         }
     }
 
@@ -84,6 +113,7 @@ public final class CLibrary
     private static native int open(String path, int flags) throws LastErrorException;
     private static native int fsync(int fd) throws LastErrorException;
     private static native int close(int fd) throws LastErrorException;
+    private static native Pointer strerror(int errnum) throws LastErrorException;
 
     private static int errno(RuntimeException e)
     {
@@ -144,24 +174,35 @@ public final class CLibrary
 
     public static void trySkipCache(String path, long offset, long len)
     {
-        trySkipCache(getfd(path), offset, len);
+        File f = new File(path);
+        if (!f.exists())
+            return;
+
+        try (FileInputStream fis = new FileInputStream(f))
+        {
+            trySkipCache(getfd(fis.getChannel()), offset, len, path);
+        }
+        catch (IOException e)
+        {
+            logger.warn("Could not skip cache", e);
+        }
     }
 
-    public static void trySkipCache(int fd, long offset, long len)
+    public static void trySkipCache(int fd, long offset, long len, String path)
     {
         if (len == 0)
-            trySkipCache(fd, 0, 0);
+            trySkipCache(fd, 0, 0, path);
 
         while (len > 0)
         {
             int sublen = (int) Math.min(Integer.MAX_VALUE, len);
-            trySkipCache(fd, offset, sublen);
+            trySkipCache(fd, offset, sublen, path);
             len -= sublen;
             offset -= sublen;
         }
     }
 
-    public static void trySkipCache(int fd, long offset, int len)
+    public static void trySkipCache(int fd, long offset, int len, String path)
     {
         if (fd < 0)
             return;
@@ -170,7 +211,15 @@ public final class CLibrary
         {
             if (System.getProperty("os.name").toLowerCase().contains("linux"))
             {
-                posix_fadvise(fd, offset, len, POSIX_FADV_DONTNEED);
+                int result = posix_fadvise(fd, offset, len, POSIX_FADV_DONTNEED);
+                if (result != 0)
+                    NoSpamLogger.log(
+                            logger,
+                            NoSpamLogger.Level.WARN,
+                            10,
+                            TimeUnit.MINUTES,
+                            "Failed trySkipCache on file: {} Error: " + strerror(result).getString(0),
+                            path);
             }
         }
         catch (UnsatisfiedLinkError e)
@@ -252,7 +301,7 @@ public final class CLibrary
             if (!(e instanceof LastErrorException))
                 throw e;
 
-            logger.warn(String.format("fsync(%d) failed, errno (%d).", fd, errno(e)));
+            logger.warn(String.format("fsync(%d) failed, errno (%d) {}", fd, errno(e)), e);
         }
     }
 
@@ -278,6 +327,21 @@ public final class CLibrary
         }
     }
 
+    public static int getfd(FileChannel channel)
+    {
+        Field field = FBUtilities.getProtectedField(channel.getClass(), "fd");
+
+        try
+        {
+            return getfd((FileDescriptor)field.get(channel));
+        }
+        catch (IllegalArgumentException|IllegalAccessException e)
+        {
+            logger.warn("Unable to read fd field from FileChannel");
+        }
+        return -1;
+    }
+
     /**
      * Get system file descriptor from FileDescriptor object.
      * @param descriptor - FileDescriptor objec to get fd from
@@ -287,9 +351,6 @@ public final class CLibrary
     {
         Field field = FBUtilities.getProtectedField(descriptor.getClass(), "fd");
 
-        if (field == null)
-            return -1;
-
         try
         {
             return field.getInt(descriptor);
@@ -297,37 +358,9 @@ public final class CLibrary
         catch (Exception e)
         {
             JVMStabilityInspector.inspectThrowable(e);
-            logger.warn("unable to read fd field from FileDescriptor");
+            logger.warn("Unable to read fd field from FileDescriptor");
         }
 
         return -1;
-    }
-
-    public static int getfd(String path)
-    {
-        RandomAccessFile file = null;
-        try
-        {
-            file = new RandomAccessFile(path, "r");
-            return getfd(file.getFD());
-        }
-        catch (Throwable t)
-        {
-            JVMStabilityInspector.inspectThrowable(t);
-            // ignore
-            return -1;
-        }
-        finally
-        {
-            try
-            {
-                if (file != null)
-                    file.close();
-            }
-            catch (Throwable t)
-            {
-                // ignore
-            }
-        }
     }
 }

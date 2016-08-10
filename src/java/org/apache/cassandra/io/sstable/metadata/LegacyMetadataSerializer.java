@@ -23,9 +23,12 @@ import java.util.*;
 
 import com.google.common.collect.Maps;
 
+import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.db.commitlog.ReplayPosition;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
+import org.apache.cassandra.io.sstable.format.Version;
+import org.apache.cassandra.io.util.DataInputPlus.DataInputStreamPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.utils.ByteBufferUtil;
@@ -42,7 +45,7 @@ public class LegacyMetadataSerializer extends MetadataSerializer
      * Legacy serialization is only used for SSTable level reset.
      */
     @Override
-    public void serialize(Map<MetadataType, MetadataComponent> components, DataOutputPlus out) throws IOException
+    public void serialize(Map<MetadataType, MetadataComponent> components, DataOutputPlus out, Version version) throws IOException
     {
         ValidationMetadata validation = (ValidationMetadata) components.get(MetadataType.VALIDATION);
         StatsMetadata stats = (StatsMetadata) components.get(MetadataType.STATS);
@@ -50,26 +53,26 @@ public class LegacyMetadataSerializer extends MetadataSerializer
 
         assert validation != null && stats != null && compaction != null && validation.partitioner != null;
 
-        EstimatedHistogram.serializer.serialize(stats.estimatedRowSize, out);
+        EstimatedHistogram.serializer.serialize(stats.estimatedPartitionSize, out);
         EstimatedHistogram.serializer.serialize(stats.estimatedColumnCount, out);
-        ReplayPosition.serializer.serialize(stats.replayPosition, out);
+        ReplayPosition.serializer.serialize(stats.commitLogUpperBound, out);
         out.writeLong(stats.minTimestamp);
         out.writeLong(stats.maxTimestamp);
         out.writeInt(stats.maxLocalDeletionTime);
         out.writeDouble(validation.bloomFilterFPChance);
         out.writeDouble(stats.compressionRatio);
         out.writeUTF(validation.partitioner);
-        out.writeInt(compaction.ancestors.size());
-        for (Integer g : compaction.ancestors)
-            out.writeInt(g);
+        out.writeInt(0); // compaction ancestors
         StreamingHistogram.serializer.serialize(stats.estimatedTombstoneDropTime, out);
         out.writeInt(stats.sstableLevel);
-        out.writeInt(stats.minColumnNames.size());
-        for (ByteBuffer columnName : stats.minColumnNames)
-            ByteBufferUtil.writeWithShortLength(columnName, out);
-        out.writeInt(stats.maxColumnNames.size());
-        for (ByteBuffer columnName : stats.maxColumnNames)
-            ByteBufferUtil.writeWithShortLength(columnName, out);
+        out.writeInt(stats.minClusteringValues.size());
+        for (ByteBuffer value : stats.minClusteringValues)
+            ByteBufferUtil.writeWithShortLength(value, out);
+        out.writeInt(stats.maxClusteringValues.size());
+        for (ByteBuffer value : stats.maxClusteringValues)
+            ByteBufferUtil.writeWithShortLength(value, out);
+        if (version.hasCommitLogLowerBound())
+            ReplayPosition.serializer.serialize(stats.commitLogLowerBound, out);
     }
 
     /**
@@ -87,21 +90,20 @@ public class LegacyMetadataSerializer extends MetadataSerializer
         }
         else
         {
-            try (DataInputStream in = new DataInputStream(new BufferedInputStream(new FileInputStream(statsFile))))
+            try (DataInputStreamPlus in = new DataInputStreamPlus(new BufferedInputStream(new FileInputStream(statsFile))))
             {
-                EstimatedHistogram rowSizes = EstimatedHistogram.serializer.deserialize(in);
+                EstimatedHistogram partitionSizes = EstimatedHistogram.serializer.deserialize(in);
                 EstimatedHistogram columnCounts = EstimatedHistogram.serializer.deserialize(in);
-                ReplayPosition replayPosition = ReplayPosition.serializer.deserialize(in);
+                ReplayPosition commitLogLowerBound = ReplayPosition.NONE;
+                ReplayPosition commitLogUpperBound = ReplayPosition.serializer.deserialize(in);
                 long minTimestamp = in.readLong();
                 long maxTimestamp = in.readLong();
                 int maxLocalDeletionTime = in.readInt();
                 double bloomFilterFPChance = in.readDouble();
                 double compressionRatio = in.readDouble();
                 String partitioner = in.readUTF();
-                int nbAncestors = in.readInt();
-                Set<Integer> ancestors = new HashSet<>(nbAncestors);
-                for (int i = 0; i < nbAncestors; i++)
-                    ancestors.add(in.readInt());
+                int nbAncestors = in.readInt(); //skip compaction ancestors
+                in.skipBytes(nbAncestors * TypeSizes.sizeof(nbAncestors));
                 StreamingHistogram tombstoneHistogram = StreamingHistogram.serializer.deserialize(in);
                 int sstableLevel = 0;
                 if (in.available() > 0)
@@ -117,27 +119,36 @@ public class LegacyMetadataSerializer extends MetadataSerializer
                 for (int i = 0; i < colCount; i++)
                     maxColumnNames.add(ByteBufferUtil.readWithShortLength(in));
 
+                if (descriptor.version.hasCommitLogLowerBound())
+                    commitLogLowerBound = ReplayPosition.serializer.deserialize(in);
+
                 if (types.contains(MetadataType.VALIDATION))
                     components.put(MetadataType.VALIDATION,
                                    new ValidationMetadata(partitioner, bloomFilterFPChance));
                 if (types.contains(MetadataType.STATS))
                     components.put(MetadataType.STATS,
-                                   new StatsMetadata(rowSizes,
+                                   new StatsMetadata(partitionSizes,
                                                      columnCounts,
-                                                     replayPosition,
+                                                     commitLogLowerBound,
+                                                     commitLogUpperBound,
                                                      minTimestamp,
                                                      maxTimestamp,
+                                                     Integer.MAX_VALUE,
                                                      maxLocalDeletionTime,
+                                                     0,
+                                                     Integer.MAX_VALUE,
                                                      compressionRatio,
                                                      tombstoneHistogram,
                                                      sstableLevel,
                                                      minColumnNames,
                                                      maxColumnNames,
                                                      true,
-                                                     ActiveRepairService.UNREPAIRED_SSTABLE));
+                                                     ActiveRepairService.UNREPAIRED_SSTABLE,
+                                                     -1,
+                                                     -1));
                 if (types.contains(MetadataType.COMPACTION))
                     components.put(MetadataType.COMPACTION,
-                                   new CompactionMetadata(ancestors, null));
+                                   new CompactionMetadata(null));
             }
         }
         return components;

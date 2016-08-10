@@ -23,8 +23,8 @@ import java.nio.charset.CharacterCodingException;
 import java.util.*;
 
 import org.apache.cassandra.config.*;
-import org.apache.cassandra.db.BufferDecoratedKey;
 import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.CachedHashDecoratedKey;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.exceptions.ConfigurationException;
@@ -35,7 +35,7 @@ import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.ObjectSizes;
 import org.apache.cassandra.utils.Pair;
 
-public class OrderPreservingPartitioner extends AbstractPartitioner
+public class OrderPreservingPartitioner implements IPartitioner
 {
     public static final StringToken MINIMUM = new StringToken("");
 
@@ -43,9 +43,11 @@ public class OrderPreservingPartitioner extends AbstractPartitioner
 
     private static final long EMPTY_SIZE = ObjectSizes.measure(MINIMUM);
 
+    public static final OrderPreservingPartitioner instance = new OrderPreservingPartitioner();
+
     public DecoratedKey decorateKey(ByteBuffer key)
     {
-        return new BufferDecoratedKey(getToken(key), key);
+        return new CachedHashDecoratedKey(getToken(key), key);
     }
 
     public StringToken midpoint(Token ltoken, Token rtoken)
@@ -161,6 +163,28 @@ public class OrderPreservingPartitioner extends AbstractPartitioner
         return true;
     }
 
+    public static class StringToken extends ComparableObjectToken<String>
+    {
+        static final long serialVersionUID = 5464084395277974963L;
+
+        public StringToken(String token)
+        {
+            super(token);
+        }
+
+        @Override
+        public IPartitioner getPartitioner()
+        {
+            return instance;
+        }
+
+        @Override
+        public long getHeapSize()
+        {
+            return EMPTY_SIZE + ObjectSizes.sizeOf(token);
+        }
+    }
+
     public StringToken getToken(ByteBuffer key)
     {
         String skey;
@@ -173,11 +197,6 @@ public class OrderPreservingPartitioner extends AbstractPartitioner
             skey = ByteBufferUtil.bytesToHex(key);
         }
         return new StringToken(skey);
-    }
-
-    public long getHeapSizeOf(Token token)
-    {
-        return EMPTY_SIZE + ObjectSizes.sizeOf(((StringToken) token).token);
     }
 
     public Map<Token, Float> describeOwnership(List<Token> sortedTokens)
@@ -197,12 +216,12 @@ public class OrderPreservingPartitioner extends AbstractPartitioner
 
         for (String ks : Schema.instance.getKeyspaces())
         {
-            for (CFMetaData cfmd : Schema.instance.getKSMetaData(ks).cfMetaData().values())
+            for (CFMetaData cfmd : Schema.instance.getTablesAndViews(ks))
             {
                 for (Range<Token> r : sortedRanges)
                 {
                     // Looping over every KS:CF:Range, get the splits size and add it to the count
-                    allTokens.put(r.right, allTokens.get(r.right) + StorageService.instance.getSplits(ks, cfmd.cfName, r, cfmd.getMinIndexInterval()).size());
+                    allTokens.put(r.right, allTokens.get(r.right) + StorageService.instance.getSplits(ks, cfmd.cfName, r, cfmd.params.minIndexInterval).size());
                 }
             }
         }
@@ -218,6 +237,11 @@ public class OrderPreservingPartitioner extends AbstractPartitioner
     }
 
     public AbstractType<?> getTokenValidator()
+    {
+        return UTF8Type.instance;
+    }
+
+    public AbstractType<?> partitionOrdering()
     {
         return UTF8Type.instance;
     }

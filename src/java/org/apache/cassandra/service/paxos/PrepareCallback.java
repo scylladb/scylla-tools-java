@@ -29,6 +29,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import com.google.common.base.Predicate;
 import com.google.common.collect.Iterables;
 import org.apache.cassandra.db.ConsistencyLevel;
+import org.apache.cassandra.db.DecoratedKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -46,7 +47,7 @@ public class PrepareCallback extends AbstractPaxosCallback<PrepareResponse>
 
     private final Map<InetAddress, Commit> commitsByReplica = new ConcurrentHashMap<InetAddress, Commit>();
 
-    public PrepareCallback(ByteBuffer key, CFMetaData metadata, int targets, ConsistencyLevel consistency)
+    public PrepareCallback(DecoratedKey key, CFMetaData metadata, int targets, ConsistencyLevel consistency)
     {
         super(targets, consistency);
         // need to inject the right key in the empty commit so comparing with empty commits in the reply works as expected
@@ -58,7 +59,7 @@ public class PrepareCallback extends AbstractPaxosCallback<PrepareResponse>
     public synchronized void response(MessageIn<PrepareResponse> message)
     {
         PrepareResponse response = message.payload;
-        logger.debug("Prepare response {} from {}", response, message.from);
+        logger.trace("Prepare response {} from {}", response, message.from);
 
         // In case of clock skew, another node could be proposing with ballot that are quite a bit
         // older than our own. In that case, we record the more recent commit we've received to make

@@ -18,8 +18,11 @@
 package org.apache.cassandra.cql3;
 
 import java.nio.ByteBuffer;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
+import org.apache.cassandra.cql3.functions.Function;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 
 /**
@@ -67,6 +70,8 @@ public interface Term
      */
     public abstract boolean containsBindMarker();
 
+    public void addFunctionsTo(List<Function> functions);
+
     /**
      * A parsed, non prepared (thus untyped) term.
      *
@@ -76,7 +81,7 @@ public interface Term
      *   - a function call
      *   - a marker
      */
-    public interface Raw extends AssignementTestable
+    public abstract class Raw implements AssignmentTestable
     {
         /**
          * This method validates this RawTerm is valid for provided column
@@ -88,12 +93,23 @@ public interface Term
          * case this RawTerm describe a list index or a map key, etc...
          * @return the prepared term.
          */
-        public Term prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException;
+        public abstract Term prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException;
+
+        /**
+         * @return a String representation of the raw term that can be used when reconstructing a CQL query string.
+         */
+        public abstract String getText();
+
+        @Override
+        public String toString()
+        {
+            return getText();
+        }
     }
 
-    public interface MultiColumnRaw extends Raw
+    public abstract class MultiColumnRaw extends Term.Raw
     {
-        public Term prepare(String keyspace, List<? extends ColumnSpecification> receiver) throws InvalidRequestException;
+        public abstract Term prepare(String keyspace, List<? extends ColumnSpecification> receiver) throws InvalidRequestException;
     }
 
     /**
@@ -115,6 +131,10 @@ public interface Term
         public void collectMarkerSpecification(VariableSpecifications boundNames) {}
         public Terminal bind(QueryOptions options) { return this; }
 
+        public void addFunctionsTo(List<Function> functions)
+        {
+        }
+
         // While some NonTerminal may not have bind markers, no Term can be Terminal
         // with a bind marker
         public boolean containsBindMarker()
@@ -124,24 +144,19 @@ public interface Term
 
         /**
          * @return the serialized value of this terminal.
+         * @param protocolVersion
          */
-        public abstract ByteBuffer get(QueryOptions options);
+        public abstract ByteBuffer get(int protocolVersion) throws InvalidRequestException;
 
         public ByteBuffer bindAndGet(QueryOptions options) throws InvalidRequestException
         {
-            return get(options);
+            return get(options.getProtocolVersion());
         }
     }
 
     public abstract class MultiItemTerminal extends Terminal
     {
         public abstract List<ByteBuffer> getElements();
-    }
-
-    public interface CollectionTerminal
-    {
-        /** Gets the value of the collection when serialized with the given protocol version format */
-        public ByteBuffer getWithProtocolVersion(int protocolVersion);
     }
 
     /**
@@ -159,7 +174,7 @@ public interface Term
         public ByteBuffer bindAndGet(QueryOptions options) throws InvalidRequestException
         {
             Terminal t = bind(options);
-            return t == null ? null : t.get(options);
+            return t == null ? null : t.get(options.getProtocolVersion());
         }
     }
 }

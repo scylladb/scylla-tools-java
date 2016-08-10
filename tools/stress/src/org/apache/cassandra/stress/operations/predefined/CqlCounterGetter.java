@@ -48,22 +48,7 @@ public class CqlCounterGetter extends CqlOperation<Integer>
     @Override
     protected String buildQuery()
     {
-        StringBuilder query = new StringBuilder("SELECT ");
-
-        // TODO: obey slice/noslice option (instead of always slicing)
-        if (isCql2())
-            query.append("FIRST ").append(settings.columns.maxColumnsPerKey).append(" ''..''");
-        else
-            query.append("*");
-
-        String counterCF = isCql2() ? type.table : "Counter3";
-
-        query.append(" FROM ").append(wrapInQuotesIfRequired(counterCF));
-
-        if (isCql2())
-            query.append(" USING CONSISTENCY ").append(settings.command.consistencyLevel);
-
-        return query.append(" WHERE KEY=?").toString();
+        return "SELECT * FROM " + wrapInQuotes(type.table) + " WHERE KEY=?";
     }
 
     @Override

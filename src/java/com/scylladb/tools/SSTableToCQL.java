@@ -23,7 +23,7 @@
 
 package com.scylladb.tools;
 
-import static org.apache.cassandra.io.sstable.SSTableReader.openForBatch;
+import static org.apache.cassandra.io.sstable.format.SSTableReader.openForBatch;
 
 import java.io.File;
 import java.io.FilenameFilter;
@@ -33,36 +33,32 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
-import java.util.TreeSet;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.cql3.ColumnIdentifier;
-import org.apache.cassandra.db.Cell;
-import org.apache.cassandra.db.ColumnFamily;
+import org.apache.cassandra.db.ClusteringPrefix;
 import org.apache.cassandra.db.DecoratedKey;
-import org.apache.cassandra.db.DeletionInfo;
 import org.apache.cassandra.db.DeletionTime;
-import org.apache.cassandra.db.ExpiringCell;
-import org.apache.cassandra.db.OnDiskAtom;
-import org.apache.cassandra.db.RangeTombstone;
-import org.apache.cassandra.db.columniterator.OnDiskAtomIterator;
-import org.apache.cassandra.db.composites.CellName;
-import org.apache.cassandra.db.composites.CellNameType;
-import org.apache.cassandra.db.composites.Composite;
-import org.apache.cassandra.db.composites.Composite.EOC;
+import org.apache.cassandra.db.LivenessInfo;
+import org.apache.cassandra.db.RangeTombstone.Bound;
+import org.apache.cassandra.db.Slice;
 import org.apache.cassandra.db.marshal.AbstractCompositeType;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.CollectionType;
-import org.apache.cassandra.dht.IPartitioner;
+import org.apache.cassandra.db.rows.Cell;
+import org.apache.cassandra.db.rows.ColumnData;
+import org.apache.cassandra.db.rows.ComplexColumnData;
+import org.apache.cassandra.db.rows.RangeTombstoneMarker;
+import org.apache.cassandra.db.rows.Row;
+import org.apache.cassandra.db.rows.Row.Deletion;
+import org.apache.cassandra.db.rows.Unfiltered;
+import org.apache.cassandra.db.rows.UnfilteredRowIterator;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
@@ -70,10 +66,13 @@ import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
 import org.apache.cassandra.io.sstable.SSTable;
-import org.apache.cassandra.io.sstable.SSTableReader;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.utils.Pair;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.google.common.collect.Multimap;
+import com.google.common.collect.MultimapBuilder;
 
 /**
  * Basic sstable -> CQL statements translator.
@@ -231,8 +230,8 @@ public class SSTableToCQL {
             }
         }
 
-        private static final long invalidTimestamp = Long.MIN_VALUE;
-        private static final int invalidTTL = Integer.MIN_VALUE;
+        private static final long invalidTimestamp = LivenessInfo.NO_TIMESTAMP;
+        private static final int invalidTTL = LivenessInfo.NO_TTL;
 
         private final Client client;
 
@@ -243,19 +242,26 @@ public class SSTableToCQL {
         long timestamp;
         int ttl;
         Map<ColumnDefinition, ColumnOp> values = new HashMap<>();
-        Map<ColumnDefinition, Object> where = new HashMap<>();
-        Map<ColumnDefinition, Object> tmp = new HashMap<>();
-        TreeSet<OnDiskAtom> sortedAtoms = new TreeSet<>(new Comparator<OnDiskAtom>() {
-            @Override
-            public int compare(OnDiskAtom o1, OnDiskAtom o2) {
-                int diff = (int) (o1.timestamp() - o2.timestamp());
-                if (diff == 0) {
-                    diff = o1.name().toByteBuffer().compareTo(o2.name().toByteBuffer());
-                }
-                return diff;
+        Multimap<ColumnDefinition, Pair<Comp, Object>> where = MultimapBuilder.treeKeys().arrayListValues(2).build();
+        
+        enum Comp {
+            Equal("="),
+            GreaterEqual(">="),
+            Greater(">"),
+            LessEqual("<="),
+            Less("<"),        
+            ;
+            
+            private String s;
+            private Comp(String s) {
+                this.s = s;
             }
-        });
-
+            public String toString() {
+                return s;
+            }            
+        }
+        // sorted atoms?
+        
         public RowBuilder(Client client) {
             this.client = client;
         }
@@ -268,34 +274,33 @@ public class SSTableToCQL {
          * @param timestamp
          * @param ttl
          */
-        private void addWhere(Composite composite, long timestamp, int ttl) {
-            updateTimestamp(timestamp);
-            updateTTL(ttl);
-
-            if (composite.isStatic()) {
-                return;
-            }
-            tmp.clear();
-            for (int i = 0;;) {
-                for (ColumnDefinition c : cfMetaData.clusteringColumns()) {
-                    if (i == composite.size()) {
-                        break;
+        private void setWhere(Slice.Bound start, Slice.Bound end) {
+            assert where.isEmpty();
+            
+            ClusteringPrefix spfx = start.clustering();
+            ClusteringPrefix epfx = end.clustering();
+            
+            List<ColumnDefinition> clusteringColumns = cfMetaData.clusteringColumns();
+            for (int i = 0; i < clusteringColumns.size(); i++) {
+                ColumnDefinition column = clusteringColumns.get(i);                
+                
+                Object sval = i < spfx.size() ? column.cellValueType().compose(spfx.get(i)) : null;
+                Object eval = spfx != epfx ? (i < epfx.size() ? column.cellValueType().compose(epfx.get(i)) : null) : sval;
+                
+                if (sval == eval || sval.equals(eval)) {
+                    assert start.isInclusive();
+                    where.put(column, Pair.create(Comp.Equal, sval));                                                              
+                } else {
+                    where.put(column, 
+                            Pair.create( 
+                                    start.isInclusive() ? Comp.GreaterEqual : Comp.Greater, sval));
+                    if (eval != null) {
+                        where.put(column, 
+                            Pair.create( 
+                            end.isInclusive() ? Comp.LessEqual : Comp.Less, eval));
                     }
-                    Object value = c.type.compose(composite.get(i));
-                    tmp.put(c, value);
-                    ++i;
                 }
-                break;
-            }
-            // If we get clustering that differ from already
-            // existing data, we need to flush the row
-            if (!where.isEmpty() && !where.equals(tmp)) {
-                finish();
-            }
-            Map<ColumnDefinition, Object> m = where;
-            where = tmp;
-            tmp = m;
-            tmp.clear();
+            } 
         }
 
         // Begin a new partition (cassandra "Row")
@@ -303,43 +308,34 @@ public class SSTableToCQL {
             this.callback = callback;
             this.key = key;
             this.cfMetaData = cfMetaData;
-            sortedAtoms.clear();
+            //sortedAtoms.clear();
             clear();
         }
 
+        private void beginRow() {
+            where.clear();
+        }
+        
         private void clear() {
             op = Op.NONE;
             values.clear();
-            where.clear();
             timestamp = invalidTimestamp;
             ttl = invalidTTL;
         }
 
-        // Delete a whole cql colummn
-        private void deleteColumn(Composite composite, ColumnDefinition c, ColumnOp object, long timestamp) {
-            if (values.containsKey(c)) {
-                finish();
-            }
-            if (c.type.isCollection() && !c.type.isMultiCell() && object != null) {
-                updateColumn(composite, c, object, timestamp, invalidTTL);
-            } else {
-                setOp(Op.DELETE, timestamp);
-                values.put(c, null);
-            }
-        }
-
         // Delete the whole cql row
-        private void deleteCqlRow(Composite max, long timestamp) {
+        void deleteCqlRow(Bound start, Bound end, long timestamp) {
             if (!values.isEmpty()) {
                 finish();
-            }
-            setOp(Op.DELETE, timestamp);
-            addWhere(max, timestamp, invalidTTL);
+            }            
+            setOp(Op.DELETE, timestamp, invalidTTL);                        
+            setWhere(start, end);
+            finish();
         }
 
         // Delete the whole partition
         private void deletePartition(DecoratedKey key, DeletionTime topLevelDeletion) {
-            setOp(Op.DELETE, topLevelDeletion.markedForDeleteAt);
+            setOp(Op.DELETE, topLevelDeletion.markedForDeleteAt(), invalidTTL);
             finish();
         };
 
@@ -355,7 +351,7 @@ public class SSTableToCQL {
             StringBuilder buf = new StringBuilder();
 
             buf.append(op.toString());
-
+            
             if (op == Op.UPDATE) {
                 writeColumnFamily(buf);
                 // Timestamps can be sent using statement options.
@@ -401,9 +397,10 @@ public class SSTableToCQL {
             }
 
             // Add "WHERE pk1 = , pk2 = "
+            
             List<ColumnDefinition> pk = cfMetaData.partitionKeyColumns();
-            ByteBuffer bufs[];
             AbstractType<?> type = cfMetaData.getKeyValidator();
+            ByteBuffer bufs[];
             if (type instanceof AbstractCompositeType) {
                 bufs = ((AbstractCompositeType) type).split(key.getKey());
             } else {
@@ -411,10 +408,12 @@ public class SSTableToCQL {
             }
             int k = 0;
             for (ColumnDefinition c : pk) {
-                where.put(c, c.type.compose(bufs[k++]));
+                where.put(c, Pair.create(Comp.Equal, c.type.compose(bufs[k++])));
             }
 
-            params.addAll(where.values());
+            for (Pair<Comp, Object> p : where.values()) {
+                params.add(p.right);                
+            }
 
             i = 0;
             if (op == Op.INSERT) {
@@ -442,12 +441,14 @@ public class SSTableToCQL {
                 writeUsingTimestamp(buf);
                 writeUsingTTL(buf);
             } else {
-                for (Map.Entry<ColumnDefinition, Object> e : where.entrySet()) {
+                for (Map.Entry<ColumnDefinition, Pair<Comp, Object>> e : where.entries()) {
                     if (i++ > 0) {
                         buf.append(" AND ");
                     }
                     buf.append(e.getKey().name.toString());
-                    buf.append(" = ?");
+                    buf.append(' ');
+                    buf.append(e.getValue().left.toString());
+                    buf.append(" ?");
                 }
             }
             buf.append(';');
@@ -486,38 +487,68 @@ public class SSTableToCQL {
             client.processStatment(callback, key, timestamp, what, objects);
         }
 
+        private void process(Row row) {
+            beginRow();
+            
+            LivenessInfo liveInfo = row.primaryKeyLivenessInfo();
+
+            updateTimestamp(liveInfo.timestamp());
+            updateTTL(liveInfo.ttl());
+
+            if (row.size() == 0) {
+                List<ColumnDefinition> clusteringColumns = cfMetaData.clusteringColumns();
+                for (int i = 0; i < clusteringColumns.size(); i++) {
+                    if (i >= row.clustering().size()) {
+                        break;
+                    }
+                    ColumnDefinition c = clusteringColumns.get(i);                
+                    Object val =  c.cellValueType().compose(row.clustering().get(i));
+                    
+                    updateColumn(c, new SetColumn(val), liveInfo.timestamp(), liveInfo.ttl());                    
+                }
+                finish();
+                return;                    
+            }
+            
+            if (!row.isStatic()) {
+                Slice.Bound b = Slice.Bound.inclusiveStartOf(row.clustering().clustering());
+                setWhere(b, b);
+            }
+                       
+            Deletion d = row.deletion();
+            
+            for (ColumnData cd : row) {
+                if (cd.column().isSimple()) {
+                    process((Cell) cd, liveInfo, d.time());
+                } else {
+                    ComplexColumnData complexData = (ComplexColumnData) cd;
+
+                    for (Cell cell : complexData){
+                        process(cell, liveInfo, complexData.complexDeletion());
+                    }
+                }                                
+            }
+                        
+            finish();
+        }
+        
         // process an actual cell (data or tombstone)
-        private void process(Cell cell) {
-            CellNameType comparator = cfMetaData.comparator;
-            CellName name = cell.name();
-            ColumnDefinition c = cfMetaData.getColumnDefinition(name);
-
-            if (c == null) {
-                ColumnIdentifier id = name.cql3ColumnName(cfMetaData);
-                if (id != null && name.size() > 1 && id.bytes.hasRemaining()) {
-                    // not cql column marker. (?)
-                    logger.warn("No column found: {}", comparator.getString(name));
-                }
-                if (cfMetaData.clusteringColumns().isEmpty()) {
-                    return;
-                }
-                setOp(Op.INSERT, cell.timestamp());
-                addWhere(cell.name(), cell.timestamp(), ttlFor(cell));
-                return;
-            }
+        private void process(Cell cell, LivenessInfo liveInfo, DeletionTime d) {
+            ColumnDefinition c = cell.column();
+            
             if (logger.isTraceEnabled()) {
-                logger.trace("Processing {}", comparator.getString(name));
+                logger.trace("Processing {}", c.name);
             }
+            
             AbstractType<?> type = c.type;
-
             ColumnOp cop = null;
 
             try {
-                if (cell.name().isCollectionCell()) {
+                if (cell.path() != null && cell.path().size() > 0) {
                     CollectionType<?> ctype = (CollectionType<?>) type;
-
-                    Object key = ctype.nameComparator().compose(cell.name().collectionElement());
-                    Object val = cell.isLive() ? ctype.valueComparator().compose(cell.value()) : null;
+                    
+                    Object key = ctype.nameComparator().compose(cell.path().get(0));
+                    Object val = cell.isTombstone() || !d.isLive() ? null : cell.column().cellValueType().compose(cell.value());
 
                     switch (ctype.kind) {
                     case MAP:
@@ -527,132 +558,98 @@ public class SSTableToCQL {
                         cop = new SetListEntry(key, val);
                         break;
                     case SET:
-                        cop = cell.isLive() ? new SetSetEntry(key) : new DeleteSetEntry(key);
+                        cop = cell.isTombstone() ?  new DeleteSetEntry(key) : new SetSetEntry(key);
                         break;
-                    }
-                } else if (cell.isLive()) {
+                    }                    
+                } else if (!cell.isTombstone() && d.isLive()) {
                     cop = new SetColumn(type.compose(cell.value()));
                 } else {
                     cop = SET_NULL;
                 }
 
             } catch (Exception e) {
-                logger.error("Could not compose value for " + comparator.getString(name), e);
+                logger.error("Could not compose value for " + c.name, e);
                 throw e;
             }
 
-            updateColumn(cell.name(), c, cop, cell.timestamp(), ttlFor(cell));
+            updateColumn(c, cop, cell.timestamp(), cell.ttl());
         }
-
-        private int ttlFor(Cell cell) {
-            int ttl = invalidTTL;
-            if (cell instanceof ExpiringCell) {
-                ttl = ((ExpiringCell) cell).getTimeToLive();
-            }
-            return ttl;
-        }
-
+        
         // Process an SSTable row (partial partition)
-        private void process(Object callback, OnDiskAtomIterator row) {
-            ColumnFamily columnFamily = row.getColumnFamily();
-            CFMetaData cfMetaData = columnFamily.metadata();
-            DeletionInfo deletionInfo = columnFamily.deletionInfo();
-            DecoratedKey key = row.getKey();
+        private void process(Object callback, UnfilteredRowIterator rows) {
+            CFMetaData cfMetaData = rows.metadata();
+            DeletionTime deletionTime = rows.partitionLevelDeletion();
+            DecoratedKey key = rows.partitionKey();
 
             begin(callback, key, cfMetaData);
 
-            if (!deletionInfo.isLive()) {
-                deletePartition(key, deletionInfo.getTopLevelDeletion());
+            if (!deletionTime.isLive()) {
+                deletePartition(key, deletionTime);
                 return;
             }
 
-            Cell prev = null;
-
-            while (row.hasNext()) {
-                OnDiskAtom atom = row.next();
-                if (atom instanceof Cell) {
-                    Cell cell = (Cell) atom;
-                    if (prev != null && !cell.name().isSameCQL3RowAs(cfMetaData.comparator, prev.name())) {
-                        processAtoms();
-                    }
+            while (rows.hasNext()) {
+                Unfiltered f = rows.next();
+                switch (f.kind()) {
+                case RANGE_TOMBSTONE_MARKER:
+                    process((RangeTombstoneMarker) f);
+                    break;
+                case ROW:
+                    process((Row)f);
+                    break;
+                default:
+                    break;                
                 }
-                sortedAtoms.add(atom);
             }
-            processAtoms();
         }
 
-        private void processAtoms() {
-            for (OnDiskAtom atom : sortedAtoms) {
-                if (atom instanceof Cell) {
-                    process((Cell) atom);
-                } else {
-                    process((RangeTombstone) atom);
-                }
+        RangeTombstoneMarker tombstoneMarker;
+                
+        private void process(RangeTombstoneMarker tombstone) {
+            Bound end = tombstone.closeBound(false);
+            
+            if (end != null && tombstoneMarker == null) {
+                throw new IllegalStateException("Unexpected tombstone: " + tombstone);
             }
-            sortedAtoms.clear();
-            finish();
-        }
-
-        private void process(RangeTombstone r) {
-            Composite max = r.max;
-            Composite min = r.min;
-            EOC maxEoc = max.eoc();
-            EOC minEoc = min.eoc();
-            int maxSize = max.size();
-            int minSize = min.size();
-
-            if (maxEoc == EOC.END && minEoc == EOC.START && maxSize == minSize) {
-                // simple delete row/column
-                int cn = cfMetaData.clusteringColumns().size();
-
-                if (cn <= max.size()) {
-                    deleteCqlRow(max, r.timestamp());
-                } else {
-                    ColumnDefinition c = cfMetaData.getColumnDefinition(max.get(max.size() - 1));
-                    deleteColumn(max, c, null, r.timestamp());
-                }
-                return;
+            if (end != null && tombstoneMarker != null) {
+                Bound start = tombstoneMarker.openBound(false);
+                assert start != null;
+                deleteCqlRow(start, end, tombstoneMarker.openDeletionTime(false).markedForDeleteAt());
+                tombstoneMarker = null;                
             }
-            if (maxEoc == minEoc && maxSize != minSize) {
-                // Cassandra creates weird range tombstones for delete on rows
-                // matching
-                // sub-set of clustering columns.
-                // But the pattern seems to be to match clustering on smallest
-                // prefix,
-                // and start/end combo tombstone
-                Composite match = maxSize < minSize ? max : min;
-                deleteCqlRow(match, r.timestamp());
-                return;
+            
+            Bound start = tombstone.openBound(false);
+            if (start != null && tombstoneMarker != null) {
+                throw new IllegalStateException("Unexpected tombstone: " + tombstone);
             }
-
-            logger.warn("Could not parse RangeTombstone {},{}", cfMetaData.comparator.getString(min),
-                    cfMetaData.comparator.getString(max));
+            if (start != null) {
+                tombstoneMarker = tombstone;
+            }
         }
 
         // update the CQL operation. If we change, we need
         // to send the old query.
-        private void setOp(Op op, long timestamp) {
+        private void setOp(Op op, long timestamp, int ttl) {
             if (this.op != op) {
                 finish();
                 assert this.op == Op.NONE;
             }
             updateTimestamp(timestamp);
+            updateTTL(ttl);
             this.op = op;
         }
 
         // add a column value to update. If we already have one for this column,
         // flush. (Should never happen though, as long as CQL row detection is
         // valid)
-        private void updateColumn(Composite composite, ColumnDefinition c, ColumnOp object, long timestamp, int ttl) {
-            if (values.containsKey(c)) {
-                finish();
-            }
+        private void updateColumn(ColumnDefinition c, ColumnOp object, long timestamp, int ttl) {
+            assert !values.containsKey(c);
+            
             if (object != null && object.canDoInsert() && this.op != Op.UPDATE) {
-                setOp(Op.INSERT, timestamp);
+                setOp(Op.INSERT, timestamp, ttl);
             } else {
-                setOp(Op.UPDATE, timestamp);
+                setOp(Op.UPDATE, timestamp, ttl);
             }
-            addWhere(composite, timestamp, ttl);
             values.put(c, object);
         }
 
@@ -697,10 +694,6 @@ public class SSTableToCQL {
         return client.getCFMetaData(keyspace, cfName);
     }
 
-    private IPartitioner getPartitioner() {
-        return client.getPartitioner();
-    }
-
     protected Collection<SSTableReader> openSSTables(File directoryOrSStable) {
         logger.info("Opening sstables and calculating sections to stream");
 
@@ -728,7 +721,7 @@ public class SSTableToCQL {
     private void addFile(final List<SSTableReader> sstables, File dir, String name) {
         Pair<Descriptor, Component> p = SSTable.tryComponentFromFilename(dir, name);
         Descriptor desc = p == null ? null : p.left;
-        if (p == null || !p.right.equals(Component.DATA) || desc.type.isTemporary) {
+        if (p == null || !p.right.equals(Component.DATA)) {
             return;
         }
 
@@ -763,7 +756,7 @@ public class SSTableToCQL {
             // stream and the estimated
             // number of keys for each endpoint. See CASSANDRA-5555 for
             // details.
-            SSTableReader sstable = openForBatch(desc, components, metadata, getPartitioner());
+            SSTableReader sstable = openForBatch(desc, components, metadata);
             sstables.add(sstable);
         } catch (IOException e) {
             logger.warn("Skipping file {}, error opening it: {}", name, e.getMessage());
@@ -773,8 +766,8 @@ public class SSTableToCQL {
     protected void process(RowBuilder builder, InetAddress address, ISSTableScanner scanner) {
         // collecting keys to export
         while (scanner.hasNext()) {
-            OnDiskAtomIterator row = scanner.next();
-            builder.process(address, row);
+            UnfilteredRowIterator ri = scanner.next();
+            builder.process(address, ri);
         }
     }
 
@@ -783,13 +776,14 @@ public class SSTableToCQL {
 
         logger.info("Opening sstables and calculating sections to stream");
 
-        Map<InetAddress, Collection<Range<Token>>> ranges = client.getEndpointRanges();
-        Collection<SSTableReader> sstables = openSSTables(directoryOrSStable);
-
         // Hack. Must do because Range mangling code in cassandra is
         // broken, and does not preserve input range objects internal
         // "partitioner" field.
-        DatabaseDescriptor.setPartitioner(client.getPartitioner());
+        DatabaseDescriptor.setPartitionerUnsafe(client.getPartitioner());        
+        
+        Map<InetAddress, Collection<Range<Token>>> ranges = client.getEndpointRanges();
+        Collection<SSTableReader> sstables = openSSTables(directoryOrSStable);
+
         try {
             for (SSTableReader reader : sstables) {
                 if (ranges == null || ranges.isEmpty()) {

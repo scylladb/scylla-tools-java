@@ -20,10 +20,14 @@ package org.apache.cassandra.db.marshal;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import org.apache.cassandra.db.Cell;
+import org.apache.cassandra.cql3.Json;
+import org.apache.cassandra.cql3.Maps;
+import org.apache.cassandra.cql3.Term;
+import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.serializers.CollectionSerializer;
+import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.serializers.MapSerializer;
 import org.apache.cassandra.transport.Server;
 import org.apache.cassandra.utils.Pair;
@@ -63,11 +67,18 @@ public class MapType<K, V> extends CollectionType<Map<K, V>>
 
     private MapType(AbstractType<K> keys, AbstractType<V> values, boolean isMultiCell)
     {
-        super(Kind.MAP);
+        super(ComparisonType.CUSTOM, Kind.MAP);
         this.keys = keys;
         this.values = values;
-        this.serializer = MapSerializer.getInstance(keys.getSerializer(), values.getSerializer());
+        this.serializer = MapSerializer.getInstance(keys.getSerializer(), values.getSerializer(), keys);
         this.isMultiCell = isMultiCell;
+    }
+
+    @Override
+    public boolean referencesUserType(String userTypeName)
+    {
+        return getKeysType().referencesUserType(userTypeName) ||
+               getValuesType().referencesUserType(userTypeName);
     }
 
     public AbstractType<K> getKeysType()
@@ -122,7 +133,7 @@ public class MapType<K, V> extends CollectionType<Map<K, V>>
     }
 
     @Override
-    public int compare(ByteBuffer o1, ByteBuffer o2)
+    public int compareCustom(ByteBuffer o1, ByteBuffer o2)
     {
         return compareMaps(keys, values, o1, o2);
     }
@@ -163,12 +174,12 @@ public class MapType<K, V> extends CollectionType<Map<K, V>>
         return serializer;
     }
 
-    public boolean isByteOrderComparable()
+    @Override
+    protected int collectionSize(List<ByteBuffer> values)
     {
-        return keys.isByteOrderComparable();
+        return values.size() / 2;
     }
 
-    @Override
     public String toString(boolean ignoreFreezing)
     {
         boolean includeFrozenType = !ignoreFreezing && !isMultiCell();
@@ -182,15 +193,64 @@ public class MapType<K, V> extends CollectionType<Map<K, V>>
         return sb.toString();
     }
 
-    public List<ByteBuffer> serializedValues(List<Cell> cells)
+    public List<ByteBuffer> serializedValues(Iterator<Cell> cells)
     {
         assert isMultiCell;
-        List<ByteBuffer> bbs = new ArrayList<ByteBuffer>(cells.size() * 2);
-        for (Cell c : cells)
+        List<ByteBuffer> bbs = new ArrayList<ByteBuffer>();
+        while (cells.hasNext())
         {
-            bbs.add(c.name().collectionElement());
+            Cell c = cells.next();
+            bbs.add(c.path().get(0));
             bbs.add(c.value());
         }
         return bbs;
+    }
+
+    @Override
+    public Term fromJSONObject(Object parsed) throws MarshalException
+    {
+        if (parsed instanceof String)
+            parsed = Json.decodeJson((String) parsed);
+
+        if (!(parsed instanceof Map))
+            throw new MarshalException(String.format(
+                    "Expected a map, but got a %s: %s", parsed.getClass().getSimpleName(), parsed));
+
+        Map<Object, Object> map = (Map<Object, Object>) parsed;
+        Map<Term, Term> terms = new HashMap<>(map.size());
+        for (Map.Entry<Object, Object> entry : map.entrySet())
+        {
+            if (entry.getKey() == null)
+                throw new MarshalException("Invalid null key in map");
+
+            if (entry.getValue() == null)
+                throw new MarshalException("Invalid null value in map");
+
+            terms.put(keys.fromJSONObject(entry.getKey()), values.fromJSONObject(entry.getValue()));
+        }
+        return new Maps.DelayedValue(keys, terms);
+    }
+
+    @Override
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
+    {
+        StringBuilder sb = new StringBuilder("{");
+        int size = CollectionSerializer.readCollectionSize(buffer, protocolVersion);
+        for (int i = 0; i < size; i++)
+        {
+            if (i > 0)
+                sb.append(", ");
+
+            // map keys must be JSON strings, so convert non-string keys to strings
+            String key = keys.toJSONString(CollectionSerializer.readValue(buffer, protocolVersion), protocolVersion);
+            if (key.startsWith("\""))
+                sb.append(key);
+            else
+                sb.append('"').append(Json.quoteAsJsonString(key)).append('"');
+
+            sb.append(": ");
+            sb.append(values.toJSONString(CollectionSerializer.readValue(buffer, protocolVersion), protocolVersion));
+        }
+        return sb.append("}").toString();
     }
 }

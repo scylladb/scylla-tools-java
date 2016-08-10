@@ -22,9 +22,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.Future;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import junit.framework.Assert;
@@ -33,34 +33,48 @@ import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.io.sstable.SSTableReader;
+import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
+import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.utils.FBUtilities;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
-public class StreamTransferTaskTest extends SchemaLoader
+public class StreamTransferTaskTest
 {
+    public static final String KEYSPACE1 = "StreamTransferTaskTest";
+    public static final String CF_STANDARD = "Standard1";
+
+    @BeforeClass
+    public static void defineSchema() throws ConfigurationException
+    {
+        SchemaLoader.prepareServer();
+        SchemaLoader.createKeyspace(KEYSPACE1,
+                                    KeyspaceParams.simple(1),
+                                    SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD));
+    }
+
     @Test
     public void testScheduleTimeout() throws Exception
     {
-        String ks = "Keyspace1";
+        String ks = KEYSPACE1;
         String cf = "Standard1";
 
         InetAddress peer = FBUtilities.getBroadcastAddress();
-        StreamSession session = new StreamSession(peer, peer, null, 0);
+        StreamSession session = new StreamSession(peer, peer, null, 0, true, false);
         ColumnFamilyStore cfs = Keyspace.open(ks).getColumnFamilyStore(cf);
 
         // create two sstables
         for (int i = 0; i < 2; i++)
         {
-            insertData(ks, cf, i, 1);
+            SchemaLoader.insertData(ks, cf, i, 1);
             cfs.forceBlockingFlush();
         }
 
         // create streaming task that streams those two sstables
         StreamTransferTask task = new StreamTransferTask(session, cfs.metadata.cfId);
-        for (SSTableReader sstable : cfs.getSSTables())
+        for (SSTableReader sstable : cfs.getLiveSSTables())
         {
             List<Range<Token>> ranges = new ArrayList<>();
             ranges.add(new Range<>(sstable.first.getToken(), sstable.last.getToken()));
@@ -73,7 +87,7 @@ public class StreamTransferTaskTest extends SchemaLoader
         f.get();
 
         // when timeout runs on second file, task should be completed
-        f = task.scheduleTimeout(1, 1, TimeUnit.MILLISECONDS);
+        f = task.scheduleTimeout(1, 10, TimeUnit.MILLISECONDS);
         task.complete(1);
         try
         {
@@ -83,6 +97,7 @@ public class StreamTransferTaskTest extends SchemaLoader
         catch (CancellationException ex)
         {
         }
+
         assertEquals(StreamSession.State.WAIT_COMPLETE, session.state());
 
         // when all streaming are done, time out task should not be scheduled.

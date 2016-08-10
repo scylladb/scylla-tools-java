@@ -42,9 +42,10 @@ table_definition: |
         uid timeuuid,
         value blob,
         PRIMARY KEY((name,choice), date, address, dbl, lval, ival, uid)
-  ) WITH COMPACT STORAGE 
-    AND compaction = { 'class':'LeveledCompactionStrategy' }
-    AND comment='A table of many types to test wide rows'
+  ) 
+    WITH compaction = { 'class':'LeveledCompactionStrategy' }
+#    AND compression = { 'sstable_compression' : '' }
+#    AND comment='A table of many types to test wide rows'
 
 #
 # Optional meta information on the generated columns in the above table
@@ -67,7 +68,7 @@ table_definition: |
 columnspec:
   - name: name
     size: uniform(1..10)
-    population: uniform(1..1M)     # the range of unique values to select for the field (default is 100Billion)
+    population: uniform(1..10)     # the range of unique values to select for the field (default is 100Billion)
   - name: date
     cluster: uniform(20..40)
   - name: lval
@@ -92,3 +93,16 @@ queries:
    range1:
       cql: select * from typestest where name = ? and choice = ? and date >= ? LIMIT 100
       fields: multirow            # samerow or multirow (select arguments from the same row, or randomly from all rows in the partition)
+
+
+#
+# A list of bulk read queries that analytics tools may perform against the schema
+# Each query will sweep an entire token range, page by page.
+#
+token_range_queries:
+  all_columns_tr_query:
+    columns: '*'
+    page_size: 5000
+
+  value_tr_query:
+    columns: value

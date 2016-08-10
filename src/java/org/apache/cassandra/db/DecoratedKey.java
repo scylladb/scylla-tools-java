@@ -20,13 +20,12 @@ package org.apache.cassandra.db;
 import java.nio.ByteBuffer;
 import java.util.Comparator;
 
-import net.nicoulaj.compilecommand.annotations.Inline;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.service.StorageService;
+import org.apache.cassandra.dht.Token.KeyBound;
 import org.apache.cassandra.utils.ByteBufferUtil;
-import org.apache.cassandra.utils.FastByteOperations;
-import org.apache.cassandra.utils.memory.MemoryUtil;
+import org.apache.cassandra.utils.MurmurHash;
+import org.apache.cassandra.utils.IFilter.FilterKey;
 
 /**
  * Represents a decorated key, handy for certain operations
@@ -37,7 +36,7 @@ import org.apache.cassandra.utils.memory.MemoryUtil;
  * if this matters, you can subclass RP to use a stronger hash, or use a non-lossy tokenization scheme (as in the
  * OrderPreservingPartitioner classes).
  */
-public abstract class DecoratedKey implements RowPosition
+public abstract class DecoratedKey implements PartitionPosition, FilterKey
 {
     public static final Comparator<DecoratedKey> comparator = new Comparator<DecoratedKey>()
     {
@@ -73,7 +72,7 @@ public abstract class DecoratedKey implements RowPosition
         return ByteBufferUtil.compareUnsigned(getKey(), other.getKey()) == 0; // we compare faster than BB.equals for array backed BB
     }
 
-    public int compareTo(RowPosition pos)
+    public int compareTo(PartitionPosition pos)
     {
         if (this == pos)
             return 0;
@@ -87,7 +86,7 @@ public abstract class DecoratedKey implements RowPosition
         return cmp == 0 ? ByteBufferUtil.compareUnsigned(getKey(), otherKey.getKey()) : cmp;
     }
 
-    public static int compareTo(IPartitioner partitioner, ByteBuffer key, RowPosition position)
+    public static int compareTo(IPartitioner partitioner, ByteBuffer key, PartitionPosition position)
     {
         // delegate to Token.KeyBound if needed
         if (!(position instanceof DecoratedKey))
@@ -98,20 +97,25 @@ public abstract class DecoratedKey implements RowPosition
         return cmp == 0 ? ByteBufferUtil.compareUnsigned(key, otherKey.getKey()) : cmp;
     }
 
-    public boolean isMinimum(IPartitioner partitioner)
+    public IPartitioner getPartitioner()
+    {
+        return getToken().getPartitioner();
+    }
+
+    public KeyBound minValue()
+    {
+        return getPartitioner().getMinimumToken().minKeyBound();
+    }
+
+    public boolean isMinimum()
     {
         // A DecoratedKey can never be the minimum position on the ring
         return false;
     }
 
-    public boolean isMinimum()
+    public PartitionPosition.Kind kind()
     {
-        return isMinimum(StorageService.getPartitioner());
-    }
-
-    public RowPosition.Kind kind()
-    {
-        return RowPosition.Kind.ROW_KEY;
+        return PartitionPosition.Kind.ROW_KEY;
     }
 
     @Override
@@ -127,4 +131,10 @@ public abstract class DecoratedKey implements RowPosition
     }
 
     public abstract ByteBuffer getKey();
+
+    public void filterHash(long[] dest)
+    {
+        ByteBuffer key = getKey();
+        MurmurHash.hash3_x64_128(key, key.position(), key.remaining(), 0, dest);
+    }
 }

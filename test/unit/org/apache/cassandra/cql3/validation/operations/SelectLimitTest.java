@@ -1,3 +1,23 @@
+/*
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ */
 package org.apache.cassandra.cql3.validation.operations;
 
 import org.junit.BeforeClass;
@@ -13,7 +33,7 @@ public class SelectLimitTest extends CQLTester
     @BeforeClass
     public static void setUp()
     {
-        DatabaseDescriptor.setPartitioner(new ByteOrderedPartitioner());
+        DatabaseDescriptor.setPartitionerUnsafe(ByteOrderedPartitioner.instance);
     }
 
     /**
@@ -52,7 +72,8 @@ public class SelectLimitTest extends CQLTester
         // Check that we do limit the output to 1 *and* that we respect query
         // order of keys (even though 48 is after 2)
         assertRows(execute("SELECT * FROM %s WHERE userid IN (48, 2) LIMIT 1"),
-                   row(48, "http://foo.com", 42L));
+                   row(2, "http://foo.com", 42L));
+
     }
 
     /**
@@ -104,8 +125,12 @@ public class SelectLimitTest extends CQLTester
                    row(1, 1),
                    row(1, 2),
                    row(1, 3));
-
-        // strict bound (v > 1) over a range of partitions is not supported for compact storage if limit is provided
-        assertInvalidThrow(InvalidRequestException.class, "SELECT * FROM %s WHERE v > 1 AND v <= 3 LIMIT 6 ALLOW FILTERING");
+        assertRows(execute("SELECT * FROM %s WHERE v > 1 AND v <= 3 LIMIT 6 ALLOW FILTERING"),
+                   row(0, 2),
+                   row(0, 3),
+                   row(1, 2),
+                   row(1, 3),
+                   row(2, 2),
+                   row(2, 3));
     }
 }

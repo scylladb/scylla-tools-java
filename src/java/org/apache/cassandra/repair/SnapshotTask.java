@@ -75,6 +75,7 @@ public class SnapshotTask extends AbstractFuture<InetAddress> implements Runnabl
 
         public void onFailure(InetAddress from)
         {
+            //listener.failedSnapshot();
             task.setException(new RuntimeException("Could not create snapshot at " + from));
         }
     }

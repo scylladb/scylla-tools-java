@@ -31,7 +31,6 @@ import java.util.concurrent.ThreadFactory;
 
 import org.apache.cassandra.stress.util.*;
 import org.apache.commons.lang3.time.DurationFormatUtils;
-
 import org.apache.cassandra.concurrent.NamedThreadFactory;
 import org.apache.cassandra.stress.settings.StressSettings;
 
@@ -159,7 +158,7 @@ public class StressMetrics
         TimingInterval current = result.intervals.combine(settings.samples.reportCount);
         TimingInterval history = timing.getHistory().combine(settings.samples.historyCount);
         rowRateUncertainty.update(current.adjustedRowRate());
-        if (current.partitionCount != 0)
+        if (current.operationCount != 0)
         {
             if (result.intervals.intervals().size() > 1)
             {

@@ -18,64 +18,43 @@
 package org.apache.cassandra.config;
 
 import java.io.File;
-import java.io.FileFilter;
 import java.io.IOException;
-import java.net.Inet4Address;
-import java.net.Inet6Address;
-import java.net.InetAddress;
-import java.net.NetworkInterface;
-import java.net.SocketException;
-import java.net.UnknownHostException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.Enumeration;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.UUID;
+import java.net.*;
+import java.nio.file.FileStore;
+import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.*;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.primitives.Ints;
 import com.google.common.primitives.Longs;
 
-import org.apache.cassandra.thrift.ThriftServer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.cassandra.auth.AllowAllAuthenticator;
-import org.apache.cassandra.auth.AllowAllAuthorizer;
-import org.apache.cassandra.auth.AllowAllInternodeAuthenticator;
-import org.apache.cassandra.auth.IAuthenticator;
-import org.apache.cassandra.auth.IAuthorizer;
-import org.apache.cassandra.auth.IInternodeAuthenticator;
+
+import org.apache.cassandra.auth.*;
+import org.apache.cassandra.config.Config.CommitLogSync;
 import org.apache.cassandra.config.Config.RequestSchedulerId;
 import org.apache.cassandra.config.EncryptionOptions.ClientEncryptionOptions;
 import org.apache.cassandra.config.EncryptionOptions.ServerEncryptionOptions;
 import org.apache.cassandra.db.ColumnFamilyStore;
-import org.apache.cassandra.db.DefsTables;
 import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.FSWriteError;
+import org.apache.cassandra.io.sstable.format.SSTableFormat;
 import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.io.util.IAllocator;
-import org.apache.cassandra.locator.DynamicEndpointSnitch;
-import org.apache.cassandra.locator.EndpointSnitchInfo;
-import org.apache.cassandra.locator.IEndpointSnitch;
-import org.apache.cassandra.locator.SeedProvider;
+import org.apache.cassandra.locator.*;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.scheduler.IRequestScheduler;
 import org.apache.cassandra.scheduler.NoScheduler;
 import org.apache.cassandra.service.CacheService;
-import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.thrift.ThriftServer;
 import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.JVMStabilityInspector;
-import org.apache.cassandra.utils.memory.HeapPool;
-import org.apache.cassandra.utils.memory.NativePool;
-import org.apache.cassandra.utils.memory.MemtablePool;
-import org.apache.cassandra.utils.memory.SlabPool;
+import org.apache.cassandra.utils.memory.*;
 
 public class DatabaseDescriptor
 {
@@ -103,8 +82,13 @@ public class DatabaseDescriptor
 
     private static Config conf;
 
+    private static SSTableFormat.Type sstable_format = SSTableFormat.Type.BIG;
+
     private static IAuthenticator authenticator = new AllowAllAuthenticator();
     private static IAuthorizer authorizer = new AllowAllAuthorizer();
+    // Don't initialize the role manager until applying config. The options supported by CassandraRoleManager
+    // depend on the configured IAuthenticator, so defer creating it until that's been set.
+    private static IRoleManager roleManager;
 
     private static IRequestScheduler requestScheduler;
     private static RequestSchedulerId requestSchedulerId;
@@ -112,12 +96,13 @@ public class DatabaseDescriptor
 
     private static long keyCacheSizeInMB;
     private static long counterCacheSizeInMB;
-    private static IAllocator memoryAllocator;
     private static long indexSummaryCapacityInMB;
 
     private static String localDC;
     private static Comparator<InetAddress> localComparator;
+    private static boolean hasLoggedConfig;
 
+    public static void forceStaticInitialization() {}
     static
     {
         // In client mode, we use a default configuration. Note that the fields of this class will be
@@ -128,26 +113,15 @@ public class DatabaseDescriptor
             if (Config.isClientMode())
             {
                 conf = new Config();
-                // at least we have to set memoryAllocator to open SSTable in client mode
-                memoryAllocator = FBUtilities.newOffHeapAllocator(conf.memory_allocator);
             }
             else
             {
                 applyConfig(loadConfig());
             }
         }
-        catch (ConfigurationException e)
-        {
-            logger.error("Fatal configuration error", e);
-            System.err.println(e.getMessage() + "\nFatal configuration error; unable to start. See log for stacktrace.");
-            System.exit(1);
-        }
         catch (Exception e)
         {
-            logger.error("Fatal error during configuration loading", e);
-            System.err.println(e.getMessage() + "\nFatal error during configuration loading; unable to start. See log for stacktrace.");
-            JVMStabilityInspector.inspectThrowable(e);
-            System.exit(1);
+            throw new ExceptionInInitializerError(e);
         }
     }
 
@@ -158,7 +132,15 @@ public class DatabaseDescriptor
         ConfigurationLoader loader = loaderClass == null
                                    ? new YamlConfigurationLoader()
                                    : FBUtilities.<ConfigurationLoader>construct(loaderClass, "configuration loading");
-        return loader.loadConfig();
+        Config config = loader.loadConfig();
+
+        if (!hasLoggedConfig)
+        {
+            hasLoggedConfig = true;
+            Config.log(config);
+        }
+
+        return config;
     }
 
     private static InetAddress getNetworkInterfaceAddress(String intf, String configName, boolean preferIPv6) throws ConfigurationException
@@ -167,10 +149,10 @@ public class DatabaseDescriptor
         {
             NetworkInterface ni = NetworkInterface.getByName(intf);
             if (ni == null)
-                throw new ConfigurationException("Configured " + configName + " \"" + intf + "\" could not be found");
+                throw new ConfigurationException("Configured " + configName + " \"" + intf + "\" could not be found", false);
             Enumeration<InetAddress> addrs = ni.getInetAddresses();
             if (!addrs.hasMoreElements())
-                throw new ConfigurationException("Configured " + configName + " \"" + intf + "\" was found, but had no addresses");
+                throw new ConfigurationException("Configured " + configName + " \"" + intf + "\" was found, but had no addresses", false);
 
             /*
              * Try to return the first address of the preferred type, otherwise return the first address
@@ -179,8 +161,8 @@ public class DatabaseDescriptor
             while (addrs.hasMoreElements())
             {
                 InetAddress temp = addrs.nextElement();
-                if (preferIPv6 && temp.getClass() == Inet6Address.class) return temp;
-                if (!preferIPv6 && temp.getClass() == Inet4Address.class) return temp;
+                if (preferIPv6 && temp instanceof Inet6Address) return temp;
+                if (!preferIPv6 && temp instanceof Inet4Address) return temp;
                 if (retval == null) retval = temp;
             }
             return retval;
@@ -202,7 +184,7 @@ public class DatabaseDescriptor
         /* Local IP, hostname or interface to bind services to */
         if (config.listen_address != null && config.listen_interface != null)
         {
-            throw new ConfigurationException("Set listen_address OR listen_interface, not both");
+            throw new ConfigurationException("Set listen_address OR listen_interface, not both", false);
         }
         else if (config.listen_address != null)
         {
@@ -212,11 +194,11 @@ public class DatabaseDescriptor
             }
             catch (UnknownHostException e)
             {
-                throw new ConfigurationException("Unknown listen_address '" + config.listen_address + "'");
+                throw new ConfigurationException("Unknown listen_address '" + config.listen_address + "'", false);
             }
 
             if (listenAddress.isAnyLocalAddress())
-                throw new ConfigurationException("listen_address cannot be a wildcard address (" + config.listen_address + ")!");
+                throw new ConfigurationException("listen_address cannot be a wildcard address (" + config.listen_address + ")!", false);
         }
         else if (config.listen_interface != null)
         {
@@ -232,17 +214,17 @@ public class DatabaseDescriptor
             }
             catch (UnknownHostException e)
             {
-                throw new ConfigurationException("Unknown broadcast_address '" + config.broadcast_address + "'");
+                throw new ConfigurationException("Unknown broadcast_address '" + config.broadcast_address + "'", false);
             }
 
             if (broadcastAddress.isAnyLocalAddress())
-                throw new ConfigurationException("broadcast_address cannot be a wildcard address (" + config.broadcast_address + ")!");
+                throw new ConfigurationException("broadcast_address cannot be a wildcard address (" + config.broadcast_address + ")!", false);
         }
 
         /* Local IP, hostname or interface to bind RPC server to */
         if (config.rpc_address != null && config.rpc_interface != null)
         {
-            throw new ConfigurationException("Set rpc_address OR rpc_interface, not both");
+            throw new ConfigurationException("Set rpc_address OR rpc_interface, not both", false);
         }
         else if (config.rpc_address != null)
         {
@@ -252,7 +234,7 @@ public class DatabaseDescriptor
             }
             catch (UnknownHostException e)
             {
-                throw new ConfigurationException("Unknown host in rpc_address " + config.rpc_address);
+                throw new ConfigurationException("Unknown host in rpc_address " + config.rpc_address, false);
             }
         }
         else if (config.rpc_interface != null)
@@ -273,39 +255,39 @@ public class DatabaseDescriptor
             }
             catch (UnknownHostException e)
             {
-                throw new ConfigurationException("Unknown broadcast_rpc_address '" + config.broadcast_rpc_address + "'");
+                throw new ConfigurationException("Unknown broadcast_rpc_address '" + config.broadcast_rpc_address + "'", false);
             }
 
             if (broadcastRpcAddress.isAnyLocalAddress())
-                throw new ConfigurationException("broadcast_rpc_address cannot be a wildcard address (" + config.broadcast_rpc_address + ")!");
+                throw new ConfigurationException("broadcast_rpc_address cannot be a wildcard address (" + config.broadcast_rpc_address + ")!", false);
         }
         else
         {
             if (rpcAddress.isAnyLocalAddress())
                 throw new ConfigurationException("If rpc_address is set to a wildcard address (" + config.rpc_address + "), then " +
-                                                 "you must set broadcast_rpc_address to a value other than " + config.rpc_address);
+                                                 "you must set broadcast_rpc_address to a value other than " + config.rpc_address, false);
             broadcastRpcAddress = rpcAddress;
         }
     }
 
-    private static void applyConfig(Config config) throws ConfigurationException
+    public static void applyConfig(Config config) throws ConfigurationException
     {
         conf = config;
 
         if (conf.commitlog_sync == null)
         {
-            throw new ConfigurationException("Missing required directive CommitLogSync");
+            throw new ConfigurationException("Missing required directive CommitLogSync", false);
         }
 
         if (conf.commitlog_sync == Config.CommitLogSync.batch)
         {
             if (conf.commitlog_sync_batch_window_in_ms == null)
             {
-                throw new ConfigurationException("Missing value for commitlog_sync_batch_window_in_ms: Double expected.");
+                throw new ConfigurationException("Missing value for commitlog_sync_batch_window_in_ms: Double expected.", false);
             }
             else if (conf.commitlog_sync_period_in_ms != null)
             {
-                throw new ConfigurationException("Batch sync specified, but commitlog_sync_period_in_ms found. Only specify commitlog_sync_batch_window_in_ms when using batch sync");
+                throw new ConfigurationException("Batch sync specified, but commitlog_sync_period_in_ms found. Only specify commitlog_sync_batch_window_in_ms when using batch sync", false);
             }
             logger.debug("Syncing log with a batch window of {}", conf.commitlog_sync_batch_window_in_ms);
         }
@@ -313,49 +295,35 @@ public class DatabaseDescriptor
         {
             if (conf.commitlog_sync_period_in_ms == null)
             {
-                throw new ConfigurationException("Missing value for commitlog_sync_period_in_ms: Integer expected");
+                throw new ConfigurationException("Missing value for commitlog_sync_period_in_ms: Integer expected", false);
             }
             else if (conf.commitlog_sync_batch_window_in_ms != null)
             {
-                throw new ConfigurationException("commitlog_sync_period_in_ms specified, but commitlog_sync_batch_window_in_ms found.  Only specify commitlog_sync_period_in_ms when using periodic sync.");
+                throw new ConfigurationException("commitlog_sync_period_in_ms specified, but commitlog_sync_batch_window_in_ms found.  Only specify commitlog_sync_period_in_ms when using periodic sync.", false);
             }
             logger.debug("Syncing log with a period of {}", conf.commitlog_sync_period_in_ms);
         }
 
-        if (conf.commitlog_total_space_in_mb == null)
-            conf.commitlog_total_space_in_mb = hasLargeAddressSpace() ? 8192 : 32;
-
-        // Always force standard mode access on Windows - CASSANDRA-6993. Windows won't allow deletion of hard-links to files that
-        // are memory-mapped which causes trouble with snapshots.
-        if (FBUtilities.isWindows())
+        /* evaluate the DiskAccessMode Config directive, which also affects indexAccessMode selection */
+        if (conf.disk_access_mode == Config.DiskAccessMode.auto)
+        {
+            conf.disk_access_mode = hasLargeAddressSpace() ? Config.DiskAccessMode.mmap : Config.DiskAccessMode.standard;
+            indexAccessMode = conf.disk_access_mode;
+            logger.info("DiskAccessMode 'auto' determined to be {}, indexAccessMode is {}", conf.disk_access_mode, indexAccessMode);
+        }
+        else if (conf.disk_access_mode == Config.DiskAccessMode.mmap_index_only)
         {
             conf.disk_access_mode = Config.DiskAccessMode.standard;
-            indexAccessMode = conf.disk_access_mode;
-            logger.info("Windows environment detected.  DiskAccessMode set to {}, indexAccessMode {}", conf.disk_access_mode, indexAccessMode);
+            indexAccessMode = Config.DiskAccessMode.mmap;
+            logger.info("DiskAccessMode is {}, indexAccessMode is {}", conf.disk_access_mode, indexAccessMode);
         }
         else
         {
-            /* evaluate the DiskAccessMode Config directive, which also affects indexAccessMode selection */
-            if (conf.disk_access_mode == Config.DiskAccessMode.auto)
-            {
-                conf.disk_access_mode = hasLargeAddressSpace() ? Config.DiskAccessMode.mmap : Config.DiskAccessMode.standard;
-                indexAccessMode = conf.disk_access_mode;
-                logger.info("DiskAccessMode 'auto' determined to be {}, indexAccessMode is {}", conf.disk_access_mode, indexAccessMode);
-            }
-            else if (conf.disk_access_mode == Config.DiskAccessMode.mmap_index_only)
-            {
-                conf.disk_access_mode = Config.DiskAccessMode.standard;
-                indexAccessMode = Config.DiskAccessMode.mmap;
-                logger.info("DiskAccessMode is {}, indexAccessMode is {}", conf.disk_access_mode, indexAccessMode);
-            }
-            else
-            {
-                indexAccessMode = conf.disk_access_mode;
-                logger.info("DiskAccessMode is {}, indexAccessMode is {}", conf.disk_access_mode, indexAccessMode);
-            }
+            indexAccessMode = conf.disk_access_mode;
+            logger.info("DiskAccessMode is {}, indexAccessMode is {}", conf.disk_access_mode, indexAccessMode);
         }
 
-        /* Authentication and authorization backend, implementing IAuthenticator and IAuthorizer */
+        /* Authentication, authorization and role management backend, implementing IAuthenticator, IAuthorizer & IRoleMapper*/
         if (conf.authenticator != null)
             authenticator = FBUtilities.newAuthenticator(conf.authenticator);
 
@@ -363,7 +331,15 @@ public class DatabaseDescriptor
             authorizer = FBUtilities.newAuthorizer(conf.authorizer);
 
         if (authenticator instanceof AllowAllAuthenticator && !(authorizer instanceof AllowAllAuthorizer))
-            throw new ConfigurationException("AllowAllAuthenticator can't be used with " +  conf.authorizer);
+            throw new ConfigurationException("AllowAllAuthenticator can't be used with " +  conf.authorizer, false);
+
+        if (conf.role_manager != null)
+            roleManager = FBUtilities.newRoleManager(conf.role_manager);
+        else
+            roleManager = new CassandraRoleManager();
+
+        if (authenticator instanceof PasswordAuthenticator && !(roleManager instanceof CassandraRoleManager))
+            throw new ConfigurationException("CassandraRoleManager must be used with PasswordAuthenticator", false);
 
         if (conf.internode_authenticator != null)
             internodeAuthenticator = FBUtilities.construct(conf.internode_authenticator, "internode_authenticator");
@@ -372,12 +348,13 @@ public class DatabaseDescriptor
 
         authenticator.validateConfiguration();
         authorizer.validateConfiguration();
+        roleManager.validateConfiguration();
         internodeAuthenticator.validateConfiguration();
 
         /* Hashing strategy */
         if (conf.partitioner == null)
         {
-            throw new ConfigurationException("Missing directive: partitioner");
+            throw new ConfigurationException("Missing directive: partitioner", false);
         }
         try
         {
@@ -385,34 +362,39 @@ public class DatabaseDescriptor
         }
         catch (Exception e)
         {
-            throw new ConfigurationException("Invalid partitioner class " + conf.partitioner);
+            throw new ConfigurationException("Invalid partitioner class " + conf.partitioner, false);
         }
         paritionerName = partitioner.getClass().getCanonicalName();
 
+        if (conf.gc_warn_threshold_in_ms < 0)
+        {
+            throw new ConfigurationException("gc_warn_threshold_in_ms must be a positive integer");
+        }
+
         if (conf.max_hint_window_in_ms == null)
         {
-            throw new ConfigurationException("max_hint_window_in_ms cannot be set to null");
+            throw new ConfigurationException("max_hint_window_in_ms cannot be set to null", false);
         }
 
         /* phi convict threshold for FailureDetector */
         if (conf.phi_convict_threshold < 5 || conf.phi_convict_threshold > 16)
         {
-            throw new ConfigurationException("phi_convict_threshold must be between 5 and 16");
+            throw new ConfigurationException("phi_convict_threshold must be between 5 and 16, but was " + conf.phi_convict_threshold, false);
         }
 
         /* Thread per pool */
         if (conf.concurrent_reads != null && conf.concurrent_reads < 2)
         {
-            throw new ConfigurationException("concurrent_reads must be at least 2");
+            throw new ConfigurationException("concurrent_reads must be at least 2, but was " + conf.concurrent_reads, false);
         }
 
         if (conf.concurrent_writes != null && conf.concurrent_writes < 2)
         {
-            throw new ConfigurationException("concurrent_writes must be at least 2");
+            throw new ConfigurationException("concurrent_writes must be at least 2, but was " + conf.concurrent_writes, false);
         }
 
         if (conf.concurrent_counter_writes != null && conf.concurrent_counter_writes < 2)
-            throw new ConfigurationException("concurrent_counter_writes must be at least 2");
+            throw new ConfigurationException("concurrent_counter_writes must be at least 2, but was " + conf.concurrent_counter_writes, false);
 
         if (conf.concurrent_replicates != null)
             logger.warn("concurrent_replicates has been deprecated and should be removed from cassandra.yaml");
@@ -423,12 +405,12 @@ public class DatabaseDescriptor
         if (conf.memtable_offheap_space_in_mb == null)
             conf.memtable_offheap_space_in_mb = (int) (Runtime.getRuntime().maxMemory() / (4 * 1048576));
         if (conf.memtable_offheap_space_in_mb < 0)
-            throw new ConfigurationException("memtable_offheap_space_in_mb must be positive");
+            throw new ConfigurationException("memtable_offheap_space_in_mb must be positive, but was " + conf.memtable_offheap_space_in_mb, false);
         // for the moment, we default to twice as much on-heap space as off-heap, as heap overhead is very large
         if (conf.memtable_heap_space_in_mb == null)
             conf.memtable_heap_space_in_mb = (int) (Runtime.getRuntime().maxMemory() / (4 * 1048576));
         if (conf.memtable_heap_space_in_mb <= 0)
-            throw new ConfigurationException("memtable_heap_space_in_mb must be positive");
+            throw new ConfigurationException("memtable_heap_space_in_mb must be positive, but was " + conf.memtable_heap_space_in_mb, false);
         logger.info("Global memtable on-heap threshold is enabled at {}MB", conf.memtable_heap_space_in_mb);
         if (conf.memtable_offheap_space_in_mb == 0)
             logger.info("Global memtable off-heap threshold is disabled, HeapAllocator will be used instead");
@@ -438,23 +420,24 @@ public class DatabaseDescriptor
         applyAddressConfig(config);
 
         if (conf.thrift_framed_transport_size_in_mb <= 0)
-            throw new ConfigurationException("thrift_framed_transport_size_in_mb must be positive");
+            throw new ConfigurationException("thrift_framed_transport_size_in_mb must be positive, but was " + conf.thrift_framed_transport_size_in_mb, false);
 
         if (conf.native_transport_max_frame_size_in_mb <= 0)
-            throw new ConfigurationException("native_transport_max_frame_size_in_mb must be positive");
+            throw new ConfigurationException("native_transport_max_frame_size_in_mb must be positive, but was " + conf.native_transport_max_frame_size_in_mb, false);
 
         // fail early instead of OOMing (see CASSANDRA-8116)
         if (ThriftServer.HSHA.equals(conf.rpc_server_type) && conf.rpc_max_threads == Integer.MAX_VALUE)
             throw new ConfigurationException("The hsha rpc_server_type is not compatible with an rpc_max_threads " +
                                              "setting of 'unlimited'.  Please see the comments in cassandra.yaml " +
-                                             "for rpc_server_type and rpc_max_threads.");
+                                             "for rpc_server_type and rpc_max_threads.",
+                                             false);
         if (ThriftServer.HSHA.equals(conf.rpc_server_type) && conf.rpc_max_threads > (FBUtilities.getAvailableProcessors() * 2 + 1024))
             logger.warn("rpc_max_threads setting of {} may be too high for the hsha server and cause unnecessary thread contention, reducing performance", conf.rpc_max_threads);
 
         /* end point snitch */
         if (conf.endpoint_snitch == null)
         {
-            throw new ConfigurationException("Missing endpoint_snitch directive");
+            throw new ConfigurationException("Missing endpoint_snitch directive", false);
         }
         snitch = createEndpointSnitch(conf.endpoint_snitch);
         EndpointSnitchInfo.create();
@@ -489,7 +472,7 @@ public class DatabaseDescriptor
             }
             catch (ClassNotFoundException e)
             {
-                throw new ConfigurationException("Invalid Request Scheduler class " + conf.request_scheduler);
+                throw new ConfigurationException("Invalid Request Scheduler class " + conf.request_scheduler, false);
             }
             catch (Exception e)
             {
@@ -517,66 +500,131 @@ public class DatabaseDescriptor
         {
             conf.commitlog_directory = System.getProperty("cassandra.storagedir", null);
             if (conf.commitlog_directory == null)
-                throw new ConfigurationException("commitlog_directory is missing and -Dcassandra.storagedir is not set");
+                throw new ConfigurationException("commitlog_directory is missing and -Dcassandra.storagedir is not set", false);
             conf.commitlog_directory += File.separator + "commitlog";
         }
+
+        if (conf.hints_directory == null)
+        {
+            conf.hints_directory = System.getProperty("cassandra.storagedir", null);
+            if (conf.hints_directory == null)
+                throw new ConfigurationException("hints_directory is missing and -Dcassandra.storagedir is not set", false);
+            conf.hints_directory += File.separator + "hints";
+        }
+
+        if (conf.commitlog_total_space_in_mb == null)
+        {
+            int preferredSize = 8192;
+            int minSize = 0;
+            try
+            {
+                // use 1/4 of available space.  See discussion on #10013 and #10199
+                minSize = Ints.checkedCast((guessFileStore(conf.commitlog_directory).getTotalSpace() / 1048576) / 4);
+            }
+            catch (IOException e)
+            {
+                logger.debug("Error checking disk space", e);
+                throw new ConfigurationException(String.format("Unable to check disk space available to %s. Perhaps the Cassandra user does not have the necessary permissions",
+                                                               conf.commitlog_directory), e);
+            }
+            if (minSize < preferredSize)
+            {
+                logger.warn("Small commitlog volume detected at {}; setting commitlog_total_space_in_mb to {}.  You can override this in cassandra.yaml",
+                            conf.commitlog_directory, minSize);
+                conf.commitlog_total_space_in_mb = minSize;
+            }
+            else
+            {
+                conf.commitlog_total_space_in_mb = preferredSize;
+            }
+        }
+
         if (conf.saved_caches_directory == null)
         {
             conf.saved_caches_directory = System.getProperty("cassandra.storagedir", null);
             if (conf.saved_caches_directory == null)
-                throw new ConfigurationException("saved_caches_directory is missing and -Dcassandra.storagedir is not set");
+                throw new ConfigurationException("saved_caches_directory is missing and -Dcassandra.storagedir is not set", false);
             conf.saved_caches_directory += File.separator + "saved_caches";
         }
-        if (conf.data_file_directories == null)
+        if (conf.data_file_directories == null || conf.data_file_directories.length == 0)
         {
             String defaultDataDir = System.getProperty("cassandra.storagedir", null);
             if (defaultDataDir == null)
-                throw new ConfigurationException("data_file_directories is not missing and -Dcassandra.storagedir is not set");
+                throw new ConfigurationException("data_file_directories is not missing and -Dcassandra.storagedir is not set", false);
             conf.data_file_directories = new String[]{ defaultDataDir + File.separator + "data" };
         }
 
+        long dataFreeBytes = 0;
         /* data file and commit log directories. they get created later, when they're needed. */
         for (String datadir : conf.data_file_directories)
         {
             if (datadir.equals(conf.commitlog_directory))
-                throw new ConfigurationException("commitlog_directory must not be the same as any data_file_directories");
+                throw new ConfigurationException("commitlog_directory must not be the same as any data_file_directories", false);
+            if (datadir.equals(conf.hints_directory))
+                throw new ConfigurationException("hints_directory must not be the same as any data_file_directories", false);
             if (datadir.equals(conf.saved_caches_directory))
-                throw new ConfigurationException("saved_caches_directory must not be the same as any data_file_directories");
+                throw new ConfigurationException("saved_caches_directory must not be the same as any data_file_directories", false);
+
+            try
+            {
+                dataFreeBytes += guessFileStore(datadir).getUnallocatedSpace();
+            }
+            catch (IOException e)
+            {
+                logger.debug("Error checking disk space", e);
+                throw new ConfigurationException(String.format("Unable to check disk space available to %s. Perhaps the Cassandra user does not have the necessary permissions",
+                                                               datadir), e);
+            }
         }
+        if (dataFreeBytes < 64L * 1024 * 1048576) // 64 GB
+            logger.warn("Only {} MB free across all data volumes. Consider adding more capacity to your cluster or removing obsolete snapshots",
+                        dataFreeBytes / 1048576);
+
 
         if (conf.commitlog_directory.equals(conf.saved_caches_directory))
-            throw new ConfigurationException("saved_caches_directory must not be the same as the commitlog_directory");
+            throw new ConfigurationException("saved_caches_directory must not be the same as the commitlog_directory", false);
+        if (conf.commitlog_directory.equals(conf.hints_directory))
+            throw new ConfigurationException("hints_directory must not be the same as the commitlog_directory", false);
+        if (conf.hints_directory.equals(conf.saved_caches_directory))
+            throw new ConfigurationException("saved_caches_directory must not be the same as the hints_directory", false);
 
         if (conf.memtable_flush_writers == null)
             conf.memtable_flush_writers = Math.min(8, Math.max(2, Math.min(FBUtilities.getAvailableProcessors(), conf.data_file_directories.length)));
 
         if (conf.memtable_flush_writers < 1)
-            throw new ConfigurationException("memtable_flush_writers must be at least 1");
+            throw new ConfigurationException("memtable_flush_writers must be at least 1, but was " + conf.memtable_flush_writers, false);
 
         if (conf.memtable_cleanup_threshold == null)
             conf.memtable_cleanup_threshold = (float) (1.0 / (1 + conf.memtable_flush_writers));
 
         if (conf.memtable_cleanup_threshold < 0.01f)
-            throw new ConfigurationException("memtable_cleanup_threshold must be >= 0.01");
+            throw new ConfigurationException("memtable_cleanup_threshold must be >= 0.01, but was " + conf.memtable_cleanup_threshold, false);
         if (conf.memtable_cleanup_threshold > 0.99f)
-            throw new ConfigurationException("memtable_cleanup_threshold must be <= 0.99");
+            throw new ConfigurationException("memtable_cleanup_threshold must be <= 0.99, but was " + conf.memtable_cleanup_threshold, false);
         if (conf.memtable_cleanup_threshold < 0.1f)
-            logger.warn("memtable_cleanup_threshold is set very low, which may cause performance degradation");
+            logger.warn("memtable_cleanup_threshold is set very low [{}], which may cause performance degradation", conf.memtable_cleanup_threshold);
 
         if (conf.concurrent_compactors == null)
             conf.concurrent_compactors = Math.min(8, Math.max(2, Math.min(FBUtilities.getAvailableProcessors(), conf.data_file_directories.length)));
 
         if (conf.concurrent_compactors <= 0)
-            throw new ConfigurationException("concurrent_compactors should be strictly greater than 0");
-
-        if (conf.initial_token != null)
-            for (String token : tokensFromString(conf.initial_token))
-                partitioner.getTokenFactory().validate(token);
+            throw new ConfigurationException("concurrent_compactors should be strictly greater than 0, but was " + conf.concurrent_compactors, false);
 
         if (conf.num_tokens == null)
-        	conf.num_tokens = 1;
+            conf.num_tokens = 1;
         else if (conf.num_tokens > MAX_NUM_TOKENS)
-            throw new ConfigurationException(String.format("A maximum number of %d tokens per node is supported", MAX_NUM_TOKENS));
+            throw new ConfigurationException(String.format("A maximum number of %d tokens per node is supported", MAX_NUM_TOKENS), false);
+
+        if (conf.initial_token != null)
+        {
+            Collection<String> tokens = tokensFromString(conf.initial_token);
+            if (tokens.size() != conf.num_tokens)
+                throw new ConfigurationException("The number of initial tokens (by initial_token) specified is different from num_tokens value", false);
+
+            for (String token : tokens)
+                partitioner.getTokenFactory().validate(token);
+        }
+
 
         try
         {
@@ -591,7 +639,7 @@ public class DatabaseDescriptor
         catch (NumberFormatException e)
         {
             throw new ConfigurationException("key_cache_size_in_mb option was set incorrectly to '"
-                    + conf.key_cache_size_in_mb + "', supported values are <integer> >= 0.");
+                    + conf.key_cache_size_in_mb + "', supported values are <integer> >= 0.", false);
         }
 
         try
@@ -607,7 +655,7 @@ public class DatabaseDescriptor
         catch (NumberFormatException e)
         {
             throw new ConfigurationException("counter_cache_size_in_mb option was set incorrectly to '"
-                    + conf.counter_cache_size_in_mb + "', supported values are <integer> >= 0.");
+                    + conf.counter_cache_size_in_mb + "', supported values are <integer> >= 0.", false);
         }
 
         // if set to empty/"auto" then use 5% of Heap size
@@ -617,9 +665,7 @@ public class DatabaseDescriptor
 
         if (indexSummaryCapacityInMB < 0)
             throw new ConfigurationException("index_summary_capacity_in_mb option was set incorrectly to '"
-                    + conf.index_summary_capacity_in_mb + "', it should be a non-negative integer.");
-
-        memoryAllocator = FBUtilities.newOffHeapAllocator(conf.memory_allocator);
+                    + conf.index_summary_capacity_in_mb + "', it should be a non-negative integer.", false);
 
         if(conf.encryption_options != null)
         {
@@ -628,16 +674,10 @@ public class DatabaseDescriptor
             conf.server_encryption_options = conf.encryption_options;
         }
 
-        // Hardcoded system keyspaces
-        List<KSMetaData> systemKeyspaces = Arrays.asList(KSMetaData.systemKeyspace());
-        assert systemKeyspaces.size() == Schema.systemKeyspaceNames.size();
-        for (KSMetaData ksmd : systemKeyspaces)
-            Schema.instance.load(ksmd);
-
-        /* Load the seeds for node contact points */
+        // load the seeds for node contact points
         if (conf.seed_provider == null)
         {
-            throw new ConfigurationException("seeds configuration is missing; a minimum of one seed is required.");
+            throw new ConfigurationException("seeds configuration is missing; a minimum of one seed is required.", false);
         }
         try
         {
@@ -647,12 +687,53 @@ public class DatabaseDescriptor
         // there are about 5 checked exceptions that could be thrown here.
         catch (Exception e)
         {
-            logger.error("Fatal configuration error", e);
-            System.err.println(e.getMessage() + "\nFatal configuration error; unable to start server.  See log for stacktrace.");
-            System.exit(1);
+            throw new ConfigurationException(e.getMessage() + "\nFatal configuration error; unable to start server.  See log for stacktrace.", true);
         }
         if (seedProvider.getSeeds().size() == 0)
-            throw new ConfigurationException("The seed provider lists no seeds.");
+            throw new ConfigurationException("The seed provider lists no seeds.", false);
+
+        if (conf.user_defined_function_fail_timeout < 0)
+            throw new ConfigurationException("user_defined_function_fail_timeout must not be negative", false);
+        if (conf.user_defined_function_warn_timeout < 0)
+            throw new ConfigurationException("user_defined_function_warn_timeout must not be negative", false);
+
+        if (conf.user_defined_function_fail_timeout < conf.user_defined_function_warn_timeout)
+            throw new ConfigurationException("user_defined_function_warn_timeout must less than user_defined_function_fail_timeout", false);
+
+        if (conf.max_mutation_size_in_kb == null)
+            conf.max_mutation_size_in_kb = conf.commitlog_segment_size_in_mb * 1024 / 2;
+        else if (conf.commitlog_segment_size_in_mb * 1024 < 2 * conf.max_mutation_size_in_kb)
+            throw new ConfigurationException("commitlog_segment_size_in_mb must be at least twice the size of max_mutation_size_in_kb / 1024", false);
+
+        // native transport encryption options
+        if (conf.native_transport_port_ssl != null
+            && conf.native_transport_port_ssl.intValue() != conf.native_transport_port.intValue()
+            && !conf.client_encryption_options.enabled)
+        {
+            throw new ConfigurationException("Encryption must be enabled in client_encryption_options for native_transport_port_ssl", false);
+        }
+
+        if (conf.max_value_size_in_mb == null || conf.max_value_size_in_mb <= 0)
+            throw new ConfigurationException("max_value_size_in_mb must be positive", false);
+    }
+
+    private static FileStore guessFileStore(String dir) throws IOException
+    {
+        Path path = Paths.get(dir);
+        while (true)
+        {
+            try
+            {
+                return Files.getFileStore(path);
+            }
+            catch (IOException e)
+            {
+                if (e instanceof NoSuchFileException)
+                    path = path.getParent();
+                else
+                    throw e;
+            }
+        }
     }
 
     private static IEndpointSnitch createEndpointSnitch(String snitchClassName) throws ConfigurationException
@@ -663,67 +744,6 @@ public class DatabaseDescriptor
         return conf.dynamic_snitch ? new DynamicEndpointSnitch(snitch) : snitch;
     }
 
-    /**
-     * load keyspace (keyspace) definitions, but do not initialize the keyspace instances.
-     * Schema version may be updated as the result.
-     */
-    public static void loadSchemas()
-    {
-        loadSchemas(true);
-    }
-
-    /**
-     * Load schema definitions.
-     *
-     * @param updateVersion true if schema version needs to be updated
-     */
-    public static void loadSchemas(boolean updateVersion)
-    {
-        ColumnFamilyStore schemaCFS = SystemKeyspace.schemaCFS(SystemKeyspace.SCHEMA_KEYSPACES_CF);
-
-        // if keyspace with definitions is empty try loading the old way
-        if (schemaCFS.estimateKeys() == 0)
-        {
-            logger.info("Couldn't detect any schema definitions in local storage.");
-            // peek around the data directories to see if anything is there.
-            if (hasExistingNoSystemTables())
-                logger.info("Found keyspace data in data directories. Consider using cqlsh to define your schema.");
-            else
-                logger.info("To create keyspaces and column families, see 'help create' in cqlsh.");
-        }
-        else
-        {
-            Schema.instance.load(DefsTables.loadFromKeyspace());
-        }
-
-        if (updateVersion)
-            Schema.instance.updateVersion();
-    }
-
-    private static boolean hasExistingNoSystemTables()
-    {
-        for (String dataDir : getAllDataFileLocations())
-        {
-            File dataPath = new File(dataDir);
-            if (dataPath.exists() && dataPath.isDirectory())
-            {
-                // see if there are other directories present.
-                int dirCount = dataPath.listFiles(new FileFilter()
-                {
-                    public boolean accept(File pathname)
-                    {
-                        return (pathname.isDirectory() && !Schema.systemKeyspaceNames.contains(pathname.getName()));
-                    }
-                }).length;
-
-                if (dirCount > 0)
-                    return true;
-            }
-        }
-
-        return false;
-    }
-
     public static IAuthenticator getAuthenticator()
     {
         return authenticator;
@@ -732,6 +752,11 @@ public class DatabaseDescriptor
     public static IAuthorizer getAuthorizer()
     {
         return authorizer;
+    }
+
+    public static IRoleManager getRoleManager()
+    {
+        return roleManager;
     }
 
     public static int getPermissionsValidity()
@@ -756,6 +781,33 @@ public class DatabaseDescriptor
              : conf.permissions_update_interval_in_ms;
     }
 
+    public static int getRolesValidity()
+    {
+        return conf.roles_validity_in_ms;
+    }
+
+    public static void setRolesValidity(int validity)
+    {
+        conf.roles_validity_in_ms = validity;
+    }
+
+    public static int getRolesCacheMaxEntries()
+    {
+        return conf.roles_cache_max_entries;
+    }
+
+    public static int getRolesUpdateInterval()
+    {
+        return conf.roles_update_interval_in_ms == -1
+             ? conf.roles_validity_in_ms
+             : conf.roles_update_interval_in_ms;
+    }
+
+    public static void setRolesUpdateInterval(int interval)
+    {
+        conf.roles_update_interval_in_ms = interval;
+    }
+
     public static void setPermissionsUpdateInterval(int updateInterval)
     {
         conf.permissions_update_interval_in_ms = updateInterval;
@@ -766,6 +818,16 @@ public class DatabaseDescriptor
         return conf.thrift_framed_transport_size_in_mb * 1024 * 1024;
     }
 
+    public static int getMaxValueSize()
+    {
+        return conf.max_value_size_in_mb * 1024 * 1024;
+    }
+
+    public static void setMaxValueSize(int maxValueSizeInBytes)
+    {
+        conf.max_value_size_in_mb = maxValueSizeInBytes / 1024 / 1024;
+    }
+
     /**
      * Creates all storage-related directories.
      */
@@ -774,34 +836,30 @@ public class DatabaseDescriptor
         try
         {
             if (conf.data_file_directories.length == 0)
-                throw new ConfigurationException("At least one DataFileDirectory must be specified");
+                throw new ConfigurationException("At least one DataFileDirectory must be specified", false);
 
             for (String dataFileDirectory : conf.data_file_directories)
-            {
                 FileUtils.createDirectory(dataFileDirectory);
-            }
 
             if (conf.commitlog_directory == null)
-                throw new ConfigurationException("commitlog_directory must be specified");
-
+                throw new ConfigurationException("commitlog_directory must be specified", false);
             FileUtils.createDirectory(conf.commitlog_directory);
 
-            if (conf.saved_caches_directory == null)
-                throw new ConfigurationException("saved_caches_directory must be specified");
+            if (conf.hints_directory == null)
+                throw new ConfigurationException("hints_directory must be specified", false);
+            FileUtils.createDirectory(conf.hints_directory);
 
+            if (conf.saved_caches_directory == null)
+                throw new ConfigurationException("saved_caches_directory must be specified", false);
             FileUtils.createDirectory(conf.saved_caches_directory);
         }
         catch (ConfigurationException e)
         {
-            logger.error("Fatal error: {}", e.getMessage());
-            System.err.println("Bad configuration; unable to start server");
-            System.exit(1);
+            throw new IllegalArgumentException("Bad configuration; unable to start server: "+e.getMessage());
         }
         catch (FSWriteError e)
         {
-            logger.error("Fatal error: {}", e.getMessage());
-            System.err.println(e.getCause().getMessage() + "; unable to start server");
-            System.exit(1);
+            throw new IllegalStateException(e.getCause().getMessage() + "; unable to start server");
         }
     }
 
@@ -815,10 +873,12 @@ public class DatabaseDescriptor
         return paritionerName;
     }
 
-    /* For tests ONLY, don't use otherwise or all hell will break loose */
-    public static void setPartitioner(IPartitioner newPartitioner)
+    /* For tests ONLY, don't use otherwise or all hell will break loose. Tests should restore value at the end. */
+    public static IPartitioner setPartitionerUnsafe(IPartitioner newPartitioner)
     {
+        IPartitioner old = partitioner;
         partitioner = newPartitioner;
+        return old;
     }
 
     public static IEndpointSnitch getEndpointSnitch()
@@ -855,9 +915,39 @@ public class DatabaseDescriptor
         return conf.batch_size_warn_threshold_in_kb * 1024;
     }
 
+    public static long getBatchSizeFailThreshold()
+    {
+        return conf.batch_size_fail_threshold_in_kb * 1024L;
+    }
+
+    public static int getBatchSizeFailThresholdInKB()
+    {
+        return conf.batch_size_fail_threshold_in_kb;
+    }
+
+    public static int getUnloggedBatchAcrossPartitionsWarnThreshold()
+    {
+        return conf.unlogged_batch_across_partitions_warn_threshold;
+    }
+
+    public static void setBatchSizeWarnThresholdInKB(int threshold)
+    {
+        conf.batch_size_warn_threshold_in_kb = threshold;
+    }
+
+    public static void setBatchSizeFailThresholdInKB(int threshold)
+    {
+        conf.batch_size_fail_threshold_in_kb = threshold;
+    }
+
     public static Collection<String> getInitialTokens()
     {
         return tokensFromString(System.getProperty("cassandra.initial_token", conf.initial_token));
+    }
+
+    public static String getAllocateTokensForKeyspace()
+    {
+        return System.getProperty("cassandra.allocate_tokens_for_keyspace", conf.allocate_tokens_for_keyspace);
     }
 
     public static Collection<String> tokensFromString(String tokenString)
@@ -886,7 +976,7 @@ public class DatabaseDescriptor
         }
         catch (UnknownHostException e)
         {
-            return null;
+            throw new RuntimeException("Replacement ost name could not be resolved or scope_id was specified for a global IPv6 address", e);
         }
     }
 
@@ -1037,6 +1127,9 @@ public class DatabaseDescriptor
             case PAXOS_COMMIT:
             case PAXOS_PREPARE:
             case PAXOS_PROPOSE:
+            case HINT:
+            case BATCH_STORE:
+            case BATCH_REMOVE:
                 return getWriteRpcTimeout();
             case COUNTER_MUTATION:
                 return getCounterWriteRpcTimeout();
@@ -1081,6 +1174,11 @@ public class DatabaseDescriptor
     public static int getConcurrentCounterWriters()
     {
         return conf.concurrent_counter_writes;
+    }
+
+    public static int getConcurrentViewWriters()
+    {
+        return conf.concurrent_materialized_view_writes;
     }
 
     public static int getFlushWriters()
@@ -1140,6 +1238,26 @@ public class DatabaseDescriptor
         return conf.commitlog_directory;
     }
 
+    public static ParameterizedClass getCommitLogCompression()
+    {
+        return conf.commitlog_compression;
+    }
+
+    public static void setCommitLogCompression(ParameterizedClass compressor)
+    {
+        conf.commitlog_compression = compressor;
+    }
+
+    public static int getCommitLogMaxCompressionBuffersInPool()
+    {
+        return conf.commitlog_max_compression_buffers_in_pool;
+    }
+
+    public static int getMaxMutationSize()
+    {
+        return conf.max_mutation_size_in_kb * 1024;
+    }
+
     public static int getTombstoneWarnThreshold()
     {
         return conf.tombstone_warn_threshold;
@@ -1168,6 +1286,11 @@ public class DatabaseDescriptor
         return conf.commitlog_segment_size_in_mb * 1024 * 1024;
     }
 
+    public static void setCommitLogSegmentSize(int sizeMegabytes)
+    {
+        conf.commitlog_segment_size_in_mb = sizeMegabytes;
+    }
+
     public static String getSavedCachesLocation()
     {
         return conf.saved_caches_directory;
@@ -1186,6 +1309,11 @@ public class DatabaseDescriptor
     public static InetAddress getBroadcastAddress()
     {
         return broadcastAddress;
+    }
+
+    public static Boolean shouldListenOnBroadcastAddress()
+    {
+        return conf.listen_on_broadcast_address;
     }
 
     public static IInternodeAuthenticator getInternodeAuthenticator()
@@ -1268,6 +1396,23 @@ public class DatabaseDescriptor
         return Integer.parseInt(System.getProperty("cassandra.native_transport_port", conf.native_transport_port.toString()));
     }
 
+    @VisibleForTesting
+    public static void setNativeTransportPort(int port)
+    {
+        conf.native_transport_port = port;
+    }
+
+    public static int getNativeTransportPortSSL()
+    {
+        return conf.native_transport_port_ssl == null ? getNativeTransportPort() : conf.native_transport_port_ssl;
+    }
+
+    @VisibleForTesting
+    public static void setNativeTransportPortSSL(Integer port)
+    {
+        conf.native_transport_port_ssl = port;
+    }
+
     public static Integer getNativeTransportMaxThreads()
     {
         return conf.native_transport_max_threads;
@@ -1302,14 +1447,19 @@ public class DatabaseDescriptor
         return conf.commitlog_sync_batch_window_in_ms;
     }
 
+    public static void setCommitLogSyncBatchWindow(double windowMillis)
+    {
+        conf.commitlog_sync_batch_window_in_ms = windowMillis;
+    }
+
     public static int getCommitLogSyncPeriod()
     {
         return conf.commitlog_sync_period_in_ms;
     }
 
-    public static int getCommitLogPeriodicQueueSize()
+    public static void setCommitLogSyncPeriod(int periodMillis)
     {
-        return conf.commitlog_periodic_queue_size;
+        conf.commitlog_sync_period_in_ms = periodMillis;
     }
 
     public static Config.CommitLogSync getCommitLogSync()
@@ -1317,14 +1467,33 @@ public class DatabaseDescriptor
         return conf.commitlog_sync;
     }
 
+    public static void setCommitLogSync(CommitLogSync sync)
+    {
+        conf.commitlog_sync = sync;
+    }
+
     public static Config.DiskAccessMode getDiskAccessMode()
     {
         return conf.disk_access_mode;
     }
 
+    // Do not use outside unit tests.
+    @VisibleForTesting
+    public static void setDiskAccessMode(Config.DiskAccessMode mode)
+    {
+        conf.disk_access_mode = mode;
+    }
+
     public static Config.DiskAccessMode getIndexAccessMode()
     {
         return indexAccessMode;
+    }
+
+    // Do not use outside unit tests.
+    @VisibleForTesting
+    public static void setIndexAccessMode(Config.DiskAccessMode mode)
+    {
+        indexAccessMode = mode;
     }
 
     public static void setDiskFailurePolicy(Config.DiskFailurePolicy policy)
@@ -1357,8 +1526,14 @@ public class DatabaseDescriptor
     }
 
     @VisibleForTesting
-    public static void setAutoSnapshot(boolean autoSnapshot) {
+    public static void setAutoSnapshot(boolean autoSnapshot)
+    {
         conf.auto_snapshot = autoSnapshot;
+    }
+    @VisibleForTesting
+    public static boolean getAutoSnapshot()
+    {
+        return conf.auto_snapshot;
     }
 
     public static boolean isAutoBootstrap()
@@ -1368,47 +1543,27 @@ public class DatabaseDescriptor
 
     public static void setHintedHandoffEnabled(boolean hintedHandoffEnabled)
     {
-        conf.hinted_handoff_enabled_global = hintedHandoffEnabled;
-        conf.hinted_handoff_enabled_by_dc.clear();
-    }
-
-    public static void setHintedHandoffEnabled(final String dcNames)
-    {
-        List<String> dcNameList;
-        try
-        {
-            dcNameList = Config.parseHintedHandoffEnabledDCs(dcNames);
-        }
-        catch (IOException e)
-        {
-            throw new IllegalArgumentException("Could not read csv of dcs for hinted handoff enable. " + dcNames, e);
-        }
-
-        if (dcNameList.isEmpty())
-            throw new IllegalArgumentException("Empty list of Dcs for hinted handoff enable");
-
-        conf.hinted_handoff_enabled_by_dc.clear();
-        conf.hinted_handoff_enabled_by_dc.addAll(dcNameList);
+        conf.hinted_handoff_enabled = hintedHandoffEnabled;
     }
 
     public static boolean hintedHandoffEnabled()
     {
-        return conf.hinted_handoff_enabled_global;
+        return conf.hinted_handoff_enabled;
     }
 
-    public static Set<String> hintedHandoffEnabledByDC()
+    public static Set<String> hintedHandoffDisabledDCs()
     {
-        return Collections.unmodifiableSet(conf.hinted_handoff_enabled_by_dc);
+        return conf.hinted_handoff_disabled_datacenters;
     }
 
-    public static boolean shouldHintByDC()
+    public static void enableHintsForDC(String dc)
     {
-        return !conf.hinted_handoff_enabled_by_dc.isEmpty();
+        conf.hinted_handoff_disabled_datacenters.remove(dc);
     }
 
-    public static boolean hintedHandoffEnabled(final String dcName)
+    public static void disableHintsForDC(String dc)
     {
-        return conf.hinted_handoff_enabled_by_dc.contains(dcName);
+        conf.hinted_handoff_disabled_datacenters.add(dc);
     }
 
     public static void setMaxHintWindow(int ms)
@@ -1421,22 +1576,16 @@ public class DatabaseDescriptor
         return conf.max_hint_window_in_ms;
     }
 
-    @Deprecated
-    public static Integer getIndexInterval()
+    public static File getHintsDirectory()
     {
-        return conf.index_interval;
+        return new File(conf.hints_directory);
     }
 
-    public static File getSerializedCachePath(String ksName, String cfName, UUID cfId, CacheService.CacheType cacheType, String version)
+    public static File getSerializedCachePath(CacheService.CacheType cacheType, String version, String extension)
     {
-        StringBuilder builder = new StringBuilder();
-        builder.append(ksName).append('-');
-        builder.append(cfName).append('-');
-        if (cfId != null)
-            builder.append(ByteBufferUtil.bytesToHex(ByteBufferUtil.bytes(cfId))).append('-');
-        builder.append(cacheType);
-        builder.append((version == null ? "" : "-" + version + ".db"));
-        return new File(conf.saved_caches_directory, builder.toString());
+        String name = cacheType.toString()
+                + (version == null ? "" : "-" + version + "." + extension);
+        return new File(conf.saved_caches_directory, name);
     }
 
     public static int getDynamicUpdateInterval()
@@ -1492,9 +1641,29 @@ public class DatabaseDescriptor
         conf.hinted_handoff_throttle_in_kb = throttleInKB;
     }
 
-    public static int getMaxHintsThread()
+    public static int getMaxHintsDeliveryThreads()
     {
         return conf.max_hints_delivery_threads;
+    }
+
+    public static int getHintsFlushPeriodInMS()
+    {
+        return conf.hints_flush_period_in_ms;
+    }
+
+    public static long getMaxHintsFileSize()
+    {
+        return conf.max_hints_file_size_in_mb * 1024L * 1024L;
+    }
+
+    public static ParameterizedClass getHintsCompression()
+    {
+        return conf.hints_compression;
+    }
+
+    public static void setHintsCompression(ParameterizedClass parameterizedClass)
+    {
+        conf.hints_compression = parameterizedClass;
     }
 
     public static boolean isIncrementalBackupsEnabled()
@@ -1512,6 +1681,38 @@ public class DatabaseDescriptor
         return conf.file_cache_size_in_mb;
     }
 
+    public static boolean getBufferPoolUseHeapIfExhausted()
+    {
+        return conf.buffer_pool_use_heap_if_exhausted;
+    }
+
+    public static Config.DiskOptimizationStrategy getDiskOptimizationStrategy()
+    {
+        return conf.disk_optimization_strategy;
+    }
+
+    @VisibleForTesting
+    public static void setDiskOptimizationStrategy(Config.DiskOptimizationStrategy strategy)
+    {
+        conf.disk_optimization_strategy = strategy;
+    }
+
+    public static double getDiskOptimizationEstimatePercentile()
+    {
+        return conf.disk_optimization_estimate_percentile;
+    }
+
+    public static double getDiskOptimizationPageCrossChance()
+    {
+        return conf.disk_optimization_page_cross_chance;
+    }
+
+    @VisibleForTesting
+    public static void setDiskOptimizationPageCrossChance(double chance)
+    {
+        conf.disk_optimization_page_cross_chance = chance;
+    }
+
     public static long getTotalCommitlogSpaceInMB()
     {
         return conf.commitlog_total_space_in_mb;
@@ -1519,7 +1720,11 @@ public class DatabaseDescriptor
 
     public static int getSSTablePreempiveOpenIntervalInMB()
     {
-        return conf.sstable_preemptive_open_interval_in_mb;
+        return FBUtilities.isWindows() ? -1 : conf.sstable_preemptive_open_interval_in_mb;
+    }
+    public static void setSSTablePreempiveOpenIntervalInMB(int mb)
+    {
+        conf.sstable_preemptive_open_interval_in_mb = mb;
     }
 
     public static boolean getTrickleFsync()
@@ -1562,6 +1767,11 @@ public class DatabaseDescriptor
         conf.key_cache_keys_to_save = keyCacheKeysToSave;
     }
 
+    public static String getRowCacheClassName()
+    {
+        return conf.row_cache_class_name;
+    }
+
     public static long getRowCacheSizeInMB()
     {
         return conf.row_cache_size_in_mb;
@@ -1593,6 +1803,11 @@ public class DatabaseDescriptor
         return counterCacheSizeInMB;
     }
 
+    public static void setRowCacheKeysToSave(int rowCacheKeysToSave)
+    {
+        conf.row_cache_keys_to_save = rowCacheKeysToSave;
+    }
+
     public static int getCounterCacheSavePeriod()
     {
         return conf.counter_cache_save_period;
@@ -1611,16 +1826,6 @@ public class DatabaseDescriptor
     public static void setCounterCacheKeysToSave(int counterCacheKeysToSave)
     {
         conf.counter_cache_keys_to_save = counterCacheKeysToSave;
-    }
-
-    public static IAllocator getoffHeapMemoryAllocator()
-    {
-        return memoryAllocator;
-    }
-
-    public static void setRowCacheKeysToSave(int rowCacheKeysToSave)
-    {
-        conf.row_cache_keys_to_save = rowCacheKeysToSave;
     }
 
     public static int getStreamingSocketTimeout()
@@ -1648,6 +1853,12 @@ public class DatabaseDescriptor
         return conf.inter_dc_tcp_nodelay;
     }
 
+
+    public static SSTableFormat.Type getSSTableFormat()
+    {
+        return sstable_format;
+    }
+
     public static MemtablePool getMemtableAllocatorPool()
     {
         long heapLimit = ((long) conf.memtable_heap_space_in_mb) << 20;
@@ -1661,12 +1872,12 @@ public class DatabaseDescriptor
             case offheap_buffers:
                 if (!FileUtils.isCleanerAvailable())
                 {
-                    logger.error("Could not free direct byte buffer: offheap_buffers is not a safe memtable_allocation_type without this ability, please adjust your config. This feature is only guaranteed to work on an Oracle JVM. Refusing to start.");
-                    System.exit(-1);
+                    throw new IllegalStateException("Could not free direct byte buffer: offheap_buffers is not a safe memtable_allocation_type without this ability, please adjust your config. This feature is only guaranteed to work on an Oracle JVM. Refusing to start.");
                 }
                 return new SlabPool(heapLimit, offHeapLimit, conf.memtable_cleanup_threshold, new ColumnFamilyStore.FlushLargestColumnFamily());
             case offheap_objects:
-                return new NativePool(heapLimit, offHeapLimit, conf.memtable_cleanup_threshold, new ColumnFamilyStore.FlushLargestColumnFamily());
+                throw new ConfigurationException("offheap_objects are not available in 3.0. They should be re-introduced in a future release, see https://issues.apache.org/jira/browse/CASSANDRA-9472 for details");
+                // return new NativePool(heapLimit, offHeapLimit, conf.memtable_cleanup_threshold, new ColumnFamilyStore.FlushLargestColumnFamily());
             default:
                 throw new AssertionError();
         }
@@ -1693,6 +1904,16 @@ public class DatabaseDescriptor
         return arch.contains("64") || arch.contains("sparcv9");
     }
 
+    public static int getTracetypeRepairTTL()
+    {
+        return conf.tracetype_repair_ttl;
+    }
+
+    public static int getTracetypeQueryTTL()
+    {
+        return conf.tracetype_query_ttl;
+    }
+
     public static String getOtcCoalescingStrategy()
     {
         return conf.otc_coalescing_strategy;
@@ -1702,4 +1923,65 @@ public class DatabaseDescriptor
     {
         return conf.otc_coalescing_window_us;
     }
+
+    public static int getWindowsTimerInterval()
+    {
+        return conf.windows_timer_interval;
+    }
+
+    public static boolean enableUserDefinedFunctions()
+    {
+        return conf.enable_user_defined_functions;
+    }
+
+    public static boolean enableScriptedUserDefinedFunctions()
+    {
+        return conf.enable_scripted_user_defined_functions;
+    }
+
+    public static void enableScriptedUserDefinedFunctions(boolean enableScriptedUserDefinedFunctions)
+    {
+        conf.enable_scripted_user_defined_functions = enableScriptedUserDefinedFunctions;
+    }
+
+    public static boolean enableUserDefinedFunctionsThreads()
+    {
+        return conf.enable_user_defined_functions_threads;
+    }
+
+    public static long getUserDefinedFunctionWarnTimeout()
+    {
+        return conf.user_defined_function_warn_timeout;
+    }
+
+    public static void setUserDefinedFunctionWarnTimeout(long userDefinedFunctionWarnTimeout)
+    {
+        conf.user_defined_function_warn_timeout = userDefinedFunctionWarnTimeout;
+    }
+
+    public static long getUserDefinedFunctionFailTimeout()
+    {
+        return conf.user_defined_function_fail_timeout;
+    }
+
+    public static void setUserDefinedFunctionFailTimeout(long userDefinedFunctionFailTimeout)
+    {
+        conf.user_defined_function_fail_timeout = userDefinedFunctionFailTimeout;
+    }
+
+    public static Config.UserFunctionTimeoutPolicy getUserFunctionTimeoutPolicy()
+    {
+        return conf.user_function_timeout_policy;
+    }
+
+    public static void setUserFunctionTimeoutPolicy(Config.UserFunctionTimeoutPolicy userFunctionTimeoutPolicy)
+    {
+        conf.user_function_timeout_policy = userFunctionTimeoutPolicy;
+    }
+
+    public static long getGCWarnThreshold()
+    {
+        return conf.gc_warn_threshold_in_ms;
+    }
+
 }

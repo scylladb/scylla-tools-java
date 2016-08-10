@@ -46,14 +46,7 @@ public class CqlCounterAdder extends CqlOperation<Integer>
     @Override
     protected String buildQuery()
     {
-        String counterCF = isCql2() ? type.table : "Counter3";
-
-        StringBuilder query = new StringBuilder("UPDATE ").append(wrapInQuotesIfRequired(counterCF));
-
-        if (isCql2())
-            query.append(" USING CONSISTENCY ").append(settings.command.consistencyLevel);
-
-        query.append(" SET ");
+        StringBuilder query = new StringBuilder("UPDATE counter1 SET ");
 
         // TODO : increment distribution subset of columns
         for (int i = 0; i < settings.columns.maxColumnsPerKey; i++)
@@ -61,7 +54,8 @@ public class CqlCounterAdder extends CqlOperation<Integer>
             if (i > 0)
                 query.append(",");
 
-            query.append('C').append(i).append("=C").append(i).append("+?");
+            String name = wrapInQuotes(settings.columns.namestrs.get(i));
+            query.append(name).append("=").append(name).append("+?");
         }
         query.append(" WHERE KEY=?");
         return query.toString();

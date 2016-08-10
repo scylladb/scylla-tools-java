@@ -18,7 +18,6 @@
 if "%OS%" == "Windows_NT" setlocal
 
 set ARG=%1
-if /i "%ARG%" == "LEGACY" goto runLegacy
 set INSTALL="INSTALL"
 set UNINSTALL="UNINSTALL"
 
@@ -26,6 +25,7 @@ pushd %~dp0..
 if NOT DEFINED CASSANDRA_HOME set CASSANDRA_HOME=%CD%
 popd
 
+if /i "%ARG%" == "LEGACY" goto runLegacy
 REM -----------------------------------------------------------------------------
 REM See if we have access to run unsigned powershell scripts
 for /F "delims=" %%i in ('powershell Get-ExecutionPolicy') do set PERMISSION=%%i
@@ -66,6 +66,7 @@ set JAVA_OPTS=-ea^
  -XX:CMSInitiatingOccupancyFraction=75^
  -XX:+UseCMSInitiatingOccupancyOnly^
  -Dlogback.configurationFile=logback.xml^
+ -Djava.library.path="%CASSANDRA_HOME%\lib\sigar-bin"^
  -Dcassandra.jmx.local.port=7199
 REM **** JMX REMOTE ACCESS SETTINGS SEE: https://wiki.apache.org/cassandra/JmxSecurity ***
 REM -Dcom.sun.management.jmxremote.port=7199^
@@ -87,6 +88,29 @@ goto :eof
 
 REM -----------------------------------------------------------------------------
 :okClasspath
+
+REM JSR223 - collect all JSR223 engines' jars
+for /D %%P in ("%CASSANDRA_HOME%\lib\jsr223\*.*") do (
+	for %%i in ("%%P\*.jar") do call :append "%%i"
+)
+
+REM JSR223/JRuby - set ruby lib directory
+if EXIST "%CASSANDRA_HOME%\lib\jsr223\jruby\ruby" (
+    set JAVA_OPTS=%JAVA_OPTS% "-Djruby.lib=%CASSANDRA_HOME%\lib\jsr223\jruby"
+)
+REM JSR223/JRuby - set ruby JNI libraries root directory
+if EXIST "%CASSANDRA_HOME%\lib\jsr223\jruby\jni" (
+    set JAVA_OPTS=%JAVA_OPTS% "-Djffi.boot.library.path=%CASSANDRA_HOME%\lib\jsr223\jruby\jni"
+)
+REM JSR223/Jython - set python.home system property
+if EXIST "%CASSANDRA_HOME%\lib\jsr223\jython\jython.jar" (
+    set JAVA_OPTS=%JAVA_OPTS% "-Dpython.home=%CASSANDRA_HOME%\lib\jsr223\jython"
+)
+REM JSR223/Scala - necessary system property
+if EXIST "%CASSANDRA_HOME%\lib\jsr223\scala\scala-compiler.jar" (
+    set JAVA_OPTS=%JAVA_OPTS% "-Dscala.usejavacp=true"
+)
+
 REM Include the build\classes\main directory so it works in development
 set CASSANDRA_CLASSPATH=%CLASSPATH%;"%CASSANDRA_HOME%\build\classes\main";"%CASSANDRA_HOME%\build\classes\thrift"
 set CASSANDRA_PARAMS=-Dcassandra -Dcassandra-foreground=yes

@@ -21,20 +21,24 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.File;
 import java.io.IOException;
-import java.nio.MappedByteBuffer;
-import java.util.Iterator;
-import java.util.NoSuchElementException;
+import java.util.function.Supplier;
 
 import com.google.common.util.concurrent.RateLimiter;
 
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.io.FSReadError;
 import org.apache.cassandra.io.compress.CompressedSequentialWriter;
+import org.apache.cassandra.io.sstable.Component;
+import org.apache.cassandra.io.sstable.Descriptor;
+import org.apache.cassandra.io.sstable.IndexSummary;
+import org.apache.cassandra.io.sstable.IndexSummaryBuilder;
+import org.apache.cassandra.io.sstable.format.Version;
+import org.apache.cassandra.io.sstable.metadata.StatsMetadata;
 import org.apache.cassandra.utils.CLibrary;
-import org.apache.cassandra.utils.Pair;
 import org.apache.cassandra.utils.concurrent.RefCounted;
 import org.apache.cassandra.utils.concurrent.SharedCloseableImpl;
+
+import static org.apache.cassandra.utils.Throwables.maybeFail;
 
 /**
  * Abstracts a read-only file that has been split into segments, each of which can be represented by an independent
@@ -47,7 +51,8 @@ import org.apache.cassandra.utils.concurrent.SharedCloseableImpl;
  */
 public abstract class SegmentedFile extends SharedCloseableImpl
 {
-    public final String path;
+    public final ChannelProxy channel;
+    public final int bufferSize;
     public final long length;
 
     // This differs from length for compressed files (but we still need length for
@@ -57,38 +62,50 @@ public abstract class SegmentedFile extends SharedCloseableImpl
     /**
      * Use getBuilder to get a Builder to construct a SegmentedFile.
      */
-    SegmentedFile(Cleanup cleanup, String path, long length)
+    SegmentedFile(Cleanup cleanup, ChannelProxy channel, int bufferSize, long length)
     {
-        this(cleanup, path, length, length);
+        this(cleanup, channel, bufferSize, length, length);
     }
 
-    protected SegmentedFile(Cleanup cleanup, String path, long length, long onDiskLength)
+    protected SegmentedFile(Cleanup cleanup, ChannelProxy channel, int bufferSize, long length, long onDiskLength)
     {
         super(cleanup);
-        this.path = new File(path).getAbsolutePath();
+        this.channel = channel;
+        this.bufferSize = bufferSize;
         this.length = length;
         this.onDiskLength = onDiskLength;
     }
 
-    public SegmentedFile(SegmentedFile copy)
+    protected SegmentedFile(SegmentedFile copy)
     {
         super(copy);
-        path = copy.path;
+        channel = copy.channel;
+        bufferSize = copy.bufferSize;
         length = copy.length;
         onDiskLength = copy.onDiskLength;
     }
 
-    protected static abstract class Cleanup implements RefCounted.Tidy
+    public String path()
     {
-        final String path;
-        protected Cleanup(String path)
+        return channel.filePath();
+    }
+
+    protected static class Cleanup implements RefCounted.Tidy
+    {
+        final ChannelProxy channel;
+        protected Cleanup(ChannelProxy channel)
         {
-            this.path = path;
+            this.channel = channel;
         }
 
         public String name()
         {
-            return path;
+            return channel.filePath();
+        }
+
+        public void tidy()
+        {
+            channel.close();
         }
     }
 
@@ -96,16 +113,22 @@ public abstract class SegmentedFile extends SharedCloseableImpl
 
     public RandomAccessReader createReader()
     {
-        return RandomAccessReader.open(new File(path), length);
+        return new RandomAccessReader.Builder(channel)
+               .overrideLength(length)
+               .bufferSize(bufferSize)
+               .build();
     }
 
-    public RandomAccessReader createThrottledReader(RateLimiter limiter)
+    public RandomAccessReader createReader(RateLimiter limiter)
     {
-        assert limiter != null;
-        return ThrottledReader.open(new File(path), length, limiter);
+        return new RandomAccessReader.Builder(channel)
+               .overrideLength(length)
+               .bufferSize(bufferSize)
+               .limiter(limiter)
+               .build();
     }
 
-    public FileDataInput getSegment(long position)
+    public FileDataInput createReader(long position)
     {
         RandomAccessReader reader = createReader();
         reader.seek(position);
@@ -114,137 +137,178 @@ public abstract class SegmentedFile extends SharedCloseableImpl
 
     public void dropPageCache(long before)
     {
-        CLibrary.trySkipCache(path, 0, before);
+        CLibrary.trySkipCache(channel.getFileDescriptor(), 0, before, path());
     }
 
     /**
      * @return A SegmentedFile.Builder.
      */
-    public static Builder getBuilder(Config.DiskAccessMode mode)
+    public static Builder getBuilder(Config.DiskAccessMode mode, boolean compressed)
     {
-        return mode == Config.DiskAccessMode.mmap
-               ? new MmappedSegmentedFile.Builder()
-               : new BufferedPoolingSegmentedFile.Builder();
-    }
-
-    public static Builder getCompressedBuilder()
-    {
-        return getCompressedBuilder(null);
+        return compressed ? new CompressedSegmentedFile.Builder(null)
+                          : mode == Config.DiskAccessMode.mmap ? new MmappedSegmentedFile.Builder()
+                                                               : new BufferedSegmentedFile.Builder();
     }
 
     public static Builder getCompressedBuilder(CompressedSequentialWriter writer)
     {
-        return new CompressedPoolingSegmentedFile.Builder(writer);
-    }
-
-    /**
-     * @return An Iterator over segments, beginning with the segment containing the given position: each segment must be closed after use.
-     */
-    public Iterator<FileDataInput> iterator(long position)
-    {
-        return new SegmentIterator(position);
+        return new CompressedSegmentedFile.Builder(writer);
     }
 
     /**
      * Collects potential segmentation points in an underlying file, and builds a SegmentedFile to represent it.
      */
-    public static abstract class Builder
+    public static abstract class Builder implements AutoCloseable
     {
-        /**
-         * Adds a position that would be a safe place for a segment boundary in the file. For a block/row based file
-         * format, safe boundaries are block/row edges.
-         * @param boundary The absolute position of the potential boundary in the file.
-         */
-        public abstract void addPotentialBoundary(long boundary);
+        private ChannelProxy channel;
 
         /**
          * Called after all potential boundaries have been added to apply this Builder to a concrete file on disk.
-         * @param path The file on disk.
+         * @param channel The channel to the file on disk.
          */
-        protected abstract SegmentedFile complete(String path, long overrideLength, boolean isFinal);
+        protected abstract SegmentedFile complete(ChannelProxy channel, int bufferSize, long overrideLength);
 
-        public SegmentedFile complete(String path)
+        @SuppressWarnings("resource") // SegmentedFile owns channel
+        private SegmentedFile complete(String path, int bufferSize, long overrideLength)
         {
-            return complete(path, -1, true);
+            ChannelProxy channelCopy = getChannel(path);
+            try
+            {
+                return complete(channelCopy, bufferSize, overrideLength);
+            }
+            catch (Throwable t)
+            {
+                channelCopy.close();
+                throw t;
+            }
         }
 
-        public SegmentedFile complete(String path, boolean isFinal)
+        public SegmentedFile buildData(Descriptor desc, StatsMetadata stats, IndexSummaryBuilder.ReadableBoundary boundary)
         {
-            return complete(path, -1, isFinal);
+            return complete(desc.filenameFor(Component.DATA), bufferSize(stats), boundary.dataLength);
         }
 
-        public SegmentedFile complete(String path, long overrideLength)
+        public SegmentedFile buildData(Descriptor desc, StatsMetadata stats)
         {
-            return complete(path, overrideLength, false);
+            return complete(desc.filenameFor(Component.DATA), bufferSize(stats), -1L);
         }
 
-        public void serializeBounds(DataOutput out) throws IOException
+        public SegmentedFile buildIndex(Descriptor desc, IndexSummary indexSummary, IndexSummaryBuilder.ReadableBoundary boundary)
         {
+            return complete(desc.filenameFor(Component.PRIMARY_INDEX), bufferSize(desc, indexSummary), boundary.indexLength);
+        }
+
+        public SegmentedFile buildIndex(Descriptor desc, IndexSummary indexSummary)
+        {
+            return complete(desc.filenameFor(Component.PRIMARY_INDEX), bufferSize(desc, indexSummary), -1L);
+        }
+
+        private static int bufferSize(StatsMetadata stats)
+        {
+            return bufferSize(stats.estimatedPartitionSize.percentile(DatabaseDescriptor.getDiskOptimizationEstimatePercentile()));
+        }
+
+        private static int bufferSize(Descriptor desc, IndexSummary indexSummary)
+        {
+            File file = new File(desc.filenameFor(Component.PRIMARY_INDEX));
+            return bufferSize(file.length() / indexSummary.size());
+        }
+
+        /**
+            Return the buffer size for a given record size. For spinning disks always add one page.
+            For solid state disks only add one page if the chance of crossing to the next page is more
+            than a predifined value, @see Config.disk_optimization_page_cross_chance.
+         */
+        static int bufferSize(long recordSize)
+        {
+            Config.DiskOptimizationStrategy strategy = DatabaseDescriptor.getDiskOptimizationStrategy();
+            if (strategy == Config.DiskOptimizationStrategy.ssd)
+            {
+                // The crossing probability is calculated assuming a uniform distribution of record
+                // start position in a page, so it's the record size modulo the page size divided by
+                // the total page size.
+                double pageCrossProbability = (recordSize % 4096) / 4096.;
+                // if the page cross probability is equal or bigger than disk_optimization_page_cross_chance we add one page
+                if ((pageCrossProbability - DatabaseDescriptor.getDiskOptimizationPageCrossChance()) > -1e-16)
+                    recordSize += 4096;
+
+                return roundBufferSize(recordSize);
+            }
+            else if (strategy == Config.DiskOptimizationStrategy.spinning)
+            {
+                return roundBufferSize(recordSize + 4096);
+            }
+            else
+            {
+                throw new IllegalStateException("Unsupported disk optimization strategy: " + strategy);
+            }
+        }
+
+        /**
+           Round up to the next multiple of 4k but no more than 64k
+         */
+        static int roundBufferSize(long size)
+        {
+            if (size <= 0)
+                return 4096;
+
+            size = (size + 4095) & ~4095;
+            return (int)Math.min(size, 1 << 16);
+        }
+
+        public void serializeBounds(DataOutput out, Version version) throws IOException
+        {
+            if (!version.hasBoundaries())
+                return;
+
             out.writeUTF(DatabaseDescriptor.getDiskAccessMode().name());
         }
 
-        public void deserializeBounds(DataInput in) throws IOException
+        public void deserializeBounds(DataInput in, Version version) throws IOException
         {
+            if (!version.hasBoundaries())
+                return;
+
             if (!in.readUTF().equals(DatabaseDescriptor.getDiskAccessMode().name()))
                 throw new IOException("Cannot deserialize SSTable Summary component because the DiskAccessMode was changed!");
         }
-    }
 
-    static final class Segment extends Pair<Long, MappedByteBuffer> implements Comparable<Segment>
-    {
-        public Segment(long offset, MappedByteBuffer segment)
+        public Throwable close(Throwable accumulate)
         {
-            super(offset, segment);
+            if (channel != null)
+                return channel.close(accumulate);
+
+            return accumulate;
         }
 
-        public final int compareTo(Segment that)
+        public void close()
         {
-            return (int)Math.signum(this.left - that.left);
-        }
-    }
-
-    /**
-     * A lazy Iterator over segments in forward order from the given position.  It is caller's responsibility
-     * to close the FileDataIntputs when finished.
-     */
-    final class SegmentIterator implements Iterator<FileDataInput>
-    {
-        private long nextpos;
-        public SegmentIterator(long position)
-        {
-            this.nextpos = position;
+            maybeFail(close(null));
         }
 
-        public boolean hasNext()
+        private ChannelProxy getChannel(String path)
         {
-            return nextpos < length;
-        }
-
-        public FileDataInput next()
-        {
-            long position = nextpos;
-            if (position >= length)
-                throw new NoSuchElementException();
-
-            FileDataInput segment = getSegment(nextpos);
-            try
+            if (channel != null)
             {
-                nextpos = nextpos + segment.bytesRemaining();
+                // This is really fragile, both path and channel.filePath()
+                // must agree, i.e. they both must be absolute or both relative
+                // eventually we should really pass the filePath to the builder
+                // constructor and remove this
+                if (channel.filePath().equals(path))
+                    return channel.sharedCopy();
+                else
+                    channel.close();
             }
-            catch (IOException e)
-            {
-                throw new FSReadError(e, path);
-            }
-            return segment;
-        }
 
-        public void remove() { throw new UnsupportedOperationException(); }
+            channel = new ChannelProxy(path);
+            return channel.sharedCopy();
+        }
     }
 
     @Override
     public String toString() {
-        return getClass().getSimpleName() + "(path='" + path + "'" +
+        return getClass().getSimpleName() + "(path='" + path() + '\'' +
                ", length=" + length +
-               ")";
+               ')';
 }
 }

@@ -19,7 +19,10 @@ package org.apache.cassandra.tracing;
 
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
+import java.util.Collections;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -28,31 +31,47 @@ import org.slf4j.helpers.MessageFormatter;
 
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
-import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.db.CFRowAdder;
-import org.apache.cassandra.db.ColumnFamily;
+import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.Mutation;
+import org.apache.cassandra.exceptions.OverloadedException;
+import org.apache.cassandra.service.StorageProxy;
 import org.apache.cassandra.utils.ByteBufferUtil;
-import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.UUIDGen;
 import org.apache.cassandra.utils.WrappedRunnable;
+import org.apache.cassandra.utils.progress.ProgressEvent;
+import org.apache.cassandra.utils.progress.ProgressEventNotifier;
+import org.apache.cassandra.utils.progress.ProgressListener;
 
 /**
  * ThreadLocal state for a tracing session. The presence of an instance of this class as a ThreadLocal denotes that an
  * operation is being traced.
  */
-public class TraceState
+public class TraceState implements ProgressEventNotifier
 {
     public final UUID sessionId;
     public final InetAddress coordinator;
     public final Stopwatch watch;
     public final ByteBuffer sessionIdBytes;
+    public final Tracing.TraceType traceType;
+    public final int ttl;
+
+    private boolean notify;
+    private final List<ProgressListener> listeners = new CopyOnWriteArrayList<>();
+    private String tag;
+
+    public enum Status
+    {
+        IDLE,
+        ACTIVE,
+        STOPPED
+    }
+
+    private volatile Status status;
 
     // Multiple requests can use the same TraceState at a time, so we need to reference count.
     // See CASSANDRA-7626 for more details.
     private final AtomicInteger references = new AtomicInteger(1);
 
-    public TraceState(InetAddress coordinator, UUID sessionId)
+    public TraceState(InetAddress coordinator, UUID sessionId, Tracing.TraceType traceType)
     {
         assert coordinator != null;
         assert sessionId != null;
@@ -60,13 +79,82 @@ public class TraceState
         this.coordinator = coordinator;
         this.sessionId = sessionId;
         sessionIdBytes = ByteBufferUtil.bytes(sessionId);
+        this.traceType = traceType;
+        this.ttl = traceType.getTTL();
         watch = Stopwatch.createStarted();
+        this.status = Status.IDLE;
+}
+
+    /**
+     * Activate notification with provided {@code tag} name.
+     *
+     * @param tag Tag name to add when emitting notification
+     */
+    public void enableActivityNotification(String tag)
+    {
+        assert traceType == Tracing.TraceType.REPAIR;
+        notify = true;
+        this.tag = tag;
+    }
+
+    @Override
+    public void addProgressListener(ProgressListener listener)
+    {
+        assert traceType == Tracing.TraceType.REPAIR;
+        listeners.add(listener);
+    }
+
+    @Override
+    public void removeProgressListener(ProgressListener listener)
+    {
+        assert traceType == Tracing.TraceType.REPAIR;
+        listeners.remove(listener);
     }
 
     public int elapsed()
     {
         long elapsed = watch.elapsed(TimeUnit.MICROSECONDS);
         return elapsed < Integer.MAX_VALUE ? (int) elapsed : Integer.MAX_VALUE;
+    }
+
+    public synchronized void stop()
+    {
+        status = Status.STOPPED;
+        notifyAll();
+    }
+
+    /*
+     * Returns immediately if there has been trace activity since the last
+     * call, otherwise waits until there is trace activity, or until the
+     * timeout expires.
+     * @param timeout timeout in milliseconds
+     * @return activity status
+     */
+    public synchronized Status waitActivity(long timeout)
+    {
+        if (status == Status.IDLE)
+        {
+            try
+            {
+                wait(timeout);
+            }
+            catch (InterruptedException e)
+            {
+                throw new RuntimeException();
+            }
+        }
+        if (status == Status.ACTIVE)
+        {
+            status = Status.IDLE;
+            return Status.ACTIVE;
+        }
+        return status;
+    }
+
+    private synchronized void notifyActivity()
+    {
+        status = Status.ACTIVE;
+        notifyAll();
     }
 
     public void trace(String format, Object arg)
@@ -86,10 +174,36 @@ public class TraceState
 
     public void trace(String message)
     {
-        TraceState.trace(sessionIdBytes, message, elapsed());
+        if (notify)
+            notifyActivity();
+
+        final String threadName = Thread.currentThread().getName();
+        final int elapsed = elapsed();
+
+        executeMutation(TraceKeyspace.makeEventMutation(sessionIdBytes, message, elapsed, threadName, ttl));
+
+        for (ProgressListener listener : listeners)
+        {
+            listener.progress(tag, ProgressEvent.createNotification(message));
+        }
     }
 
-    public static void trace(final ByteBuffer sessionIdBytes, final String message, final int elapsed)
+    static void executeMutation(final Mutation mutation)
+    {
+        StageManager.getStage(Stage.TRACING).execute(new WrappedRunnable()
+        {
+            protected void runMayThrow() throws Exception
+            {
+            mutateWithCatch(mutation);
+            }
+        });
+    }
+
+    /**
+     * Called from {@link org.apache.cassandra.net.OutboundTcpConnection} for non-local traces (traces
+     * that are not initiated by local node == coordinator).
+     */
+    public static void mutateWithTracing(final ByteBuffer sessionId, final String message, final int elapsed, final int ttl)
     {
         final String threadName = Thread.currentThread().getName();
 
@@ -97,19 +211,21 @@ public class TraceState
         {
             public void runMayThrow()
             {
-                Mutation mutation = new Mutation(Tracing.TRACE_KS, sessionIdBytes);
-                ColumnFamily cells = mutation.addOrGet(CFMetaData.TraceEventsCf);
-
-                CFRowAdder adder = new CFRowAdder(cells, cells.metadata().comparator.make(UUIDGen.getTimeUUID()), FBUtilities.timestampMicros());
-                adder.add("activity", message);
-                adder.add("source", FBUtilities.getBroadcastAddress());
-                if (elapsed >= 0)
-                    adder.add("source_elapsed", elapsed);
-                adder.add("thread", threadName);
-
-                Tracing.mutateWithCatch(mutation);
+                mutateWithCatch(TraceKeyspace.makeEventMutation(sessionId, message, elapsed, threadName, ttl));
             }
         });
+    }
+
+    static void mutateWithCatch(Mutation mutation)
+    {
+        try
+        {
+            StorageProxy.mutate(Collections.singletonList(mutation), ConsistencyLevel.ANY);
+        }
+        catch (OverloadedException e)
+        {
+            Tracing.logger.warn("Too many nodes are overloaded to save trace events");
+        }
     }
 
     public boolean acquireReference()

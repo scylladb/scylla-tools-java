@@ -110,7 +110,7 @@ public class TupleTypeTest extends CQLTester
             row(0, 4, tuple(null, "1"))
         );
 
-        assertInvalidMessage("Invalid tuple literal: too many elements. Type tuple<int, text> expects 2 but got 3",
+        assertInvalidMessage("Invalid tuple literal: too many elements. Type frozen<tuple<int, text>> expects 2 but got 3",
                              "INSERT INTO %s(k, t) VALUES (1,'1:2:3')");
     }
 
@@ -121,10 +121,23 @@ public class TupleTypeTest extends CQLTester
 
         assertInvalidSyntax("INSERT INTO %s (k, t) VALUES (0, ())");
 
-        assertInvalidMessage("Invalid tuple literal for t: too many elements. Type tuple<int, text, double> expects 3 but got 4",
+        assertInvalidMessage("Invalid tuple literal for t: too many elements. Type frozen<tuple<int, text, double>> expects 3 but got 4",
                              "INSERT INTO %s (k, t) VALUES (0, (2, 'foo', 3.1, 'bar'))");
     }
 
+    @Test
+    public void testTupleWithUnsetValues() throws Throwable
+    {
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, t tuple<int, text, double>)");
+        // invalid positional field substitution
+        assertInvalidMessage("Invalid unset value for tuple field number 1",
+                             "INSERT INTO %s (k, t) VALUES(0, (3, ?, 2.1))", unset());
+
+        createIndex("CREATE INDEX tuple_index ON %s (t)");
+        // select using unset
+        assertInvalidMessage("Invalid unset value for tuple field number 0", "SELECT * FROM %s WHERE k = ? and t = (?,?,?)", unset(), unset(), unset(), unset());
+    }
+	
     /**
      * Test the syntax introduced by #4851,
      * migrated from cql_tests.py:TestCQL.tuple_notation_test()

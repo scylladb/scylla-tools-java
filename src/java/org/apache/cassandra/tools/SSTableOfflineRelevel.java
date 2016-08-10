@@ -30,17 +30,14 @@ import java.util.Set;
 
 import com.google.common.base.Throwables;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.Keyspace;
-import org.apache.cassandra.db.compaction.LeveledManifest;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
-import org.apache.cassandra.io.sstable.SSTableReader;
-import org.apache.cassandra.utils.Pair;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 
 /**
  * Create a decent leveling for the given keyspace/column family
@@ -83,10 +80,13 @@ public class SSTableOfflineRelevel
             out.println("Usage: sstableofflinerelevel [--dry-run] <keyspace> <columnfamily>");
             System.exit(1);
         }
+
+        Util.initDatabaseDescriptor();
+
         boolean dryRun = args[0].equals("--dry-run");
         String keyspace = args[args.length - 2];
         String columnfamily = args[args.length - 1];
-        DatabaseDescriptor.loadSchemas(false);
+        Schema.instance.loadFromDisk(false);
 
         if (Schema.instance.getCFMetaData(keyspace, columnfamily) == null)
             throw new IllegalArgumentException(String.format("Unknown keyspace/columnFamily %s.%s",
@@ -95,7 +95,7 @@ public class SSTableOfflineRelevel
 
         Keyspace ks = Keyspace.openWithoutSSTables(keyspace);
         ColumnFamilyStore cfs = ks.getColumnFamilyStore(columnfamily);
-        Directories.SSTableLister lister = cfs.directories.sstableLister().skipTemporary(true);
+        Directories.SSTableLister lister = cfs.getDirectories().sstableLister(Directories.OnTxnErr.THROW).skipTemporary(true);
         Set<SSTableReader> sstables = new HashSet<>();
         for (Map.Entry<Descriptor, Set<Component>> sstable : lister.list().entrySet())
         {

@@ -21,11 +21,13 @@ import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.util.Collection;
 import java.util.Random;
 import java.util.UUID;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Charsets;
 
 
 /**
@@ -190,27 +192,6 @@ public class UUIDGen
     }
 
     /**
-     * Converts a milliseconds-since-epoch timestamp into the 16 byte representation
-     * of a type 1 UUID (a time-based UUID).
-     *
-     * <p><i><b>Deprecated:</b> This method goes again the principle of a time
-     * UUID and should not be used. For queries based on timestamp, minTimeUUID() and
-     * maxTimeUUID() can be used but this method has questionable usefulness. This is
-     * only kept because CQL2 uses it (see TimeUUID.fromStringCQL2) and we
-     * don't want to break compatibility.</i></p>
-     *
-     * <p><i><b>Warning:</b> This method is not guaranteed to return unique UUIDs; Multiple
-     * invocations using identical timestamps will result in identical UUIDs.</i></p>
-     *
-     * @param timeMillis
-     * @return a type 1 UUID represented as a byte[]
-     */
-    public static byte[] getTimeUUIDBytes(long timeMillis)
-    {
-        return createTimeUUIDBytes(instance.createTimeUnsafe(timeMillis));
-    }
-
-    /**
      * Converts a 100-nanoseconds precision timestamp into the 16 byte representation
      * of a type 1 UUID (a time-based UUID).
      *
@@ -259,7 +240,7 @@ public class UUIDGen
 
     private static long makeClockSeqAndNode()
     {
-        long clock = new Random(System.currentTimeMillis()).nextLong();
+        long clock = new SecureRandom().nextLong();
 
         long lsb = 0;
         lsb |= 0x8000000000000000L;                 // variant (2 bits)
@@ -279,12 +260,6 @@ public class UUIDGen
             nanosSince = ++lastNanos;
 
         return createTime(nanosSince);
-    }
-
-    /** @param when time in milliseconds */
-    private long createTimeUnsafe(long when)
-    {
-        return createTimeUnsafe(when, 0);
     }
 
     private long createTimeUnsafe(long when, int nanos)
@@ -336,9 +311,20 @@ public class UUIDGen
     {
         try
         {
+            // Identify the host.
             MessageDigest messageDigest = MessageDigest.getInstance("MD5");
             for(InetAddress addr : data)
                 messageDigest.update(addr.getAddress());
+
+            // Identify the process on the load: we use both the PID and class loader hash.
+            long pid = SigarLibrary.instance.getPid();
+            if (pid < 0)
+                pid = new Random(System.currentTimeMillis()).nextLong();
+            FBUtilities.updateWithLong(messageDigest, pid);
+
+            ClassLoader loader = UUIDGen.class.getClassLoader();
+            int loaderId = loader != null ? System.identityHashCode(loader) : 0;
+            FBUtilities.updateWithInt(messageDigest, loaderId);
 
             return messageDigest.digest();
         }

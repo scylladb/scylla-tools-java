@@ -43,6 +43,8 @@ public class SSTableMetadataViewer
             System.exit(1);
         }
 
+        Util.initDatabaseDescriptor();
+
         for (String fname : args)
         {
             if (new File(fname).exists())
@@ -68,8 +70,9 @@ public class SSTableMetadataViewer
                     out.printf("Estimated droppable tombstones: %s%n", stats.getEstimatedDroppableTombstoneRatio((int) (System.currentTimeMillis() / 1000)));
                     out.printf("SSTable Level: %d%n", stats.sstableLevel);
                     out.printf("Repaired at: %d%n", stats.repairedAt);
-                    out.println(stats.replayPosition);
-                    out.println("Estimated tombstone drop times:%n");
+                    out.printf("Minimum replay position: %s\n", stats.commitLogLowerBound);
+                    out.printf("Maximum replay position: %s\n", stats.commitLogUpperBound);
+                    out.println("Estimated tombstone drop times:");
                     for (Map.Entry<Double, Long> entry : stats.estimatedTombstoneDropTime.getAsMap().entrySet())
                     {
                         out.printf("%-10s:%10s%n",entry.getKey().intValue(), entry.getValue());
@@ -78,9 +81,7 @@ public class SSTableMetadataViewer
                 }
                 if (compaction != null)
                 {
-                    out.printf("Ancestors: %s%n", compaction.ancestors.toString());
                     out.printf("Estimated cardinality: %s%n", compaction.cardinalityEstimator.cardinality());
-
                 }
             }
             else
@@ -92,8 +93,8 @@ public class SSTableMetadataViewer
 
     private static void printHistograms(StatsMetadata metadata, PrintStream out)
     {
-        long[] offsets = metadata.estimatedRowSize.getBucketOffsets();
-        long[] ersh = metadata.estimatedRowSize.getBuckets(false);
+        long[] offsets = metadata.estimatedPartitionSize.getBucketOffsets();
+        long[] ersh = metadata.estimatedPartitionSize.getBuckets(false);
         long[] ecch = metadata.estimatedColumnCount.getBuckets(false);
 
         out.println(String.format("%-10s%18s%18s",

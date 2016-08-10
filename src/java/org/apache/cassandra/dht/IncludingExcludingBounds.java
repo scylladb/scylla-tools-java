@@ -20,8 +20,6 @@ package org.apache.cassandra.dht;
 import java.util.Collections;
 import java.util.List;
 
-import org.apache.cassandra.db.RowPosition;
-import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.Pair;
 
 /**
@@ -31,15 +29,10 @@ public class IncludingExcludingBounds<T extends RingPosition<T>> extends Abstrac
 {
     public IncludingExcludingBounds(T left, T right)
     {
-        this(left, right, StorageService.getPartitioner());
-    }
-
-    IncludingExcludingBounds(T left, T right, IPartitioner partitioner)
-    {
-        super(left, right, partitioner);
+        super(left, right);
         // unlike a Range, an IncludingExcludingBounds may not wrap, nor have
         // right == left unless the right is the min token
-        assert left.compareTo(right) < 0 || right.isMinimum(partitioner) : "[" + left + "," + right + ")";
+        assert !strictlyWrapsAround(left, right) && (right.isMinimum() || left.compareTo(right) != 0) : "(" + left + "," + right + ")";
     }
 
     public boolean contains(T position)
@@ -50,8 +43,8 @@ public class IncludingExcludingBounds<T extends RingPosition<T>> extends Abstrac
     public Pair<AbstractBounds<T>, AbstractBounds<T>> split(T position)
     {
         assert contains(position);
-        AbstractBounds<T> lb = new Bounds<T>(left, position, partitioner);
-        AbstractBounds<T> rb = new ExcludingBounds<T>(position, right, partitioner);
+        AbstractBounds<T> lb = new Bounds<T>(left, position);
+        AbstractBounds<T> rb = new ExcludingBounds<T>(position, right);
         return Pair.create(lb, rb);
     }
 
@@ -96,24 +89,14 @@ public class IncludingExcludingBounds<T extends RingPosition<T>> extends Abstrac
         return ")";
     }
 
-    /**
-     * Compute a bounds of keys corresponding to a given bounds of token.
-     */
-    private static IncludingExcludingBounds<RowPosition> makeRowBounds(Token left, Token right, IPartitioner partitioner)
+    public boolean isStartInclusive()
     {
-        return new IncludingExcludingBounds<RowPosition>(left.maxKeyBound(partitioner), right.minKeyBound(partitioner), partitioner);
+        return true;
     }
 
-    @SuppressWarnings("unchecked")
-    public AbstractBounds<RowPosition> toRowBounds()
+    public boolean isEndInclusive()
     {
-        return (left instanceof Token) ? makeRowBounds((Token)left, (Token)right, partitioner) : (IncludingExcludingBounds<RowPosition>)this;
-    }
-
-    @SuppressWarnings("unchecked")
-    public AbstractBounds<Token> toTokenBounds()
-    {
-        return (left instanceof RowPosition) ? new IncludingExcludingBounds<Token>(((RowPosition)left).getToken(), ((RowPosition)right).getToken(), partitioner) : (IncludingExcludingBounds<Token>)this;
+        return false;
     }
 
     public AbstractBounds<T> withNewRight(T newRight)

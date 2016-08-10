@@ -74,7 +74,6 @@ import javax.net.ssl.TrustManagerFactory;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.EncryptionOptions;
-import org.apache.cassandra.config.KSMetaData;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.config.YamlConfigurationLoader;
 import org.apache.cassandra.cql3.CQL3Type;
@@ -86,6 +85,11 @@ import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.schema.Functions;
+import org.apache.cassandra.schema.KeyspaceParams;
+import org.apache.cassandra.schema.Tables;
+import org.apache.cassandra.schema.Types;
+import org.apache.cassandra.schema.Views;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.commons.cli.CommandLine;
@@ -98,8 +102,10 @@ import org.apache.commons.cli.ParseException;
 
 import com.datastax.driver.core.BatchStatement;
 import com.datastax.driver.core.Cluster;
+import com.datastax.driver.core.CodecRegistry;
 import com.datastax.driver.core.DataType;
 import com.datastax.driver.core.Host;
+import com.datastax.driver.core.JdkSSLOptions;
 import com.datastax.driver.core.KeyspaceMetadata;
 import com.datastax.driver.core.Metadata;
 import com.datastax.driver.core.ProtocolVersion;
@@ -167,7 +173,7 @@ public class BulkLoader {
 
         private RateLimiter rateLimiter;
         private int bytes;
-
+    
         public CQLClient(LoaderOptions options, String keyspace)
                 throws NoSuchAlgorithmException, FileNotFoundException,
                 IOException, KeyStoreException, CertificateException,
@@ -201,25 +207,26 @@ public class BulkLoader {
                     kmf.init(ks, enco.keystore_password.toCharArray());
                     ctx.init(kmf.getKeyManagers(), tmf.getTrustManagers(),
                             new SecureRandom());
-                }
+                }                
+                SSLOptions sslOptions = JdkSSLOptions.builder()
+                        .withSSLContext(ctx)
+                        .withCipherSuites(enco.cipher_suites)
+                        .build();
                 builder = builder
-                        .withSSL(new SSLOptions(ctx, enco.cipher_suites));
+                        .withSSL(sslOptions);
             }
             cluster = builder.build();
             session = cluster.connect(keyspace);
             metadata = cluster.getMetadata();
             keyspaceMetadata = metadata.getKeyspace(keyspace);
-            KSMetaData ksMetaData = KSMetaData.newKeyspace(
-                keyspaceMetadata.getName(),
-                keyspaceMetadata.getReplication().get("class"),
-                keyspaceMetadata.getReplication(),
-                keyspaceMetadata.isDurableWrites());
+            Types types =  loadUserTypes(keyspaceMetadata.getUserTypes(), keyspace, Types.builder());            
+            org.apache.cassandra.schema.KeyspaceMetadata ksMetaData = org.apache.cassandra.schema.KeyspaceMetadata
+                    .create(keyspaceMetadata.getName(), KeyspaceParams.create(keyspaceMetadata.isDurableWrites(),
+                            keyspaceMetadata.getReplication()), Tables.none(), Views.none(), types, Functions.none());
             Schema.instance.load(ksMetaData);
-            loadUserTypes(keyspaceMetadata.getUserTypes(), ksMetaData);
             partitioner = FBUtilities.newPartitioner(metadata.getPartitioner());
-
             if (options.throttle != 0) {
-                rateLimiter = RateLimiter.create(options.throttle * 1024 * 1024);
+                rateLimiter = RateLimiter.create(options.throttle * 1000 * 1000 / 8);
             }
         }
 
@@ -228,9 +235,9 @@ public class BulkLoader {
         // it references a UDT that has not yet been loaded. So we run a
         // fixed-point algorithm until we either load all UDTs or fail to make
         // forward progress.
-        private static void loadUserTypes(Collection<UserType> udts, KSMetaData ks) {
+        private static Types loadUserTypes(Collection<UserType> udts, String ksname, Types.Builder types) {
             if (udts.isEmpty()) {
-                return;
+                return types.build() ;
             }
             LinkedList<UserType> notLoaded = new LinkedList<UserType>();
             for (UserType ut : udts) {
@@ -239,10 +246,10 @@ public class BulkLoader {
                     ArrayList<AbstractType<?>> fieldTypes = new ArrayList<AbstractType<?>>();
                     for (UserType.Field f : ut) {
                         fieldNames.add(ByteBufferUtil.bytes(f.getName()));
-                        fieldTypes.add(getCql3Type(f.getType()).prepare(ks.name).getType());
+                        fieldTypes.add(getCql3Type(f.getType()).prepare(ksname).getType());
                     }
-                    ks.userTypes.addType(new org.apache.cassandra.db.marshal.UserType(
-                        ks.name, ByteBufferUtil.bytes(ut.getTypeName()), fieldNames, fieldTypes));
+                    types = types.add(new org.apache.cassandra.db.marshal.UserType(ksname,
+                            ByteBufferUtil.bytes(ut.getTypeName()), fieldNames, fieldTypes));
                 } catch (Exception e) {
                     System.out.println(e);
                     notLoaded.addFirst(ut);
@@ -251,7 +258,7 @@ public class BulkLoader {
             if (notLoaded.size() == udts.size()) {
                 throw new RuntimeException("Unable to load user types " + notLoaded);
             }
-            loadUserTypes(notLoaded, ks);
+            return loadUserTypes(notLoaded, ksname, types);
         }
 
         private static CQL3Type.Raw getCql3Type(DataType dt) throws Exception {
@@ -336,8 +343,7 @@ public class BulkLoader {
         public Map<InetAddress, Collection<Range<Token>>> getEndpointRanges() {
             HashMap<InetAddress, Collection<Range<Token>>> map = new HashMap<>();
             for (TokenRange range : metadata.getTokenRanges()) {
-                Range<Token> tr = new Range<Token>(getToken(range.getStart()),
-                        getToken(range.getEnd()), getPartitioner());
+                Range<Token> tr = new Range<Token>(getToken(range.getStart()), getToken(range.getEnd()));
                 for (Host host : metadata.getReplicas(getKeyspace(), range)) {
                     Collection<Range<Token>> c = map.get(host.getAddress());
                     if (c == null) {
@@ -360,10 +366,7 @@ public class BulkLoader {
         }
 
         private Token getToken(com.datastax.driver.core.Token t) {
-            DataType type = t.getType();
-            Object value = t.getValue();
-            return getPartitioner().getTokenFactory()
-                    .fromByteArray(type.serialize(value, ProtocolVersion.V3));
+            return getPartitioner().getTokenFactory().fromByteArray(t.serialize(ProtocolVersion.V3));
         }
 
         @Override
@@ -380,10 +383,21 @@ public class BulkLoader {
                 System.out.println();
             }
 
-            SimpleStatement s = new SimpleStatement(what, objects.toArray()) {
+            SimpleStatement s = new SimpleStatement(what, objects.toArray()) {                
                 @Override
-                public ByteBuffer[] getValues(ProtocolVersion protocolVersion) {
-                    ByteBuffer[] values = super.getValues(protocolVersion);
+                public ByteBuffer[] getValues(ProtocolVersion protocolVersion, CodecRegistry codecRegistry) {
+                    return summarize(super.getValues(protocolVersion, codecRegistry));
+                }
+                @Override
+                public Map<String, ByteBuffer> getNamedValues(ProtocolVersion protocolVersion,
+                        CodecRegistry codecRegistry) {
+                    Map<String, ByteBuffer> res = super.getNamedValues(protocolVersion, codecRegistry); 
+                    if (rateLimiter != null) {
+                        summarize(res.values().toArray(new ByteBuffer[res.size()]));                        
+                    }
+                    return res;
+                }
+                private ByteBuffer[] summarize(ByteBuffer[] values) {
                     if (rateLimiter != null) {
                         // Try to guesstimate the bytes payload of the query
                         // and add to bytes consumed by this batch.

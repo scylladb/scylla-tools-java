@@ -20,31 +20,26 @@ package org.apache.cassandra.utils;
 import java.io.*;
 import java.lang.reflect.Field;
 import java.math.BigInteger;
-import java.net.InetAddress;
-import java.net.NetworkInterface;
-import java.net.SocketException;
-import java.net.URL;
-import java.net.UnknownHostException;
+import java.net.*;
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.text.NumberFormat;
 import java.util.*;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
+import java.util.zip.CRC32;
 import java.util.zip.Checksum;
 
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
+
 import com.google.common.base.Joiner;
-import com.google.common.collect.AbstractIterator;
-import org.apache.cassandra.io.util.FileUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.auth.IAuthenticator;
 import org.apache.cassandra.auth.IAuthorizer;
+import org.apache.cassandra.auth.IRoleManager;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.dht.IPartitioner;
@@ -52,13 +47,12 @@ import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.schema.CompressionParams;
 import org.apache.cassandra.io.util.DataOutputBuffer;
-import org.apache.cassandra.io.util.IAllocator;
+import org.apache.cassandra.io.util.DataOutputBufferFixed;
+import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.net.AsyncOneResponse;
-import org.apache.thrift.TBase;
-import org.apache.thrift.TDeserializer;
-import org.apache.thrift.TException;
-import org.apache.thrift.TSerializer;
+
 import org.codehaus.jackson.JsonFactory;
 import org.codehaus.jackson.map.ObjectMapper;
 
@@ -66,15 +60,13 @@ public class FBUtilities
 {
     private static final Logger logger = LoggerFactory.getLogger(FBUtilities.class);
 
-    private static ObjectMapper jsonMapper = new ObjectMapper(new JsonFactory());
+    private static final ObjectMapper jsonMapper = new ObjectMapper(new JsonFactory());
 
     public static final BigInteger TWO = new BigInteger("2");
     private static final String DEFAULT_TRIGGER_DIR = "triggers";
 
     private static final String OPERATING_SYSTEM = System.getProperty("os.name").toLowerCase();
-
     private static final boolean IS_WINDOWS = OPERATING_SYSTEM.contains("windows");
-
     private static final boolean HAS_PROCFS = !IS_WINDOWS && (new File(File.separator + "proc")).exists();
 
     private static volatile InetAddress localInetAddress;
@@ -171,6 +163,22 @@ public class FBUtilities
         return localAddresses;
     }
 
+    public static String getNetworkInterface(InetAddress localAddress)
+    {
+        try {
+            for(NetworkInterface ifc : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                if(ifc.isUp()) {
+                    for(InetAddress addr : Collections.list(ifc.getInetAddresses())) {
+                        if (addr.equals(localAddress))
+                            return ifc.getDisplayName();
+                    }
+                }
+            }
+        }
+        catch (SocketException e) {}
+        return null;
+    }
+
     /**
      * Given two bit arrays represented as BigIntegers, containing the given
      * number of significant bits, calculate a midpoint.
@@ -255,45 +263,6 @@ public class FBUtilities
         return new BigInteger(hash(data)).abs();
     }
 
-    @Deprecated
-    public static void serialize(TSerializer serializer, TBase struct, DataOutput out)
-    throws IOException
-    {
-        assert serializer != null;
-        assert struct != null;
-        assert out != null;
-        byte[] bytes;
-        try
-        {
-            bytes = serializer.serialize(struct);
-        }
-        catch (TException e)
-        {
-            throw new RuntimeException(e);
-        }
-        out.writeInt(bytes.length);
-        out.write(bytes);
-    }
-
-    @Deprecated
-    public static void deserialize(TDeserializer deserializer, TBase struct, DataInput in)
-    throws IOException
-    {
-        assert deserializer != null;
-        assert struct != null;
-        assert in != null;
-        byte[] bytes = new byte[in.readInt()];
-        in.readFully(bytes);
-        try
-        {
-            deserializer.deserialize(struct, bytes);
-        }
-        catch (TException ex)
-        {
-            throw new IOException(ex);
-        }
-    }
-
     public static void sortSampledKeys(List<DecoratedKey> keys, Range<Token> range)
     {
         if (range.left.compareTo(range.right) >= 0)
@@ -355,10 +324,8 @@ public class FBUtilities
 
     public static String getReleaseVersionString()
     {
-        InputStream in = null;
-        try
+        try (InputStream in = FBUtilities.class.getClassLoader().getResourceAsStream("org/apache/cassandra/config/version.properties"))
         {
-            in = FBUtilities.class.getClassLoader().getResourceAsStream("org/apache/cassandra/config/version.properties");
             if (in == null)
             {
                 return System.getProperty("cassandra.releaseVersion", "Unknown");
@@ -373,10 +340,6 @@ public class FBUtilities
             logger.warn("Unable to load version.properties", e);
             return "debug version";
         }
-        finally
-        {
-            FileUtils.closeQuietly(in);
-        }
     }
 
     public static long timestampMicros()
@@ -386,10 +349,28 @@ public class FBUtilities
         return System.currentTimeMillis() * 1000;
     }
 
-    public static void waitOnFutures(Iterable<Future<?>> futures)
+    public static int nowInSeconds()
     {
-        for (Future f : futures)
-            waitOnFuture(f);
+        return (int) (System.currentTimeMillis() / 1000);
+    }
+
+    public static <T> List<T> waitOnFutures(Iterable<? extends Future<? extends T>> futures)
+    {
+        List<T> results = new ArrayList<>();
+        Throwable fail = null;
+        for (Future<? extends T> f : futures)
+        {
+            try
+            {
+                results.add(f.get());
+            }
+            catch (Throwable t)
+            {
+                fail = Throwables.merge(fail, t);
+            }
+        }
+        Throwables.maybeFail(fail);
+        return results;
     }
 
     public static <T> T waitOnFuture(Future<T> future)
@@ -418,14 +399,7 @@ public class FBUtilities
     {
         if (!partitionerClassName.contains("."))
             partitionerClassName = "org.apache.cassandra.dht." + partitionerClassName;
-        return FBUtilities.construct(partitionerClassName, "partitioner");
-    }
-
-    public static IAllocator newOffHeapAllocator(String offheap_allocator) throws ConfigurationException
-    {
-        if (!offheap_allocator.contains("."))
-            offheap_allocator = "org.apache.cassandra.io.util." + offheap_allocator;
-        return FBUtilities.construct(offheap_allocator, "off-heap allocator");
+        return FBUtilities.instanceOrConstruct(partitionerClassName, "partitioner");
     }
 
     public static IAuthorizer newAuthorizer(String className) throws ConfigurationException
@@ -442,6 +416,13 @@ public class FBUtilities
         return FBUtilities.construct(className, "authenticator");
     }
 
+    public static IRoleManager newRoleManager(String className) throws ConfigurationException
+    {
+        if (!className.contains("."))
+            className = "org.apache.cassandra.auth." + className;
+        return FBUtilities.construct(className, "role manager");
+    }
+
     /**
      * @return The Class for the given name.
      * @param classname Fully qualified classname.
@@ -454,13 +435,30 @@ public class FBUtilities
         {
             return (Class<T>)Class.forName(classname);
         }
-        catch (ClassNotFoundException e)
+        catch (ClassNotFoundException | NoClassDefFoundError e)
         {
             throw new ConfigurationException(String.format("Unable to find %s class '%s'", readable, classname), e);
         }
-        catch (NoClassDefFoundError e)
+    }
+
+    /**
+     * Constructs an instance of the given class, which must have a no-arg or default constructor.
+     * @param classname Fully qualified classname.
+     * @param readable Descriptive noun for the role the class plays.
+     * @throws ConfigurationException If the class cannot be found.
+     */
+    public static <T> T instanceOrConstruct(String classname, String readable) throws ConfigurationException
+    {
+        Class<T> cls = FBUtilities.classForName(classname, readable);
+        try
         {
-            throw new ConfigurationException(String.format("Unable to find %s class '%s'", readable, classname), e);
+            Field instance = cls.getField("instance");
+            return cls.cast(instance.get(null));
+        }
+        catch (NoSuchFieldException | SecurityException | IllegalArgumentException | IllegalAccessException e)
+        {
+            // Could not get instance field. Try instantiating.
+            return construct(cls, classname, readable);
         }
     }
 
@@ -473,6 +471,11 @@ public class FBUtilities
     public static <T> T construct(String classname, String readable) throws ConfigurationException
     {
         Class<T> cls = FBUtilities.classForName(classname, readable);
+        return construct(cls, classname, readable);
+    }
+
+    private static <T> T construct(Class<T> cls, String classname, String readable) throws ConfigurationException
+    {
         try
         {
             return cls.newInstance();
@@ -494,15 +497,30 @@ public class FBUtilities
         }
     }
 
-    public static <T> SortedSet<T> singleton(T column, Comparator<? super T> comparator)
+    public static <T> NavigableSet<T> singleton(T column, Comparator<? super T> comparator)
     {
-        SortedSet<T> s = new TreeSet<T>(comparator);
+        NavigableSet<T> s = new TreeSet<T>(comparator);
         s.add(column);
         return s;
     }
 
-    public static String toString(Map<?,?> map)
+    public static <T> NavigableSet<T> emptySortedSet(Comparator<? super T> comparator)
     {
+        return new TreeSet<T>(comparator);
+    }
+
+    /**
+     * Make straing out of the given {@code Map}.
+     *
+     * @param map Map to make string.
+     * @return String representation of all entries in the map,
+     *         where key and value pair is concatenated with ':'.
+     */
+    @Nonnull
+    public static String toString(@Nullable Map<?, ?> map)
+    {
+        if (map == null)
+            return "";
         Joiner.MapJoiner joiner = Joiner.on(", ").withKeyValueSeparator(":");
         return joiner.join(map);
     }
@@ -515,19 +533,16 @@ public class FBUtilities
      */
     public static Field getProtectedField(Class klass, String fieldName)
     {
-        Field field;
-
         try
         {
-            field = klass.getDeclaredField(fieldName);
+            Field field = klass.getDeclaredField(fieldName);
             field.setAccessible(true);
+            return field;
         }
         catch (Exception e)
         {
             throw new AssertionError(e);
         }
-
-        return field;
     }
 
     public static <T> CloseableIterator<T> closeableIterator(Iterator<T> iterator)
@@ -592,17 +607,20 @@ public class FBUtilities
             int errCode = p.waitFor();
             if (errCode != 0)
             {
-                BufferedReader in = new BufferedReader(new InputStreamReader(p.getInputStream()));
-                BufferedReader err = new BufferedReader(new InputStreamReader(p.getErrorStream()));
-                StringBuilder sb = new StringBuilder();
-                String str;
-                while ((str = in.readLine()) != null)
-                    sb.append(str).append(System.getProperty("line.separator"));
-                while ((str = err.readLine()) != null)
-                    sb.append(str).append(System.getProperty("line.separator"));
-                throw new IOException("Exception while executing the command: "+ StringUtils.join(pb.command(), " ") +
-                                      ", command error Code: " + errCode +
-                                      ", command output: "+ sb.toString());
+            	try (BufferedReader in = new BufferedReader(new InputStreamReader(p.getInputStream()));
+                     BufferedReader err = new BufferedReader(new InputStreamReader(p.getErrorStream())))
+                {
+            		String lineSep = System.getProperty("line.separator");
+	                StringBuilder sb = new StringBuilder();
+	                String str;
+	                while ((str = in.readLine()) != null)
+	                    sb.append(str).append(lineSep);
+	                while ((str = err.readLine()) != null)
+	                    sb.append(str).append(lineSep);
+	                throw new IOException("Exception while executing the command: "+ StringUtils.join(pb.command(), " ") +
+	                                      ", command error Code: " + errCode +
+	                                      ", command output: "+ sb.toString());
+                }
             }
         }
         catch (InterruptedException e)
@@ -617,6 +635,48 @@ public class FBUtilities
         checksum.update((v >>> 16) & 0xFF);
         checksum.update((v >>> 8) & 0xFF);
         checksum.update((v >>> 0) & 0xFF);
+    }
+
+    /**
+      * Updates checksum with the provided ByteBuffer at the given offset + length.
+      * Resets position and limit back to their original values on return.
+      * This method is *NOT* thread-safe.
+      */
+    public static void updateChecksum(CRC32 checksum, ByteBuffer buffer, int offset, int length)
+    {
+        int position = buffer.position();
+        int limit = buffer.limit();
+
+        buffer.position(offset).limit(offset + length);
+        checksum.update(buffer);
+
+        buffer.position(position).limit(limit);
+    }
+
+    /**
+     * Updates checksum with the provided ByteBuffer.
+     * Resets position back to its original values on return.
+     * This method is *NOT* thread-safe.
+     */
+    public static void updateChecksum(CRC32 checksum, ByteBuffer buffer)
+    {
+        int position = buffer.position();
+        checksum.update(buffer);
+        buffer.position(position);
+    }
+
+    private static final ThreadLocal<byte[]> threadLocalScratchBuffer = new ThreadLocal<byte[]>()
+    {
+        @Override
+        protected byte[] initialValue()
+        {
+            return new byte[CompressionParams.DEFAULT_CHUNK_LENGTH];
+        }
+    };
+
+    public static byte[] getThreadLocalScratchBuffer()
+    {
+        return threadLocalScratchBuffer.get();
     }
 
     public static long abs(long index)
@@ -646,10 +706,10 @@ public class FBUtilities
 
     public static <T> byte[] serialize(T object, IVersionedSerializer<T> serializer, int version)
     {
-        try
+        int size = (int) serializer.serializedSize(object, version);
+
+        try (DataOutputBuffer buffer = new DataOutputBufferFixed(size))
         {
-            int size = (int) serializer.serializedSize(object, version);
-            DataOutputBuffer buffer = new DataOutputBuffer(size);
             serializer.serialize(object, buffer, version);
             assert buffer.getLength() == size && buffer.getData().length == size
                 : String.format("Final buffer length %s to accommodate data size of %s (predicted %s) for %s",
@@ -729,5 +789,47 @@ public class FBUtilities
         digest.update((byte) ((val >>> 16) & 0xFF));
         digest.update((byte) ((val >>>  8) & 0xFF));
         digest.update((byte)  ((val >>> 0) & 0xFF));
+    }
+
+    public static void updateWithBoolean(MessageDigest digest, boolean val)
+    {
+        updateWithByte(digest, val ? 0 : 1);
+    }
+
+    public static void closeAll(List<? extends AutoCloseable> l) throws Exception
+    {
+        Exception toThrow = null;
+        for (AutoCloseable c : l)
+        {
+            try
+            {
+                c.close();
+            }
+            catch (Exception e)
+            {
+                if (toThrow == null)
+                    toThrow = e;
+                else
+                    toThrow.addSuppressed(e);
+            }
+        }
+        if (toThrow != null)
+            throw toThrow;
+    }
+
+    public static byte[] toWriteUTFBytes(String s)
+    {
+        try
+        {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            DataOutputStream dos = new DataOutputStream(baos);
+            dos.writeUTF(s);
+            dos.flush();
+            return baos.toByteArray();
+        }
+        catch (IOException e)
+        {
+            throw new RuntimeException(e);
+        }
     }
 }

@@ -17,13 +17,14 @@
  */
 package org.apache.cassandra.streaming.messages;
 
-import java.io.DataInputStream;
 import java.io.IOException;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 
-import org.apache.cassandra.io.sstable.SSTableWriter;
-import org.apache.cassandra.io.util.DataOutputStreamAndChannel;
+import org.apache.cassandra.io.sstable.SSTableMultiWriter;
+import org.apache.cassandra.io.util.DataInputPlus;
+import org.apache.cassandra.io.util.DataInputPlus.DataInputStreamPlus;
+import org.apache.cassandra.io.util.DataOutputStreamPlus;
 import org.apache.cassandra.streaming.StreamReader;
 import org.apache.cassandra.streaming.StreamSession;
 import org.apache.cassandra.streaming.compress.CompressedStreamReader;
@@ -36,11 +37,12 @@ public class IncomingFileMessage extends StreamMessage
 {
     public static Serializer<IncomingFileMessage> serializer = new Serializer<IncomingFileMessage>()
     {
+        @SuppressWarnings("resource")
         public IncomingFileMessage deserialize(ReadableByteChannel in, int version, StreamSession session) throws IOException
         {
-            DataInputStream input = new DataInputStream(Channels.newInputStream(in));
+            DataInputPlus input = new DataInputStreamPlus(Channels.newInputStream(in));
             FileMessageHeader header = FileMessageHeader.serializer.deserialize(input, version);
-            StreamReader reader = header.compressionInfo == null ? new StreamReader(header, session)
+            StreamReader reader = !header.isCompressed() ? new StreamReader(header, session)
                     : new CompressedStreamReader(header, session);
 
             try
@@ -70,16 +72,16 @@ public class IncomingFileMessage extends StreamMessage
             }
         }
 
-        public void serialize(IncomingFileMessage message, DataOutputStreamAndChannel out, int version, StreamSession session) throws IOException
+        public void serialize(IncomingFileMessage message, DataOutputStreamPlus out, int version, StreamSession session) throws IOException
         {
             throw new UnsupportedOperationException("Not allowed to call serialize on an incoming file");
         }
     };
 
     public FileMessageHeader header;
-    public SSTableWriter sstable;
+    public SSTableMultiWriter sstable;
 
-    public IncomingFileMessage(SSTableWriter sstable, FileMessageHeader header)
+    public IncomingFileMessage(SSTableMultiWriter sstable, FileMessageHeader header)
     {
         super(Type.FILE);
         this.header = header;

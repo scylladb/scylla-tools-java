@@ -69,9 +69,9 @@ public final class StreamResultFuture extends AbstractFuture<StreamState>
             set(getCurrentState());
     }
 
-    private StreamResultFuture(UUID planId, String description)
+    private StreamResultFuture(UUID planId, String description, boolean keepSSTableLevels, boolean isIncremental)
     {
-        this(planId, description, new StreamCoordinator(0, new DefaultConnectionFactory()));
+        this(planId, description, new StreamCoordinator(0, keepSSTableLevels, isIncremental, new DefaultConnectionFactory()));
     }
 
     static StreamResultFuture init(UUID planId, String description, Collection<StreamEventHandler> listeners, StreamCoordinator coordinator)
@@ -101,7 +101,9 @@ public final class StreamResultFuture extends AbstractFuture<StreamState>
                                                                     InetAddress from,
                                                                     Socket socket,
                                                                     boolean isForOutgoing,
-                                                                    int version) throws IOException
+                                                                    int version,
+                                                                    boolean keepSSTableLevel,
+                                                                    boolean isIncremental) throws IOException
     {
         StreamResultFuture future = StreamManager.instance.getReceivingStream(planId);
         if (future == null)
@@ -109,7 +111,7 @@ public final class StreamResultFuture extends AbstractFuture<StreamState>
             logger.info("[Stream #{} ID#{}] Creating new streaming plan for {}", planId, sessionIndex, description);
 
             // The main reason we create a StreamResultFuture on the receiving side is for JMX exposure.
-            future = new StreamResultFuture(planId, description);
+            future = new StreamResultFuture(planId, description, keepSSTableLevel, isIncremental);
             StreamManager.instance.registerReceiving(future);
         }
         future.attachSocket(from, sessionIndex, socket, isForOutgoing, version);

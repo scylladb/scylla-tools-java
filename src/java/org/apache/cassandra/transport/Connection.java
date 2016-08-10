@@ -66,12 +66,11 @@ public class Connection
 
     public interface Factory
     {
-        public Connection newConnection(Channel channel, int version);
+        Connection newConnection(Channel channel, int version);
     }
 
     public interface Tracker
     {
-        public void addConnection(Channel ch, Connection connection);
-        public void closeAll();
+        void addConnection(Channel ch, Connection connection);
     }
 }
