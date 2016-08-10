@@ -588,6 +588,11 @@ public class SSTableToCQL {
                 return;
             }
 
+            Row sr = rows.staticRow();
+            if (sr != null) {
+                process(sr);
+            }
+            
             while (rows.hasNext()) {
                 Unfiltered f = rows.next();
                 switch (f.kind()) {

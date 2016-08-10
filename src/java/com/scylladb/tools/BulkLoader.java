@@ -324,7 +324,7 @@ public class BulkLoader {
         }
 
         private BatchStatement getBatchStatement(Object callback) {
-            if (tokenKey == callback && batchStatement != null) {
+            if (tokenKey == callback && batchStatement != null && batchStatement.size() < 4096) {
                 return batchStatement;
             }
             finish();
@@ -418,7 +418,7 @@ public class BulkLoader {
             s.setRoutingKey(key.getKey());
 
             BatchStatement bs = getBatchStatement(callback);
-            bs.add(s);
+            bs.add(s);            
         }
     }
 
