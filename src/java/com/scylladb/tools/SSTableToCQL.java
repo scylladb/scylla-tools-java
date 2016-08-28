@@ -605,7 +605,7 @@ public class SSTableToCQL {
                 // simple delete row/column
                 int cn = cfMetaData.clusteringColumns().size();
 
-                if (cn <= max.size()) {
+                if (max.size() <= cn) {
                     deleteCqlRow(max, r.timestamp());
                 } else {
                     ColumnDefinition c = cfMetaData.getColumnDefinition(max.get(max.size() - 1));
