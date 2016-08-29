@@ -173,9 +173,12 @@ from cqlshlib.util import get_file_encoding_bomsize, trim_if_present
 
 DEFAULT_HOST = '127.0.0.1'
 DEFAULT_PORT = 9042
-#TODO merge-3: should this be 3.4? 3.2.1?
-DEFAULT_CQLVER = '3.4.0'
-DEFAULT_PROTOCOL_VERSION = 4
+#TODO merge-3: update scylla to handle 3.4.0
+# was 3.4.0
+DEFAULT_CQLVER = '3.2.1'
+#TODO merge-3: update scylla to handle v4
+# was 4
+DEFAULT_PROTOCOL_VERSION = 3
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 10
 
