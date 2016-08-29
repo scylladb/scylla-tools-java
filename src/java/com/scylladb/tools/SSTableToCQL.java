@@ -319,6 +319,7 @@ public class SSTableToCQL {
         private void clear() {
             op = Op.NONE;
             values.clear();
+            where.clear();
             timestamp = invalidTimestamp;
             ttl = invalidTTL;
         }
