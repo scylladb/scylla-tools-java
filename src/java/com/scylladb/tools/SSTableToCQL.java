@@ -287,13 +287,17 @@ public class SSTableToCQL {
                 Object sval = i < spfx.size() ? column.cellValueType().compose(spfx.get(i)) : null;
                 Object eval = spfx != epfx ? (i < epfx.size() ? column.cellValueType().compose(epfx.get(i)) : null) : sval;
                 
-                if (sval == eval || sval.equals(eval)) {
+                if (sval == null && eval == null) {
+                    // nothing. 
+                } else if (sval == eval || sval.equals(eval)) {
                     assert start.isInclusive();
                     where.put(column, Pair.create(Comp.Equal, sval));                                                              
                 } else {
-                    where.put(column, 
-                            Pair.create( 
-                                    start.isInclusive() ? Comp.GreaterEqual : Comp.Greater, sval));
+                    if (sval != null) {
+                        where.put(column, 
+                                Pair.create( 
+                                        start.isInclusive() ? Comp.GreaterEqual : Comp.Greater, sval));
+                    }
                     if (eval != null) {
                         where.put(column, 
                             Pair.create( 
@@ -510,12 +514,7 @@ public class SSTableToCQL {
                 finish();
                 return;                    
             }
-            
-            if (!row.isStatic()) {
-                Slice.Bound b = Slice.Bound.inclusiveStartOf(row.clustering().clustering());
-                setWhere(b, b);
-            }
-                       
+                                   
             Deletion d = row.deletion();
             
             for (ColumnData cd : row) {
@@ -529,7 +528,12 @@ public class SSTableToCQL {
                     }
                 }                                
             }
-                        
+            
+            if (!row.isStatic()) {
+                Slice.Bound b = Slice.Bound.inclusiveStartOf(row.clustering().clustering());
+                setWhere(b, b);
+            }
+            
             finish();
         }
         
@@ -810,7 +814,6 @@ public class SSTableToCQL {
                     }
                 }
             }
-
         } finally {
             client.finish();
         }
