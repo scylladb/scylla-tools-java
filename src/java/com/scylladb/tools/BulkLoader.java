@@ -66,6 +66,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Semaphore;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
@@ -105,10 +106,15 @@ import com.datastax.driver.core.Cluster;
 import com.datastax.driver.core.CodecRegistry;
 import com.datastax.driver.core.DataType;
 import com.datastax.driver.core.Host;
+import com.datastax.driver.core.HostDistance;
 import com.datastax.driver.core.JdkSSLOptions;
 import com.datastax.driver.core.KeyspaceMetadata;
 import com.datastax.driver.core.Metadata;
+import com.datastax.driver.core.PoolingOptions;
+import com.datastax.driver.core.ProtocolOptions.Compression;
 import com.datastax.driver.core.ProtocolVersion;
+import com.datastax.driver.core.ResultSet;
+import com.datastax.driver.core.ResultSetFuture;
 import com.datastax.driver.core.SSLOptions;
 import com.datastax.driver.core.Session;
 import com.datastax.driver.core.SimpleStatement;
@@ -117,6 +123,9 @@ import com.datastax.driver.core.TableMetadata;
 import com.datastax.driver.core.TokenRange;
 import com.datastax.driver.core.TupleType;
 import com.datastax.driver.core.UserType;
+import com.google.common.util.concurrent.FutureCallback;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.RateLimiter;
 
 public class BulkLoader {
@@ -168,21 +177,38 @@ public class BulkLoader {
         private final boolean simulate;
         private final boolean verbose;
         private BatchStatement batchStatement;
+        private DecoratedKey key;
 
         private Object tokenKey;
 
         private RateLimiter rateLimiter;
         private int bytes;
+        
+        private final boolean batch;
     
         public CQLClient(LoaderOptions options, String keyspace)
                 throws NoSuchAlgorithmException, FileNotFoundException,
                 IOException, KeyStoreException, CertificateException,
                 UnrecoverableKeyException, KeyManagementException,
                 ConfigurationException {
+            
+            //System.setProperty("com.datastax.driver.NON_BLOCKING_EXECUTOR_SIZE", "64");
+
+            PoolingOptions poolingOptions = new PoolingOptions();
+            
+            poolingOptions.setCoreConnectionsPerHost(HostDistance.LOCAL, 4);
+            poolingOptions.setCoreConnectionsPerHost(HostDistance.REMOTE, 2);
+            poolingOptions.setMaxConnectionsPerHost(HostDistance.LOCAL, 8);
+            poolingOptions.setMaxConnectionsPerHost(HostDistance.REMOTE, 4);
+            poolingOptions.setMaxRequestsPerConnection(HostDistance.LOCAL, 32768);
+            poolingOptions.setMaxRequestsPerConnection(HostDistance.REMOTE, 2000);
+            
             this.simulate = options.simulate;
             this.verbose = options.verbose;
             Cluster.Builder builder = builder().addContactPoints(options.hosts)
-                    .withProtocolVersion(ProtocolVersion.V3);
+                    .withProtocolVersion(ProtocolVersion.V3)
+                    .withCompression(Compression.LZ4)
+                    .withPoolingOptions(poolingOptions);
             if (options.user != null && options.passwd != null) {
                 builder = builder.withCredentials(options.user, options.passwd);
             }
@@ -215,6 +241,7 @@ public class BulkLoader {
                 builder = builder
                         .withSSL(sslOptions);
             }
+            
             cluster = builder.build();
             session = cluster.connect(keyspace);
             metadata = cluster.getMetadata();
@@ -228,6 +255,8 @@ public class BulkLoader {
             if (options.throttle != 0) {
                 rateLimiter = RateLimiter.create(options.throttle * 1000 * 1000 / 8);
             }
+            
+            this.batch = options.batch;
         }
 
         // Load user defined types. Since loading a UDT entails validation
@@ -298,38 +327,80 @@ public class BulkLoader {
             return type;
         }
 
+        private static final int maxStatements = 256;
+        private static final int maxBatchStatements = 256;
+        private final Semaphore semaphore = new Semaphore(maxStatements);
+        
+        public void close() {
+            if (semaphore != null) {
+                try {
+                    semaphore.acquire(maxStatements);
+                    return;
+                } catch (InterruptedException e) {
+                }
+            }            
+        }
+        
         @Override
         public void finish() {
             if (batchStatement != null
                     && !batchStatement.getStatements().isEmpty()) {
-            	if (verbose) {
-            		System.out.println("BATCH: ");
-            		for (Statement s : batchStatement.getStatements()) {
-                        System.out.print("  ");
-                        System.out.println(s);
-                    }
-                    System.out.println("END");
-                }
-                if (!simulate) {
-                    session.execute(batchStatement);
-                    if (rateLimiter != null) {
-                        // Acquire after execute, since bytes used are
-                        // calculated there.
-                        rateLimiter.acquire(bytes);
-                        bytes = 0;
-                    }
-                }
+                send(batchStatement);
+                batchStatement = null;
             }
-            batchStatement = new BatchStatement();
         }
 
-        private BatchStatement getBatchStatement(Object callback) {
-            if (tokenKey == callback && batchStatement != null && batchStatement.size() < 4096) {
-                return batchStatement;
+        private void send(Statement s) {
+            if (simulate) {
+                return;
             }
-            finish();
-            tokenKey = callback;
-            return batchStatement;
+            if (rateLimiter != null) {
+                // Acquire after execute, since bytes used are
+                // calculated there.
+                int bytes = this.bytes;
+                this.bytes = 0;
+                if (bytes > 0) {
+                    rateLimiter.acquire(bytes);
+                }
+            }
+
+            try {
+                semaphore.acquire();
+                try {
+                    ResultSetFuture future = session.executeAsync(s);
+                    Futures.addCallback(future, new FutureCallback<ResultSet>() {
+                        @Override public void onSuccess(ResultSet result) {
+                            semaphore.release();
+                        }                    
+                        @Override public void onFailure(Throwable t) {
+                            semaphore.release();
+                            System.err.println(t);
+                        }                            
+                    }, MoreExecutors.directExecutor());
+                } finally {
+                }
+            } catch (InterruptedException e) {                  
+            }    
+        }
+        
+        private void send(Object callback, DecoratedKey key, Statement s) {
+            if (batch && tokenKey == callback && batchStatement != null && batchStatement.size() < maxBatchStatements
+                    && this.key.equals(key)) {
+                batchStatement.add(s);
+                return;
+            }
+            if (batchStatement != null && batchStatement.size() != 0) {
+                send(batchStatement);
+                batchStatement = null;
+            }
+            if (batch) {
+                batchStatement = new BatchStatement(BatchStatement.Type.UNLOGGED);
+                batchStatement.add(s);
+                tokenKey = callback;
+                this.key = key; 
+            } else {
+                send(s);
+            }
         }
 
         @Override
@@ -372,7 +443,7 @@ public class BulkLoader {
         @Override
         public void processStatment(Object callback, DecoratedKey key,
                 long timestamp, String what, List<Object> objects) {
-            if (simulate || verbose) {
+            if (verbose) {
                 System.out.print("CQL: '");
                 System.out.print(what);
                 System.out.print("'");
@@ -392,7 +463,7 @@ public class BulkLoader {
                 public Map<String, ByteBuffer> getNamedValues(ProtocolVersion protocolVersion,
                         CodecRegistry codecRegistry) {
                     Map<String, ByteBuffer> res = super.getNamedValues(protocolVersion, codecRegistry); 
-                    if (rateLimiter != null) {
+                    if (rateLimiter != null && res != null) {
                         summarize(res.values().toArray(new ByteBuffer[res.size()]));                        
                     }
                     return res;
@@ -417,8 +488,7 @@ public class BulkLoader {
             s.setKeyspace(getKeyspace());
             s.setRoutingKey(key.getKey());
 
-            BatchStatement bs = getBatchStatement(callback);
-            bs.add(s);            
+            send(callback, key, s);
         }
     }
 
@@ -471,6 +541,7 @@ public class BulkLoader {
                     "Client SSL: comma-separated list of encryption suites to use");
             options.addOption("f", CONFIG_PATH, "path to config file",
                     "cassandra.yaml file path for streaming throughput and client/server SSL.");
+            options.addOption("b", USE_BATCH, "batch updates for same partition key.");
             return options;
         }
 
@@ -626,6 +697,10 @@ public class BulkLoader {
                     opts.encOptions.cipher_suites = cmd
                             .getOptionValue(SSL_CIPHER_SUITES).split(",");
                 }
+                
+                if (cmd.hasOption(USE_BATCH)) {
+                    opts.batch = true;
+                }
 
                 return opts;
             } catch (ParseException | ConfigurationException
@@ -660,6 +735,8 @@ public class BulkLoader {
 
         public String passwd;
         public int throttle = 0;
+        
+        public boolean batch;
 
         public EncryptionOptions encOptions = new EncryptionOptions.ClientEncryptionOptions();
 
@@ -701,6 +778,7 @@ public class BulkLoader {
     private static final String CONNECTIONS_PER_HOST = "connections-per-host";
 
     private static final String CONFIG_PATH = "conf-path";
+    private static final String USE_BATCH = "use-batch";    
 
     public static void main(String args[]) {
         Config.setClientMode(true);
@@ -716,7 +794,11 @@ public class BulkLoader {
 
             CQLClient client = new CQLClient(options, keyspace);
             SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client);
-            ssTableToCQL.stream(options.directory);
+            try {
+                ssTableToCQL.stream(options.directory);
+            }  finally {
+                client.close();
+            }
             System.exit(0);
         } catch (Exception e) {
             e.printStackTrace();
