@@ -23,6 +23,9 @@
 
 package com.scylladb.tools;
 
+import static java.util.concurrent.TimeUnit.MICROSECONDS;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.apache.cassandra.io.sstable.format.SSTableReader.openForBatch;
 
 import java.io.File;
@@ -289,7 +292,7 @@ public class SSTableToCQL {
                 
                 if (sval == null && eval == null) {
                     // nothing. 
-                } else if (sval == eval || sval.equals(eval)) {
+                } else if (sval != null && (sval == eval || sval.equals(eval))) {
                     assert start.isInclusive();
                     where.put(column, Pair.create(Comp.Equal, sval));                                                              
                 } else {
@@ -465,12 +468,26 @@ public class SSTableToCQL {
         private void writeUsingTTL(StringBuilder buf) {
             if (ttl != invalidTTL) {
                 ensureWhitespace(buf);
+
+                int adjustedTTL = ttl;
+                
                 if (timestamp == invalidTimestamp) {
                     buf.append("USING ");
                 } else {
                     buf.append("AND ");
+                    
+                    long exp = SECONDS.convert(timestamp, MICROSECONDS) + ttl; 
+                    long now = SECONDS.convert(System.currentTimeMillis(), MILLISECONDS); 
+
+                    if (exp < now) {
+                        adjustedTTL = 1; // 0 -> no ttl. 1 should disappear fast enoug
+                    } else {
+                        adjustedTTL = (int)Math.min(ttl, exp - now);
+                    }                    
                 }
-                buf.append(" TTL " + ttl);
+                
+                
+                buf.append(" TTL " + adjustedTTL);
             }
         }
 
@@ -496,17 +513,18 @@ public class SSTableToCQL {
             beginRow();
             
             LivenessInfo liveInfo = row.primaryKeyLivenessInfo();
+            Deletion d = row.deletion();
 
             updateTimestamp(liveInfo.timestamp());
             updateTTL(liveInfo.ttl());
 
-            if (row.size() == 0) {
+            if (row.size() == 0 && d.isLive()) {
                 List<ColumnDefinition> clusteringColumns = cfMetaData.clusteringColumns();
                 for (int i = 0; i < clusteringColumns.size(); i++) {
                     if (i >= row.clustering().size()) {
                         break;
                     }
-                    ColumnDefinition c = clusteringColumns.get(i);                
+                    ColumnDefinition c = clusteringColumns.get(i);
                     Object val =  c.cellValueType().compose(row.clustering().get(i));
                     
                     updateColumn(c, new SetColumn(val), liveInfo.timestamp(), liveInfo.ttl());                    
@@ -514,12 +532,10 @@ public class SSTableToCQL {
                 finish();
                 return;                    
             }
-                                   
-            Deletion d = row.deletion();
-            
+                                               
             for (ColumnData cd : row) {
                 if (cd.column().isSimple()) {
-                    process((Cell) cd, liveInfo, d.time());
+                    process((Cell) cd, liveInfo, null);
                 } else {
                     ComplexColumnData complexData = (ComplexColumnData) cd;
 
@@ -529,10 +545,14 @@ public class SSTableToCQL {
                 }                                
             }
             
+            if (!d.isLive() && row.size() == 0) {
+                setOp(Op.DELETE, d.time().markedForDeleteAt(), invalidTTL);
+            }
+
             if (!row.isStatic()) {
                 Slice.Bound b = Slice.Bound.inclusiveStartOf(row.clustering().clustering());
                 setWhere(b, b);
-            }
+            }            
             
             finish();
         }
@@ -566,7 +586,7 @@ public class SSTableToCQL {
                         cop = cell.isTombstone() ?  new DeleteSetEntry(key) : new SetSetEntry(key);
                         break;
                     }                    
-                } else if (!cell.isTombstone() && d.isLive()) {
+                } else if (!cell.isTombstone() && (d == null || d.isLive())) {
                     cop = new SetColumn(type.compose(cell.value()));
                 } else {
                     cop = SET_NULL;
@@ -615,7 +635,7 @@ public class SSTableToCQL {
 
         RangeTombstoneMarker tombstoneMarker;
                 
-        private void process(RangeTombstoneMarker tombstone) {
+        private void process(RangeTombstoneMarker tombstone) {            
             Bound end = tombstone.closeBound(false);
             
             if (end != null && tombstoneMarker == null) {
@@ -796,6 +816,7 @@ public class SSTableToCQL {
 
         try {
             for (SSTableReader reader : sstables) {
+                logger.info("Processing {}", reader.getFilename());                
                 if (ranges == null || ranges.isEmpty()) {
                     ISSTableScanner scanner = reader.getScanner();
                     try {
