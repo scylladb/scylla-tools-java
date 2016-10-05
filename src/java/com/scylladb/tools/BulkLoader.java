@@ -66,7 +66,11 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Semaphore;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
@@ -102,6 +106,7 @@ import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 
 import com.datastax.driver.core.BatchStatement;
+import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.Cluster;
 import com.datastax.driver.core.CodecRegistry;
 import com.datastax.driver.core.DataType;
@@ -111,6 +116,7 @@ import com.datastax.driver.core.JdkSSLOptions;
 import com.datastax.driver.core.KeyspaceMetadata;
 import com.datastax.driver.core.Metadata;
 import com.datastax.driver.core.PoolingOptions;
+import com.datastax.driver.core.PreparedStatement;
 import com.datastax.driver.core.ProtocolOptions.Compression;
 import com.datastax.driver.core.ProtocolVersion;
 import com.datastax.driver.core.ResultSet;
@@ -125,6 +131,7 @@ import com.datastax.driver.core.TupleType;
 import com.datastax.driver.core.UserType;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.RateLimiter;
 
@@ -141,8 +148,7 @@ public class BulkLoader {
          *            description of the option
          * @return updated Options object
          */
-        public Options addOption(String opt, String longOpt,
-                String description) {
+        public Options addOption(String opt, String longOpt, String description) {
             return addOption(new Option(opt, longOpt, false, description));
         }
 
@@ -159,8 +165,7 @@ public class BulkLoader {
          *            description of the option
          * @return updated Options object
          */
-        public Options addOption(String opt, String longOpt, String argName,
-                String description) {
+        public Options addOption(String opt, String longOpt, String argName, String description) {
             Option option = new Option(opt, longOpt, true, description);
             option.setArgName(argName);
 
@@ -183,80 +188,74 @@ public class BulkLoader {
 
         private RateLimiter rateLimiter;
         private int bytes;
-        
+
         private final boolean batch;
-    
+        private final Map<String, ListenableFuture<PreparedStatement>> preparedStatements;
+
         public CQLClient(LoaderOptions options, String keyspace)
-                throws NoSuchAlgorithmException, FileNotFoundException,
-                IOException, KeyStoreException, CertificateException,
-                UnrecoverableKeyException, KeyManagementException,
-                ConfigurationException {
-            
-            //System.setProperty("com.datastax.driver.NON_BLOCKING_EXECUTOR_SIZE", "64");
+                throws NoSuchAlgorithmException, FileNotFoundException, IOException, KeyStoreException,
+                CertificateException, UnrecoverableKeyException, KeyManagementException, ConfigurationException {
+
+            // System.setProperty("com.datastax.driver.NON_BLOCKING_EXECUTOR_SIZE",
+            // "64");
 
             PoolingOptions poolingOptions = new PoolingOptions();
-            
+
             poolingOptions.setCoreConnectionsPerHost(HostDistance.LOCAL, 4);
             poolingOptions.setCoreConnectionsPerHost(HostDistance.REMOTE, 2);
             poolingOptions.setMaxConnectionsPerHost(HostDistance.LOCAL, 8);
             poolingOptions.setMaxConnectionsPerHost(HostDistance.REMOTE, 4);
             poolingOptions.setMaxRequestsPerConnection(HostDistance.LOCAL, 32768);
             poolingOptions.setMaxRequestsPerConnection(HostDistance.REMOTE, 2000);
-            
+
             this.simulate = options.simulate;
             this.verbose = options.verbose;
-            Cluster.Builder builder = builder().addContactPoints(options.hosts)
-                    .withProtocolVersion(ProtocolVersion.V3)
-                    .withCompression(Compression.LZ4)
-                    .withPoolingOptions(poolingOptions);
+            Cluster.Builder builder = builder().addContactPoints(options.hosts).withProtocolVersion(ProtocolVersion.V3)
+                    .withCompression(Compression.LZ4).withPoolingOptions(poolingOptions);
             if (options.user != null && options.passwd != null) {
                 builder = builder.withCredentials(options.user, options.passwd);
             }
             if (options.ssl) {
                 EncryptionOptions enco = options.encOptions;
-                SSLContext ctx = SSLContext
-                        .getInstance(options.encOptions.protocol);
+                SSLContext ctx = SSLContext.getInstance(options.encOptions.protocol);
 
                 try (FileInputStream tsf = new FileInputStream(enco.truststore);
-                        FileInputStream ksf = new FileInputStream(
-                                enco.keystore)) {
+                        FileInputStream ksf = new FileInputStream(enco.keystore)) {
                     KeyStore ts = KeyStore.getInstance(enco.store_type);
                     ts.load(tsf, enco.truststore_password.toCharArray());
-                    TrustManagerFactory tmf = TrustManagerFactory.getInstance(
-                            TrustManagerFactory.getDefaultAlgorithm());
+                    TrustManagerFactory tmf = TrustManagerFactory
+                            .getInstance(TrustManagerFactory.getDefaultAlgorithm());
                     tmf.init(ts);
 
                     KeyStore ks = KeyStore.getInstance("JKS");
                     ks.load(ksf, enco.keystore_password.toCharArray());
-                    KeyManagerFactory kmf = KeyManagerFactory.getInstance(
-                            KeyManagerFactory.getDefaultAlgorithm());
+                    KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
                     kmf.init(ks, enco.keystore_password.toCharArray());
-                    ctx.init(kmf.getKeyManagers(), tmf.getTrustManagers(),
-                            new SecureRandom());
-                }                
-                SSLOptions sslOptions = JdkSSLOptions.builder()
-                        .withSSLContext(ctx)
-                        .withCipherSuites(enco.cipher_suites)
+                    ctx.init(kmf.getKeyManagers(), tmf.getTrustManagers(), new SecureRandom());
+                }
+                SSLOptions sslOptions = JdkSSLOptions.builder().withSSLContext(ctx).withCipherSuites(enco.cipher_suites)
                         .build();
-                builder = builder
-                        .withSSL(sslOptions);
+                builder = builder.withSSL(sslOptions);
             }
-            
+
             cluster = builder.build();
             session = cluster.connect(keyspace);
             metadata = cluster.getMetadata();
             keyspaceMetadata = metadata.getKeyspace(keyspace);
-            Types types =  loadUserTypes(keyspaceMetadata.getUserTypes(), keyspace, Types.builder());            
+            Types types = loadUserTypes(keyspaceMetadata.getUserTypes(), keyspace, Types.builder());
             org.apache.cassandra.schema.KeyspaceMetadata ksMetaData = org.apache.cassandra.schema.KeyspaceMetadata
-                    .create(keyspaceMetadata.getName(), KeyspaceParams.create(keyspaceMetadata.isDurableWrites(),
-                            keyspaceMetadata.getReplication()), Tables.none(), Views.none(), types, Functions.none());
+                    .create(keyspaceMetadata.getName(),
+                            KeyspaceParams.create(keyspaceMetadata.isDurableWrites(),
+                                    keyspaceMetadata.getReplication()),
+                            Tables.none(), Views.none(), types, Functions.none());
             Schema.instance.load(ksMetaData);
             partitioner = FBUtilities.newPartitioner(metadata.getPartitioner());
             if (options.throttle != 0) {
                 rateLimiter = RateLimiter.create(options.throttle * 1000 * 1000 / 8);
             }
-            
+
             this.batch = options.batch;
+            this.preparedStatements = options.prepare ? new ConcurrentHashMap<>() : null;
         }
 
         // Load user defined types. Since loading a UDT entails validation
@@ -266,7 +265,7 @@ public class BulkLoader {
         // forward progress.
         private static Types loadUserTypes(Collection<UserType> udts, String ksname, Types.Builder types) {
             if (udts.isEmpty()) {
-                return types.build() ;
+                return types.build();
             }
             LinkedList<UserType> notLoaded = new LinkedList<UserType>();
             for (UserType ut : udts) {
@@ -293,33 +292,32 @@ public class BulkLoader {
         private static CQL3Type.Raw getCql3Type(DataType dt) throws Exception {
             CQL3Type.Raw type;
             switch (dt.getName()) {
-                case LIST:
-                    type = CQL3Type.Raw.list(getCql3Type(dt.getTypeArguments().get(0)));
-                    break;
-                case MAP:
-                    type = CQL3Type.Raw.map(
-                            getCql3Type(dt.getTypeArguments().get(0)),
-                            getCql3Type(dt.getTypeArguments().get(1)));
-                    break;
-                case SET:
-                    type = CQL3Type.Raw.set(getCql3Type(dt.getTypeArguments().get(0)));
-                    break;
-                case TUPLE:
-                    ArrayList<CQL3Type.Raw> tupleTypes = new ArrayList<CQL3Type.Raw>();
-                    for (DataType arg : ((TupleType)dt).getComponentTypes()) {
-                        tupleTypes.add(getCql3Type(arg));
-                    }
-                    type = CQL3Type.Raw.tuple(tupleTypes);
-                    break;
-                case UDT: // Requires this UDT to already be loaded
-                    UserType udt = (UserType)dt;
-                    type = CQL3Type.Raw.userType(new UTName(
-                            new ColumnIdentifier(udt.getKeyspace(), true),
-                            new ColumnIdentifier(udt.getTypeName(), true)));
-                    break;
-                default:
-                    type = CQL3Type.Raw.from(Enum.<CQL3Type.Native>valueOf(CQL3Type.Native.class, dt.getName().toString().toUpperCase()));
-                    break;
+            case LIST:
+                type = CQL3Type.Raw.list(getCql3Type(dt.getTypeArguments().get(0)));
+                break;
+            case MAP:
+                type = CQL3Type.Raw.map(getCql3Type(dt.getTypeArguments().get(0)),
+                        getCql3Type(dt.getTypeArguments().get(1)));
+                break;
+            case SET:
+                type = CQL3Type.Raw.set(getCql3Type(dt.getTypeArguments().get(0)));
+                break;
+            case TUPLE:
+                ArrayList<CQL3Type.Raw> tupleTypes = new ArrayList<CQL3Type.Raw>();
+                for (DataType arg : ((TupleType) dt).getComponentTypes()) {
+                    tupleTypes.add(getCql3Type(arg));
+                }
+                type = CQL3Type.Raw.tuple(tupleTypes);
+                break;
+            case UDT: // Requires this UDT to already be loaded
+                UserType udt = (UserType) dt;
+                type = CQL3Type.Raw.userType(new UTName(new ColumnIdentifier(udt.getKeyspace(), true),
+                        new ColumnIdentifier(udt.getTypeName(), true)));
+                break;
+            default:
+                type = CQL3Type.Raw.from(
+                        Enum.<CQL3Type.Native> valueOf(CQL3Type.Native.class, dt.getName().toString().toUpperCase()));
+                break;
             }
             if (dt.isFrozen()) {
                 type = CQL3Type.Raw.frozen(type);
@@ -330,7 +328,7 @@ public class BulkLoader {
         private static final int maxStatements = 256;
         private static final int maxBatchStatements = 256;
         private final Semaphore semaphore = new Semaphore(maxStatements);
-        
+
         public void close() {
             if (semaphore != null) {
                 try {
@@ -338,13 +336,12 @@ public class BulkLoader {
                     return;
                 } catch (InterruptedException e) {
                 }
-            }            
+            }
         }
-        
+
         @Override
         public void finish() {
-            if (batchStatement != null
-                    && !batchStatement.getStatements().isEmpty()) {
+            if (batchStatement != null && !batchStatement.getStatements().isEmpty()) {
                 send(batchStatement);
                 batchStatement = null;
             }
@@ -369,20 +366,23 @@ public class BulkLoader {
                 try {
                     ResultSetFuture future = session.executeAsync(s);
                     Futures.addCallback(future, new FutureCallback<ResultSet>() {
-                        @Override public void onSuccess(ResultSet result) {
+                        @Override
+                        public void onSuccess(ResultSet result) {
                             semaphore.release();
-                        }                    
-                        @Override public void onFailure(Throwable t) {
+                        }
+
+                        @Override
+                        public void onFailure(Throwable t) {
                             semaphore.release();
                             System.err.println(t);
-                        }                            
+                        }
                     }, MoreExecutors.directExecutor());
                 } finally {
                 }
-            } catch (InterruptedException e) {                  
-            }    
+            } catch (InterruptedException e) {
+            }
         }
-        
+
         private void send(Object callback, DecoratedKey key, Statement s) {
             if (batch && tokenKey == callback && batchStatement != null && batchStatement.size() < maxBatchStatements
                     && this.key.equals(key)) {
@@ -397,7 +397,7 @@ public class BulkLoader {
                 batchStatement = new BatchStatement(BatchStatement.Type.UNLOGGED);
                 batchStatement.add(s);
                 tokenKey = callback;
-                this.key = key; 
+                this.key = key;
             } else {
                 send(s);
             }
@@ -441,8 +441,8 @@ public class BulkLoader {
         }
 
         @Override
-        public void processStatment(Object callback, DecoratedKey key,
-                long timestamp, String what, List<Object> objects) {
+        public void processStatment(Object callback, DecoratedKey key, long timestamp, String what,
+                List<Object> objects) {
             if (verbose) {
                 System.out.print("CQL: '");
                 System.out.print(what);
@@ -454,20 +454,30 @@ public class BulkLoader {
                 System.out.println();
             }
 
-            SimpleStatement s = new SimpleStatement(what, objects.toArray()) {                
+            if (preparedStatements != null) {
+                sendPrepared(callback, key, timestamp, what, objects);
+            } else {
+                send(callback, key, timestamp, what, objects);
+            }
+        }
+
+        private void send(Object callback, DecoratedKey key, long timestamp, String what, List<Object> objects) {
+            SimpleStatement s = new SimpleStatement(what, objects.toArray()) {
                 @Override
                 public ByteBuffer[] getValues(ProtocolVersion protocolVersion, CodecRegistry codecRegistry) {
                     return summarize(super.getValues(protocolVersion, codecRegistry));
                 }
+
                 @Override
                 public Map<String, ByteBuffer> getNamedValues(ProtocolVersion protocolVersion,
                         CodecRegistry codecRegistry) {
-                    Map<String, ByteBuffer> res = super.getNamedValues(protocolVersion, codecRegistry); 
+                    Map<String, ByteBuffer> res = super.getNamedValues(protocolVersion, codecRegistry);
                     if (rateLimiter != null && res != null) {
-                        summarize(res.values().toArray(new ByteBuffer[res.size()]));                        
+                        summarize(res.values().toArray(new ByteBuffer[res.size()]));
                     }
                     return res;
                 }
+
                 private ByteBuffer[] summarize(ByteBuffer[] values) {
                     if (rateLimiter != null) {
                         // Try to guesstimate the bytes payload of the query
@@ -490,6 +500,33 @@ public class BulkLoader {
 
             send(callback, key, s);
         }
+
+        private void sendPrepared(final Object callback, final DecoratedKey key, final long timestamp, String what,
+                final List<Object> objects) {
+            ListenableFuture<PreparedStatement> f = preparedStatements.get(what);
+            if (f == null) {
+                if (verbose) {
+                    System.out.println("Preparing: " + what);
+                }
+                f = session.prepareAsync(what);
+                preparedStatements.put(what, f);
+            }
+
+            Futures.addCallback(f, new FutureCallback<PreparedStatement>() {
+                @Override
+                public void onSuccess(PreparedStatement p) {
+                    BoundStatement s = p.bind(objects.toArray(new Object[objects.size()]));
+                    s.setRoutingKey(key.getKey());
+                    s.setDefaultTimestamp(timestamp);
+                    send(callback, key, s);
+                }
+
+                @Override
+                public void onFailure(Throwable t) {
+                    System.err.println(t);
+                }
+            }, MoreExecutors.directExecutor());
+        }
     }
 
     static class LoaderOptions {
@@ -502,46 +539,36 @@ public class BulkLoader {
         private static CmdLineOptions getCmdLineOptions() {
             CmdLineOptions options = new CmdLineOptions();
             options.addOption("v", VERBOSE_OPTION, "verbose output");
-            options.addOption("sim", SIMULATE,
-                    "simulate. Only print CQL generated");
+            options.addOption("sim", SIMULATE, "simulate. Only print CQL generated");
             options.addOption("h", HELP_OPTION, "display this help message");
-            options.addOption(null, NOPROGRESS_OPTION,
-                    "don't display progress");
+            options.addOption(null, NOPROGRESS_OPTION, "don't display progress");
             options.addOption("i", IGNORE_NODES_OPTION, "NODES",
                     "don't stream to this (comma separated) list of nodes");
             options.addOption("d", INITIAL_HOST_ADDRESS_OPTION, "initial hosts",
                     "Required. try to connect to these hosts (comma separated) initially for ring information");
-            options.addOption("p", PORT_OPTION, "port",
-                    "port used for connections (default 9042)");
-            options.addOption("t", THROTTLE_MBITS, "throttle",
-                    "throttle speed in Mbits (default unlimited)");
-            options.addOption("u", USER_OPTION, "username",
-                    "username for cassandra authentication");
-            options.addOption("pw", PASSWD_OPTION, "password",
-                    "password for cassandra authentication");
+            options.addOption("p", PORT_OPTION, "port", "port used for connections (default 9042)");
+            options.addOption("t", THROTTLE_MBITS, "throttle", "throttle speed in Mbits (default unlimited)");
+            options.addOption("u", USER_OPTION, "username", "username for cassandra authentication");
+            options.addOption("pw", PASSWD_OPTION, "password", "password for cassandra authentication");
             options.addOption("cph", CONNECTIONS_PER_HOST, "connectionsPerHost",
                     "number of concurrent connections-per-host.");
             // ssl connection-related options
             options.addOption("s", SSL, "SSL", "Use SSL connection(s)");
-            options.addOption("ts", SSL_TRUSTSTORE, "TRUSTSTORE",
-                    "Client SSL: full path to truststore");
+            options.addOption("ts", SSL_TRUSTSTORE, "TRUSTSTORE", "Client SSL: full path to truststore");
             options.addOption("tspw", SSL_TRUSTSTORE_PW, "TRUSTSTORE-PASSWORD",
                     "Client SSL: password of the truststore");
-            options.addOption("ks", SSL_KEYSTORE, "KEYSTORE",
-                    "Client SSL: full path to keystore");
-            options.addOption("kspw", SSL_KEYSTORE_PW, "KEYSTORE-PASSWORD",
-                    "Client SSL: password of the keystore");
+            options.addOption("ks", SSL_KEYSTORE, "KEYSTORE", "Client SSL: full path to keystore");
+            options.addOption("kspw", SSL_KEYSTORE_PW, "KEYSTORE-PASSWORD", "Client SSL: password of the keystore");
             options.addOption("prtcl", SSL_PROTOCOL, "PROTOCOL",
                     "Client SSL: connections protocol to use (default: TLS)");
-            options.addOption("alg", SSL_ALGORITHM, "ALGORITHM",
-                    "Client SSL: algorithm (default: SunX509)");
-            options.addOption("st", SSL_STORE_TYPE, "STORE-TYPE",
-                    "Client SSL: type of store");
+            options.addOption("alg", SSL_ALGORITHM, "ALGORITHM", "Client SSL: algorithm (default: SunX509)");
+            options.addOption("st", SSL_STORE_TYPE, "STORE-TYPE", "Client SSL: type of store");
             options.addOption("ciphers", SSL_CIPHER_SUITES, "CIPHER-SUITES",
                     "Client SSL: comma-separated list of encryption suites to use");
             options.addOption("f", CONFIG_PATH, "path to config file",
                     "cassandra.yaml file path for streaming throughput and client/server SSL.");
             options.addOption("b", USE_BATCH, "batch updates for same partition key.");
+            options.addOption("x", USE_PREPARED, "prepared statements");
             return options;
         }
 
@@ -583,8 +610,7 @@ public class BulkLoader {
                 opts.noProgress = cmd.hasOption(NOPROGRESS_OPTION);
 
                 if (cmd.hasOption(PORT_OPTION)) {
-                    opts.port = Integer
-                            .parseInt(cmd.getOptionValue(PORT_OPTION));
+                    opts.port = Integer.parseInt(cmd.getOptionValue(PORT_OPTION));
                 }
 
                 if (cmd.hasOption(USER_OPTION)) {
@@ -596,9 +622,7 @@ public class BulkLoader {
                 }
 
                 if (cmd.hasOption(INITIAL_HOST_ADDRESS_OPTION)) {
-                    String[] nodes = cmd
-                            .getOptionValue(INITIAL_HOST_ADDRESS_OPTION)
-                            .split(",");
+                    String[] nodes = cmd.getOptionValue(INITIAL_HOST_ADDRESS_OPTION).split(",");
                     try {
                         for (String node : nodes) {
                             opts.hosts.add(InetAddress.getByName(node.trim()));
@@ -614,12 +638,10 @@ public class BulkLoader {
                 }
 
                 if (cmd.hasOption(IGNORE_NODES_OPTION)) {
-                    String[] nodes = cmd.getOptionValue(IGNORE_NODES_OPTION)
-                            .split(",");
+                    String[] nodes = cmd.getOptionValue(IGNORE_NODES_OPTION).split(",");
                     try {
                         for (String node : nodes) {
-                            opts.ignores
-                                    .add(InetAddress.getByName(node.trim()));
+                            opts.ignores.add(InetAddress.getByName(node.trim()));
                         }
                     } catch (UnknownHostException e) {
                         errorMsg("Unknown host: " + e.getMessage(), options);
@@ -627,8 +649,7 @@ public class BulkLoader {
                 }
 
                 if (cmd.hasOption(CONNECTIONS_PER_HOST)) {
-                    opts.connectionsPerHost = Integer
-                            .parseInt(cmd.getOptionValue(CONNECTIONS_PER_HOST));
+                    opts.connectionsPerHost = Integer.parseInt(cmd.getOptionValue(CONNECTIONS_PER_HOST));
                 }
 
                 // try to load config file first, so that values can be
@@ -640,8 +661,7 @@ public class BulkLoader {
                     if (!configFile.exists()) {
                         errorMsg("Config file not found", options);
                     }
-                    config = new YamlConfigurationLoader()
-                            .loadConfig(configFile.toURI().toURL());
+                    config = new YamlConfigurationLoader().loadConfig(configFile.toURI().toURL());
                 } else {
                     config = new Config();
                 }
@@ -650,21 +670,18 @@ public class BulkLoader {
                 opts.encOptions = config.client_encryption_options;
 
                 if (cmd.hasOption(THROTTLE_MBITS)) {
-                    opts.throttle = Integer
-                            .parseInt(cmd.getOptionValue(THROTTLE_MBITS));
+                    opts.throttle = Integer.parseInt(cmd.getOptionValue(THROTTLE_MBITS));
                 }
 
                 if (cmd.hasOption(SSL)) {
                     opts.ssl = true;
                 }
                 if (cmd.hasOption(SSL_TRUSTSTORE)) {
-                    opts.encOptions.truststore = cmd
-                            .getOptionValue(SSL_TRUSTSTORE);
+                    opts.encOptions.truststore = cmd.getOptionValue(SSL_TRUSTSTORE);
                 }
 
                 if (cmd.hasOption(SSL_TRUSTSTORE_PW)) {
-                    opts.encOptions.truststore_password = cmd
-                            .getOptionValue(SSL_TRUSTSTORE_PW);
+                    opts.encOptions.truststore_password = cmd.getOptionValue(SSL_TRUSTSTORE_PW);
                 }
 
                 if (cmd.hasOption(SSL_KEYSTORE)) {
@@ -675,8 +692,7 @@ public class BulkLoader {
                 }
 
                 if (cmd.hasOption(SSL_KEYSTORE_PW)) {
-                    opts.encOptions.keystore_password = cmd
-                            .getOptionValue(SSL_KEYSTORE_PW);
+                    opts.encOptions.keystore_password = cmd.getOptionValue(SSL_KEYSTORE_PW);
                 }
 
                 if (cmd.hasOption(SSL_PROTOCOL)) {
@@ -684,27 +700,30 @@ public class BulkLoader {
                 }
 
                 if (cmd.hasOption(SSL_ALGORITHM)) {
-                    opts.encOptions.algorithm = cmd
-                            .getOptionValue(SSL_ALGORITHM);
+                    opts.encOptions.algorithm = cmd.getOptionValue(SSL_ALGORITHM);
                 }
 
                 if (cmd.hasOption(SSL_STORE_TYPE)) {
-                    opts.encOptions.store_type = cmd
-                            .getOptionValue(SSL_STORE_TYPE);
+                    opts.encOptions.store_type = cmd.getOptionValue(SSL_STORE_TYPE);
                 }
 
                 if (cmd.hasOption(SSL_CIPHER_SUITES)) {
-                    opts.encOptions.cipher_suites = cmd
-                            .getOptionValue(SSL_CIPHER_SUITES).split(",");
+                    opts.encOptions.cipher_suites = cmd.getOptionValue(SSL_CIPHER_SUITES).split(",");
+                }
+
+                if (cmd.hasOption(USE_PREPARED) && cmd.hasOption(USE_BATCH)) {
+                    errorMsg("Cannot use batch and prepared statement at the same time", options);
                 }
                 
+                if (cmd.hasOption(USE_PREPARED)) {
+                    opts.prepare = true;
+                }
                 if (cmd.hasOption(USE_BATCH)) {
                     opts.batch = true;
                 }
-
+                                
                 return opts;
-            } catch (ParseException | ConfigurationException
-                    | MalformedURLException e) {
+            } catch (ParseException | ConfigurationException | MalformedURLException e) {
                 errorMsg(e.getMessage(), options);
                 return null;
             }
@@ -735,8 +754,9 @@ public class BulkLoader {
 
         public String passwd;
         public int throttle = 0;
-        
+
         public boolean batch;
+        public boolean prepare;
 
         public EncryptionOptions encOptions = new EncryptionOptions.ClientEncryptionOptions();
 
@@ -778,7 +798,8 @@ public class BulkLoader {
     private static final String CONNECTIONS_PER_HOST = "connections-per-host";
 
     private static final String CONFIG_PATH = "conf-path";
-    private static final String USE_BATCH = "use-batch";    
+    private static final String USE_BATCH = "use-batch";
+    private static final String USE_PREPARED = "use-prepared";
 
     public static void main(String args[]) {
         Config.setClientMode(true);
@@ -796,7 +817,7 @@ public class BulkLoader {
             SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client);
             try {
                 ssTableToCQL.stream(options.directory);
-            }  finally {
+            } finally {
                 client.close();
             }
             System.exit(0);
