@@ -366,8 +366,8 @@ public class SSTableToCQL {
                 // TTL cannot. But just to be extra funny, at least
                 // origin does not seem to respect the timestamp
                 // in statement, so we'll add them to the CQL string as well.
-                writeUsingTimestamp(buf);
-                writeUsingTTL(buf);
+                writeUsingTimestamp(buf, params);
+                writeUsingTTL(buf, params);
                 buf.append(" SET ");
             }
 
@@ -397,7 +397,7 @@ public class SSTableToCQL {
             if (op == Op.DELETE) {
                 buf.append(" FROM");
                 writeColumnFamily(buf);
-                writeUsingTimestamp(buf);
+                writeUsingTimestamp(buf, params);
             }
 
             if (op != Op.INSERT) {
@@ -446,8 +446,8 @@ public class SSTableToCQL {
                     buf.append('?');
                 }
                 buf.append(')');
-                writeUsingTimestamp(buf);
-                writeUsingTTL(buf);
+                writeUsingTimestamp(buf, params);
+                writeUsingTTL(buf, params);
             } else {
                 for (Map.Entry<ColumnDefinition, Pair<Comp, Object>> e : where.entries()) {
                     if (i++ > 0) {
@@ -465,7 +465,7 @@ public class SSTableToCQL {
             clear();
         }
 
-        private void writeUsingTTL(StringBuilder buf) {
+        private void writeUsingTTL(StringBuilder buf, List<Object> params) {
             if (ttl != invalidTTL) {
                 ensureWhitespace(buf);
 
@@ -487,7 +487,8 @@ public class SSTableToCQL {
                 }
                 
                 
-                buf.append(" TTL " + adjustedTTL);
+                buf.append(" TTL ?");
+                params.add(adjustedTTL);
             }
         }
 
@@ -497,10 +498,11 @@ public class SSTableToCQL {
             }
         }
 
-        private void writeUsingTimestamp(StringBuilder buf) {
+        private void writeUsingTimestamp(StringBuilder buf, List<Object> params) {
             if (timestamp != invalidTimestamp) {
                 ensureWhitespace(buf);
-                buf.append("USING TIMESTAMP " + timestamp);
+                buf.append("USING TIMESTAMP ?");
+                params.add(timestamp);
             }
         }
 
