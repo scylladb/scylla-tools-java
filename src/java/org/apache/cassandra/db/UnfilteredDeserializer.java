@@ -647,7 +647,19 @@ public abstract class UnfilteredDeserializer
                     // If the new tombstone don't supersedes the currently open tombstone, we don't have anything to return, we
                     // just add the new tombstone (because we know tombstone is not fully shadowed, this imply the new tombstone
                     // simply extend after the first one and we'll deal with it later)
-                    assert metadata.comparator.compare(tombstone.start.bound, first.stop.bound) > 0;
+
+                    // changed scylla-enterprise #103. This assert seems wrong. An extending tombstone should be valid 
+                    // with an equal comparison here as well (strictly speaking not, but the comparator does not 
+                    // care (enough) about inclusive/exclusive)...
+
+                    //assert metadata.comparator.compare(tombstone.start.bound, first.stop.bound) > 0;
+                    
+                    // See above. We need to deal with "extending" TS that have connecting bounds. 
+                    // These should be treated similarly to above, i.e. remove the currently pending 
+                    // tombstone (which we assume generated either RangeTombstoneBoundMarker or RangeTombstoneBoundaryMarker)
+                    if (metadata.comparator.compare(tombstone.start.bound, first.stop.bound) == 0) {
+                        iter.remove();
+                    }
                     openTombstones.add(tombstone);
                     return null;
                 }
