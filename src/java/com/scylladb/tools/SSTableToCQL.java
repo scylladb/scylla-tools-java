@@ -575,6 +575,7 @@ public class SSTableToCQL {
                     if (prev != null && !cell.name().isSameCQL3RowAs(cfMetaData.comparator, prev.name())) {
                         processAtoms();
                     }
+                    prev = cell;
                 }
                 sortedAtoms.add(atom);
             }
