@@ -55,9 +55,9 @@ public class NodeTool
                 Ring.class,
                 NetStats.class,
                 CfStats.class,
-                // Remove until proven otherwise: TableStats.class,
+                TableStats.class, // New name
                 CfHistograms.class,
-                // Remove until proven otherwise: TableHistograms.class,
+                TableHistograms.class, // New name
                 Cleanup.class,
                 ClearSnapshot.class,
                 Compact.class,
