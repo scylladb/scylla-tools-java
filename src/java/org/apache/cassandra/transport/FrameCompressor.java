@@ -20,11 +20,9 @@ package org.apache.cassandra.transport;
 import java.io.IOException;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
 import org.xerial.snappy.Snappy;
 import org.xerial.snappy.SnappyError;
 
-import net.jpountz.lz4.LZ4Exception;
 import net.jpountz.lz4.LZ4Factory;
 
 import org.apache.cassandra.utils.JVMStabilityInspector;
@@ -53,15 +51,7 @@ public interface FrameCompressor
                 JVMStabilityInspector.inspectThrowable(e);
                 i = null;
             }
-            catch (NoClassDefFoundError e)
-            {
-                i = null;
-            }
-            catch (SnappyError e)
-            {
-                i = null;
-            }
-            catch (UnsatisfiedLinkError e)
+            catch (NoClassDefFoundError | SnappyError | UnsatisfiedLinkError e)
             {
                 i = null;
             }

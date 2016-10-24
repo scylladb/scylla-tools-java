@@ -17,9 +17,9 @@
  */
 package org.apache.cassandra.io;
 
-import java.io.DataInput;
 import java.io.IOException;
 
+import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 
 public interface IVersionedSerializer<T>
@@ -30,7 +30,7 @@ public interface IVersionedSerializer<T>
      * @param t type that needs to be serialized
      * @param out DataOutput into which serialization needs to happen.
      * @param version protocol version
-     * @throws java.io.IOException
+     * @throws java.io.IOException if serialization fails
      */
     public void serialize(T t, DataOutputPlus out, int version) throws IOException;
 
@@ -39,9 +39,9 @@ public interface IVersionedSerializer<T>
      * @param in DataInput from which deserialization needs to happen.
      * @param version protocol version
      * @return the type that was deserialized
-     * @throws IOException
+     * @throws IOException if deserialization fails
      */
-    public T deserialize(DataInput in, int version) throws IOException;
+    public T deserialize(DataInputPlus in, int version) throws IOException;
 
     /**
      * Calculate serialized size of object without actually serializing.

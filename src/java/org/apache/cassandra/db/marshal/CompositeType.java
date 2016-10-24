@@ -19,19 +19,20 @@ package org.apache.cassandra.db.marshal;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.Arrays;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 import com.google.common.collect.ImmutableList;
 
-import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.cql3.Operator;
+import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.io.util.DataOutputBuffer;
+import org.apache.cassandra.io.util.DataOutputBufferFixed;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
@@ -67,7 +68,7 @@ public class CompositeType extends AbstractCompositeType
     public final List<AbstractType<?>> types;
 
     // interning instances
-    private static final Map<List<AbstractType<?>>, CompositeType> instances = new HashMap<List<AbstractType<?>>, CompositeType>();
+    private static final ConcurrentMap<List<AbstractType<?>>, CompositeType> instances = new ConcurrentHashMap<List<AbstractType<?>>, CompositeType>();
 
     public static CompositeType getInstance(TypeParser parser) throws ConfigurationException, SyntaxException
     {
@@ -97,7 +98,7 @@ public class CompositeType extends AbstractCompositeType
         return true;
     }
 
-    public static synchronized CompositeType getInstance(List<AbstractType<?>> types)
+    public static CompositeType getInstance(List<AbstractType<?>> types)
     {
         assert types != null && !types.isEmpty();
 
@@ -105,7 +106,11 @@ public class CompositeType extends AbstractCompositeType
         if (ct == null)
         {
             ct = new CompositeType(types);
-            instances.put(types, ct);
+            CompositeType previous = instances.putIfAbsent(types, ct);
+            if (previous != null)
+            {
+                ct = previous;
+            }
         }
         return ct;
     }
@@ -176,6 +181,7 @@ public class CompositeType extends AbstractCompositeType
         // most names will be complete.
         ByteBuffer[] l = new ByteBuffer[types.size()];
         ByteBuffer bb = name.duplicate();
+        readStatic(bb);
         int i = 0;
         while (bb.remaining() > 0)
         {
@@ -183,6 +189,24 @@ public class CompositeType extends AbstractCompositeType
             bb.get(); // skip end-of-component
         }
         return i == l.length ? l : Arrays.copyOfRange(l, 0, i);
+    }
+
+    public static List<ByteBuffer> splitName(ByteBuffer name)
+    {
+        List<ByteBuffer> l = new ArrayList<>();
+        ByteBuffer bb = name.duplicate();
+        readStatic(bb);
+        while (bb.remaining() > 0)
+        {
+            l.add(ByteBufferUtil.readBytesWithShortLength(bb));
+            bb.get(); // skip end-of-component
+        }
+        return l;
+    }
+
+    public static byte lastEOC(ByteBuffer name)
+    {
+        return name.get(name.limit() - 1);
     }
 
     // Extract component idx from bb. Return null if there is not enough component.
@@ -201,6 +225,32 @@ public class CompositeType extends AbstractCompositeType
             ++i;
         }
         return null;
+    }
+
+    public static class CompositeComponent
+    {
+        public ByteBuffer value;
+        public byte eoc;
+
+        public CompositeComponent(ByteBuffer value, byte eoc)
+        {
+            this.value = value;
+            this.eoc = eoc;
+        }
+    }
+
+    public static List<CompositeComponent> deconstruct(ByteBuffer bytes)
+    {
+        List<CompositeComponent> list = new ArrayList<>();
+        ByteBuffer bb = bytes.duplicate();
+        readStatic(bb);
+        while (bb.remaining() > 0)
+        {
+            ByteBuffer value = ByteBufferUtil.readBytesWithShortLength(bb);
+            byte eoc = bb.get();
+            list.add(new CompositeComponent(value, eoc));
+        }
+        return list;
     }
 
     // Extract CQL3 column name from the full column name.
@@ -317,11 +367,20 @@ public class CompositeType extends AbstractCompositeType
 
     public static ByteBuffer build(ByteBuffer... buffers)
     {
-        int totalLength = 0;
+        return build(false, buffers);
+    }
+
+    public static ByteBuffer build(boolean isStatic, ByteBuffer... buffers)
+    {
+        int totalLength = isStatic ? 2 : 0;
         for (ByteBuffer bb : buffers)
             totalLength += 2 + bb.remaining() + 1;
 
         ByteBuffer out = ByteBuffer.allocate(totalLength);
+
+        if (isStatic)
+            out.putShort((short)STATIC_MARKER);
+
         for (ByteBuffer bb : buffers)
         {
             ByteBufferUtil.writeShortLength(out, bb.remaining());
@@ -401,9 +460,8 @@ public class CompositeType extends AbstractCompositeType
 
         public ByteBuffer build()
         {
-            try
+            try (DataOutputBuffer out = new DataOutputBufferFixed(serializedSize))
             {
-                DataOutputBuffer out = new DataOutputBuffer(serializedSize);
                 if (isStatic)
                     out.writeShort(STATIC_MARKER);
 

@@ -17,40 +17,37 @@
  */
 package org.apache.cassandra.io.util;
 
-import java.io.Closeable;
-import java.io.DataInput;
-import java.io.EOFException;
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.RandomAccessFile;
+import java.io.*;
 import java.nio.ByteBuffer;
-import java.nio.MappedByteBuffer;
-import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
+import java.nio.channels.FileChannel;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
 import java.text.DecimalFormat;
 import java.util.Arrays;
-
-import sun.nio.ch.DirectBuffer;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import sun.nio.ch.DirectBuffer;
 
 import org.apache.cassandra.concurrent.ScheduledExecutors;
-import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.db.BlacklistedDirectories;
-import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.io.FSError;
+import org.apache.cassandra.io.FSErrorHandler;
 import org.apache.cassandra.io.FSReadError;
 import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.sstable.CorruptSSTableException;
-import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 
-public class FileUtils
+import static org.apache.cassandra.utils.Throwables.maybeFail;
+import static org.apache.cassandra.utils.Throwables.merge;
+
+public final class FileUtils
 {
+    public static final Charset CHARSET = StandardCharsets.UTF_8;
+
     private static final Logger logger = LoggerFactory.getLogger(FileUtils.class);
     private static final double KB = 1024d;
     private static final double MB = 1024*1024d;
@@ -59,6 +56,7 @@ public class FileUtils
 
     private static final DecimalFormat df = new DecimalFormat("#.##");
     private static final boolean canCleanDirectBuffers;
+    private static final AtomicReference<FSErrorHandler> fsErrorHandler = new AtomicReference<>();
 
     static
     {
@@ -116,6 +114,34 @@ public class FileUtils
         return createTempFile(prefix, suffix, new File(System.getProperty("java.io.tmpdir")));
     }
 
+    public static Throwable deleteWithConfirm(String filePath, boolean expect, Throwable accumulate)
+    {
+        return deleteWithConfirm(new File(filePath), expect, accumulate);
+    }
+
+    public static Throwable deleteWithConfirm(File file, boolean expect, Throwable accumulate)
+    {
+        boolean exists = file.exists();
+        assert exists || !expect : "attempted to delete non-existing file " + file.getName();
+        try
+        {
+            if (exists)
+                Files.delete(file.toPath());
+        }
+        catch (Throwable t)
+        {
+            try
+            {
+                throw new FSWriteError(t, file);
+            }
+            catch (Throwable t2)
+            {
+                accumulate = merge(accumulate, t2);
+            }
+        }
+        return accumulate;
+    }
+
     public static void deleteWithConfirm(String file)
     {
         deleteWithConfirm(new File(file));
@@ -123,17 +149,7 @@ public class FileUtils
 
     public static void deleteWithConfirm(File file)
     {
-        assert file.exists() : "attempted to delete non-existing file " + file.getName();
-        if (logger.isDebugEnabled())
-            logger.debug("Deleting {}", file.getName());
-        try
-        {
-            Files.delete(file.toPath());
-        }
-        catch (IOException e)
-        {
-            throw new FSWriteError(e, file);
-        }
+        maybeFail(deleteWithConfirm(file, true, null));
     }
 
     public static void renameWithOutConfirm(String from, String to)
@@ -157,8 +173,8 @@ public class FileUtils
     public static void renameWithConfirm(File from, File to)
     {
         assert from.exists();
-        if (logger.isDebugEnabled())
-            logger.debug((String.format("Renaming %s to %s", from.getPath(), to.getPath())));
+        if (logger.isTraceEnabled())
+            logger.trace((String.format("Renaming %s to %s", from.getPath(), to.getPath())));
         // this is not FSWE because usually when we see it it's because we didn't close the file before renaming it,
         // and Windows is picky about that.
         try
@@ -185,39 +201,37 @@ public class FileUtils
         }
         catch (AtomicMoveNotSupportedException e)
         {
-            logger.debug("Could not do an atomic move", e);
+            logger.trace("Could not do an atomic move", e);
             Files.move(from, to, StandardCopyOption.REPLACE_EXISTING);
         }
 
     }
     public static void truncate(String path, long size)
     {
-        RandomAccessFile file;
-
-        try
+        try(FileChannel channel = FileChannel.open(Paths.get(path), StandardOpenOption.READ, StandardOpenOption.WRITE))
         {
-            file = new RandomAccessFile(path, "rw");
-        }
-        catch (FileNotFoundException e)
-        {
-            throw new RuntimeException(e);
-        }
-
-        try
-        {
-            file.getChannel().truncate(size);
+            channel.truncate(size);
         }
         catch (IOException e)
         {
-            throw new FSWriteError(e, path);
-        }
-        finally
-        {
-            closeQuietly(file);
+            throw new RuntimeException(e);
         }
     }
 
     public static void closeQuietly(Closeable c)
+    {
+        try
+        {
+            if (c != null)
+                c.close();
+        }
+        catch (Exception e)
+        {
+            logger.warn("Failed closing {}", c, e);
+        }
+    }
+
+    public static void closeQuietly(AutoCloseable c)
     {
         try
         {
@@ -255,6 +269,22 @@ public class FileUtils
             throw e;
     }
 
+    public static void closeQuietly(Iterable<? extends AutoCloseable> cs)
+    {
+        for (AutoCloseable c : cs)
+        {
+            try
+            {
+                if (c != null)
+                    c.close();
+            }
+            catch (Exception ex)
+            {
+                logger.warn("Failed closing {}", c, ex);
+            }
+        }
+    }
+
     public static String getCanonicalPath(String filename)
     {
         try
@@ -279,14 +309,42 @@ public class FileUtils
         }
     }
 
+    /** Return true if file is contained in folder */
+    public static boolean isContained(File folder, File file)
+    {
+        String folderPath = getCanonicalPath(folder);
+        String filePath = getCanonicalPath(file);
+
+        return filePath.startsWith(folderPath);
+    }
+
+    /** Convert absolute path into a path relative to the base path */
+    public static String getRelativePath(String basePath, String path)
+    {
+        try
+        {
+            return Paths.get(basePath).relativize(Paths.get(path)).toString();
+        }
+        catch(Exception ex)
+        {
+            String absDataPath = FileUtils.getCanonicalPath(basePath);
+            return Paths.get(absDataPath).relativize(Paths.get(path)).toString();
+        }
+    }
+
     public static boolean isCleanerAvailable()
     {
         return canCleanDirectBuffers;
     }
 
-    public static void clean(MappedByteBuffer buffer)
+    public static void clean(ByteBuffer buffer)
     {
-        ((DirectBuffer) buffer).cleaner().clean();
+        if (isCleanerAvailable() && buffer.isDirect())
+        {
+            DirectBuffer db = (DirectBuffer) buffer;
+            if (db.cleaner() != null)
+                db.cleaner().clean();
+        }
     }
 
     public static void createDirectory(String directory)
@@ -381,56 +439,36 @@ public class FileUtils
         deleteWithConfirm(dir);
     }
 
-    public static void skipBytesFully(DataInput in, int bytes) throws IOException
+    /**
+     * Schedules deletion of all file and subdirectories under "dir" on JVM shutdown.
+     * @param dir Directory to be deleted
+     */
+    public static void deleteRecursiveOnExit(File dir)
     {
-        int n = 0;
-        while (n < bytes)
+        if (dir.isDirectory())
         {
-            int skipped = in.skipBytes(bytes - n);
-            if (skipped == 0)
-                throw new EOFException("EOF after " + n + " bytes out of " + bytes);
-            n += skipped;
+            String[] children = dir.list();
+            for (String child : children)
+                deleteRecursiveOnExit(new File(dir, child));
         }
+
+        logger.trace("Scheduling deferred deletion of file: " + dir);
+        dir.deleteOnExit();
     }
 
     public static void handleCorruptSSTable(CorruptSSTableException e)
     {
-        JVMStabilityInspector.inspectThrowable(e);
-        switch (DatabaseDescriptor.getDiskFailurePolicy())
-        {
-            case stop_paranoid:
-                StorageService.instance.stopTransports();
-                break;
-        }
-    }
-    
-    public static void handleFSError(FSError e)
-    {
-        JVMStabilityInspector.inspectThrowable(e);
-        switch (DatabaseDescriptor.getDiskFailurePolicy())
-        {
-            case stop_paranoid:
-            case stop:
-                StorageService.instance.stopTransports();
-                break;
-            case best_effort:
-                // for both read and write errors mark the path as unwritable.
-                BlacklistedDirectories.maybeMarkUnwritable(e.path);
-                if (e instanceof FSReadError)
-                {
-                    File directory = BlacklistedDirectories.maybeMarkUnreadable(e.path);
-                    if (directory != null)
-                        Keyspace.removeUnreadableSSTables(directory);
-                }
-                break;
-            case ignore:
-                // already logged, so left nothing to do
-                break;
-            default:
-                throw new IllegalStateException();
-        }
+        FSErrorHandler handler = fsErrorHandler.get();
+        if (handler != null)
+            handler.handleCorruptSSTable(e);
     }
 
+    public static void handleFSError(FSError e)
+    {
+        FSErrorHandler handler = fsErrorHandler.get();
+        if (handler != null)
+            handler.handleFSError(e);
+    }
     /**
      * Get the size of a directory in bytes
      * @param directory The directory for which we need size.
@@ -447,5 +485,96 @@ public class FileUtils
                 length += folderSize(file);
         }
         return length;
+    }
+
+    public static void copyTo(DataInput in, OutputStream out, int length) throws IOException
+    {
+        byte[] buffer = new byte[64 * 1024];
+        int copiedBytes = 0;
+
+        while (copiedBytes + buffer.length < length)
+        {
+            in.readFully(buffer);
+            out.write(buffer);
+            copiedBytes += buffer.length;
+        }
+
+        if (copiedBytes < length)
+        {
+            int left = length - copiedBytes;
+            in.readFully(buffer, 0, left);
+            out.write(buffer, 0, left);
+        }
+    }
+
+    public static boolean isSubDirectory(File parent, File child) throws IOException
+    {
+        parent = parent.getCanonicalFile();
+        child = child.getCanonicalFile();
+
+        File toCheck = child;
+        while (toCheck != null)
+        {
+            if (parent.equals(toCheck))
+                return true;
+            toCheck = toCheck.getParentFile();
+        }
+        return false;
+    }
+
+    public static void append(File file, String ... lines)
+    {
+        if (file.exists())
+            write(file, Arrays.asList(lines), StandardOpenOption.APPEND);
+        else
+            write(file, Arrays.asList(lines), StandardOpenOption.CREATE);
+    }
+
+    public static void appendAndSync(File file, String ... lines)
+    {
+        if (file.exists())
+            write(file, Arrays.asList(lines), StandardOpenOption.APPEND, StandardOpenOption.SYNC);
+        else
+            write(file, Arrays.asList(lines), StandardOpenOption.CREATE, StandardOpenOption.SYNC);
+    }
+
+    public static void replace(File file, String ... lines)
+    {
+        write(file, Arrays.asList(lines), StandardOpenOption.TRUNCATE_EXISTING);
+    }
+
+    public static void write(File file, List<String> lines, StandardOpenOption ... options)
+    {
+        try
+        {
+            Files.write(file.toPath(),
+                        lines,
+                        CHARSET,
+                        options);
+        }
+        catch (IOException ex)
+        {
+            throw new RuntimeException(ex);
+        }
+    }
+
+    public static List<String> readLines(File file)
+    {
+        try
+        {
+            return Files.readAllLines(file.toPath(), CHARSET);
+        }
+        catch (IOException ex)
+        {
+            if (ex instanceof NoSuchFileException)
+                return Collections.emptyList();
+
+            throw new RuntimeException(ex);
+        }
+    }
+
+    public static void setFSErrorHandler(FSErrorHandler handler)
+    {
+        fsErrorHandler.getAndSet(handler);
     }
 }

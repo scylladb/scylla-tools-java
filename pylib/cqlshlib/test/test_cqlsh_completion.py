@@ -22,6 +22,8 @@ from __future__ import with_statement
 import re
 from .basecase import BaseTestCase, cqlsh
 from .cassconnect import testrun_cqlsh
+import unittest
+import sys
 
 BEL = '\x07'  # the terminal-bell character
 CTRL_C = '\x03'
@@ -36,7 +38,9 @@ COMPLETION_RESPONSE_TIME = 0.5
 completion_separation_re = re.compile(r'\s+')
 
 
+@unittest.skipIf(sys.platform == "win32", 'Tab completion tests not supported on Windows')
 class CqlshCompletionCase(BaseTestCase):
+
     def setUp(self):
         self.cqlsh_runner = testrun_cqlsh(cqlver=cqlsh.DEFAULT_CQLVER, env={'COLUMNS': '100000'})
         self.cqlsh = self.cqlsh_runner.__enter__()
@@ -84,7 +88,7 @@ class CqlshCompletionCase(BaseTestCase):
 
         if split_completed_lines:
             completed_lines = map(set, (completion_separation_re.split(line.strip())
-                               for line in choice_lines))
+                                  for line in choice_lines))
 
             if not completed_lines:
                 return set()
@@ -109,7 +113,7 @@ class CqlshCompletionCase(BaseTestCase):
         match the items in 'choices' (order is not important, but case is).
         """
         completed = self._get_completions(inputstring,
-                                         split_completed_lines=split_completed_lines)
+                                          split_completed_lines=split_completed_lines)
 
         if immediate:
             msg = 'cqlsh completed %r, but we expected %r' % (completed, immediate)
@@ -142,9 +146,9 @@ class TestCqlshCompletion(CqlshCompletionCase):
     def test_complete_on_empty_string(self):
         self.trycompletions('', choices=('?', 'ALTER', 'BEGIN', 'CAPTURE', 'CONSISTENCY',
                                          'COPY', 'CREATE', 'DEBUG', 'DELETE', 'DESC', 'DESCRIBE',
-                                         'DROP', 'GRANT', 'HELP', 'INSERT', 'LIST', 'PAGING', 'REVOKE',
-                                         'SELECT', 'SHOW', 'SOURCE', 'TRACING', 'EXPAND', 'TRUNCATE',
-                                         'UPDATE', 'USE', 'exit', 'quit'))
+                                         'DROP', 'GRANT', 'HELP', 'INSERT', 'LIST', 'LOGIN', 'PAGING', 'REVOKE',
+                                         'SELECT', 'SHOW', 'SOURCE', 'TRACING', 'EXPAND', 'SERIAL', 'TRUNCATE',
+                                         'UPDATE', 'USE', 'exit', 'quit', 'CLEAR', 'CLS'))
 
     def test_complete_command_words(self):
         self.trycompletions('alt', '\b\b\bALTER ')
@@ -174,9 +178,9 @@ class TestCqlshCompletion(CqlshCompletionCase):
                                      'songs'),
                             other_choices_ok=True)
         self.trycompletions('INSERT INTO twenty_rows_composite_table',
-                            immediate=' (a, b ')
+                            immediate=' ')
         self.trycompletions('INSERT INTO twenty_rows_composite_table ',
-                            immediate='(a, b ')
+                            choices=['(', 'JSON'])
         self.trycompletions('INSERT INTO twenty_rows_composite_table (a, b ',
                             choices=(')', ','))
         self.trycompletions('INSERT INTO twenty_rows_composite_table (a, b, ',
@@ -228,9 +232,10 @@ class TestCqlshCompletion(CqlshCompletionCase):
              "VALUES ( 'eggs', 'sausage', 'spam');"),
             choices=['?', 'ALTER', 'BEGIN', 'CAPTURE', 'CONSISTENCY', 'COPY',
                      'CREATE', 'DEBUG', 'DELETE', 'DESC', 'DESCRIBE', 'DROP',
-                     'EXPAND', 'GRANT', 'HELP', 'INSERT', 'LIST', 'PAGING',
-                     'REVOKE', 'SELECT', 'SHOW', 'SOURCE', 'TRACING',
-                     'TRUNCATE', 'UPDATE', 'USE', 'exit', 'quit'])
+                     'EXPAND', 'GRANT', 'HELP', 'INSERT', 'LIST', 'LOGIN', 'PAGING',
+                     'REVOKE', 'SELECT', 'SHOW', 'SOURCE', 'SERIAL', 'TRACING',
+                     'TRUNCATE', 'UPDATE', 'USE', 'exit', 'quit',
+                     'CLEAR', 'CLS'])
 
         self.trycompletions(
             ("INSERT INTO twenty_rows_composite_table (a, b, c) "
@@ -339,18 +344,18 @@ class TestCqlshCompletion(CqlshCompletionCase):
         self.trycompletions("UPDATE empty_table SET lonelycol = 'eggs'",
                             choices=[',', 'WHERE'])
         self.trycompletions("UPDATE empty_table SET lonelycol = 'eggs' WHERE ",
-                            choices=['TOKEN(', '<identifier>', '<quotedName>'])
+                            choices=['TOKEN(', 'lonelykey'])
         self.trycompletions("UPDATE empty_table SET lonelycol = 'eggs' WHERE ",
-                            choices=['TOKEN(', '<identifier>', '<quotedName>'])
+                            choices=['TOKEN(', 'lonelykey'])
 
         self.trycompletions("UPDATE empty_table SET lonelycol = 'eggs' WHERE lonel",
-                            choices=['<quotedName>', '<identifier>'])
+                            immediate='ykey ')
         self.trycompletions("UPDATE empty_table SET lonelycol = 'eggs' WHERE lonelykey ",
-                            choices=['=', '<=', '>=', '>', '<', 'CONTAINS', 'IN'])
+                            choices=['=', '<=', '>=', '>', '<', 'CONTAINS', 'IN', '['])
         self.trycompletions("UPDATE empty_table SET lonelycol = 'eggs' WHERE lonelykey = 0.0 ",
                             choices=['AND', 'IF', ';'])
         self.trycompletions("UPDATE empty_table SET lonelycol = 'eggs' WHERE lonelykey = 0.0 AND ",
-                            choices=['TOKEN(', '<identifier>', '<quotedName>'])
+                            choices=['TOKEN(', 'lonelykey'])
 
         self.trycompletions("UPDATE empty_table SET lonelycol = 'eggs' WHERE TOKEN(lonelykey ",
                             choices=[',', ')'])
@@ -365,7 +370,95 @@ class TestCqlshCompletion(CqlshCompletionCase):
                             choices=['>=', '!=', '<=', 'IN', '[', ';', '=', '<', '>'])
 
     def test_complete_in_delete(self):
-        pass
+        self.trycompletions('DELETE F', choices=['FROM', '<identifier>', '<quotedName>'])
+
+        self.trycompletions('DELETE a ', choices=['FROM', '[', ','])
+        self.trycompletions('DELETE a [',
+                            choices=['<wholenumber>', 'false', '-', '<uuid>',
+                                     '<pgStringLiteral>', '<float>', 'TOKEN',
+                                     '<identifier>', '<quotedStringLiteral>',
+                                     '{', '[', 'NULL', 'true', '<blobLiteral>'])
+
+        self.trycompletions('DELETE a, ',
+                            choices=['<identifier>', '<quotedName>'])
+
+        self.trycompletions('DELETE a FROM ',
+                            choices=['twenty_rows_table',
+                                     'ascii_with_special_chars', 'users',
+                                     'has_all_types', 'system.',
+                                     'empty_composite_table', 'empty_table',
+                                     'system_auth.', 'undefined_values_table',
+                                     'dynamic_columns',
+                                     'twenty_rows_composite_table',
+                                     'utf8_with_special_chars',
+                                     'system_traces.', 'songs',
+                                     '"' + self.cqlsh.keyspace + '".'],
+                            other_choices_ok=True)
+
+        self.trycompletions('DELETE FROM ',
+                            choices=['twenty_rows_table',
+                                     'ascii_with_special_chars', 'users',
+                                     'has_all_types', 'system.',
+                                     'empty_composite_table', 'empty_table',
+                                     'system_auth.', 'undefined_values_table',
+                                     'dynamic_columns',
+                                     'twenty_rows_composite_table',
+                                     'utf8_with_special_chars',
+                                     'system_traces.', 'songs',
+                                     'system_auth.', 'system_distributed.',
+                                     'system_schema.', 'system_traces.',
+                                     '"' + self.cqlsh.keyspace + '".'],
+                            other_choices_ok=True)
+        self.trycompletions('DELETE FROM twenty_rows_composite_table ',
+                            choices=['USING', 'WHERE'])
+
+        self.trycompletions('DELETE FROM twenty_rows_composite_table U',
+                            immediate='SING TIMESTAMP ')
+
+        self.trycompletions('DELETE FROM twenty_rows_composite_table USING TIMESTAMP ',
+                            choices=['<wholenumber>'])
+        self.trycompletions('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0',
+                            choices=['<wholenumber>'])
+        self.trycompletions('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 ',
+                            immediate='WHERE ')
+        self.trycompletions('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE ',
+                            choices=['a', 'b', 'TOKEN('])
+
+        self.trycompletions('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE a ',
+                            choices=['<=', '>=', 'CONTAINS', 'IN', '[', '=', '<', '>'])
+
+        self.trycompletions('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE TOKEN(',
+                            immediate='a ')
+        self.trycompletions('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE TOKEN(a',
+                            immediate=' ')
+        self.trycompletions('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE TOKEN(a ',
+                            choices=[')', ','])
+        self.trycompletions('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE TOKEN(a) ',
+                            choices=['>=', '<=', '=', '<', '>'])
+        self.trycompletions('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE TOKEN(a) >= ',
+                            choices=['false', 'true', '<pgStringLiteral>',
+                                     'token(', '-', '<float>', 'TOKEN',
+                                     '<identifier>', '<uuid>', '{', '[', 'NULL',
+                                     '<quotedStringLiteral>', '<blobLiteral>',
+                                     '<wholenumber>'])
+        self.trycompletions(('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE '
+                             'TOKEN(a) >= TOKEN(0) '),
+                            choices=['AND', 'IF', ';'])
+        self.trycompletions(('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE '
+                             'TOKEN(a) >= TOKEN(0) IF '),
+                            choices=['EXISTS', '<identifier>', '<quotedName>'])
+        self.trycompletions(('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE '
+                             'TOKEN(a) >= TOKEN(0) IF b '),
+                            choices=['>=', '!=', '<=', 'IN', '[', '=', '<', '>'])
+        self.trycompletions(('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE '
+                             'TOKEN(a) >= TOKEN(0) IF b < 0 '),
+                            choices=['AND', ';'])
+        self.trycompletions(('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE '
+                             'TOKEN(a) >= TOKEN(0) IF b < 0 AND '),
+                            choices=['<identifier>', '<quotedName>'])
+        self.trycompletions(("DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE "
+                             "b = 'eggs'"),
+                            choices=['AND', 'IF', ';'])
 
     def test_complete_in_batch(self):
         pass
@@ -389,50 +482,310 @@ class TestCqlshCompletion(CqlshCompletionCase):
                             choices=self.strategies())
         # ttl is an "unreserved keyword". should work
         self.trycompletions("create keySPACE ttl with replication ="
-                               "{ 'class' : 'SimpleStrategy'", ", 'replication_factor': ")
+                            "{ 'class' : 'SimpleStrategy'", ", 'replication_factor': ")
         self.trycompletions("create   keyspace ttl with replication ="
-                               "{'class':'SimpleStrategy',", " 'replication_factor': ")
+                            "{'class':'SimpleStrategy',", " 'replication_factor': ")
         self.trycompletions("create keyspace \"ttl\" with replication ="
-                               "{'class': 'SimpleStrategy', ", "'replication_factor': ")
+                            "{'class': 'SimpleStrategy', ", "'replication_factor': ")
         self.trycompletions("create keyspace \"ttl\" with replication ="
-                               "{'class': 'SimpleStrategy', 'repl", "ication_factor'")
+                            "{'class': 'SimpleStrategy', 'repl", "ication_factor'")
         self.trycompletions("create keyspace foo with replication ="
-                               "{'class': 'SimpleStrategy', 'replication_factor': ", '',
+                            "{'class': 'SimpleStrategy', 'replication_factor': ", '',
                             choices=('<term>',))
         self.trycompletions("create keyspace foo with replication ="
-                               "{'class': 'SimpleStrategy', 'replication_factor': 1", '',
+                            "{'class': 'SimpleStrategy', 'replication_factor': 1", '',
                             choices=('<term>',))
         self.trycompletions("create keyspace foo with replication ="
-                               "{'class': 'SimpleStrategy', 'replication_factor': 1 ", '}')
+                            "{'class': 'SimpleStrategy', 'replication_factor': 1 ", '}')
         self.trycompletions("create keyspace foo with replication ="
-                               "{'class': 'SimpleStrategy', 'replication_factor': 1, ",
+                            "{'class': 'SimpleStrategy', 'replication_factor': 1, ",
                             '', choices=())
         self.trycompletions("create keyspace foo with replication ="
-                               "{'class': 'SimpleStrategy', 'replication_factor': 1} ",
+                            "{'class': 'SimpleStrategy', 'replication_factor': 1} ",
                             '', choices=('AND', ';'))
         self.trycompletions("create keyspace foo with replication ="
-                               "{'class': 'NetworkTopologyStrategy', ", '',
+                            "{'class': 'NetworkTopologyStrategy', ", '',
                             choices=('<dc_name>',))
         self.trycompletions("create keyspace \"PB and J\" with replication={"
-                               "'class': 'NetworkTopologyStrategy'", ', ')
+                            "'class': 'NetworkTopologyStrategy'", ', ')
         self.trycompletions("create keyspace PBJ with replication={"
-                               "'class': 'NetworkTopologyStrategy'} and ",
+                            "'class': 'NetworkTopologyStrategy'} and ",
                             "durable_writes = '")
 
     def test_complete_in_string_literals(self):
         # would be great if we could get a space after this sort of completion,
         # but readline really wants to make things difficult for us
-        self.trycompletions('insert into system."Index', 'Info"')
-        self.trycompletions('USE "', choices=('system', self.cqlsh.keyspace),
-                            other_choices_ok=True)
         self.trycompletions("create keyspace blah with replication = {'class': 'Sim",
                             "pleStrategy'")
 
+    def test_complete_in_drop(self):
+        self.trycompletions('DR', immediate='OP ')
+        self.trycompletions('DROP ',
+                            choices=['AGGREGATE', 'COLUMNFAMILY', 'FUNCTION',
+                                     'INDEX', 'KEYSPACE', 'ROLE', 'TABLE',
+                                     'TRIGGER', 'TYPE', 'USER', 'MATERIALIZED'])
+
     def test_complete_in_drop_keyspace(self):
-        pass
+        self.trycompletions('DROP K', immediate='EYSPACE ')
+        quoted_keyspace = '"' + self.cqlsh.keyspace + '"'
+        self.trycompletions('DROP KEYSPACE ',
+                            choices=['IF', quoted_keyspace])
+
+        self.trycompletions('DROP KEYSPACE ' + quoted_keyspace,
+                            choices=[';'])
+
+        self.trycompletions('DROP KEYSPACE I',
+                            immediate='F EXISTS ' + quoted_keyspace + ';')
+
+    def create_columnfamily_table_template(self, name):
+        """Parameterized test for CREATE COLUMNFAMILY and CREATE TABLE. Since
+        they're synonyms, they should have the same completion behavior, so this
+        test avoids duplication between tests for the two statements."""
+        prefix = 'CREATE ' + name + ' '
+        quoted_keyspace = '"' + self.cqlsh.keyspace + '"'
+        self.trycompletions(prefix + '',
+                            choices=['IF', quoted_keyspace, '<new_table_name>'])
+        self.trycompletions(prefix + 'IF ',
+                            immediate='NOT EXISTS ')
+        self.trycompletions(prefix + 'IF NOT EXISTS ',
+                            choices=['<new_table_name>', quoted_keyspace])
+        self.trycompletions(prefix + 'IF NOT EXISTS new_table ',
+                            immediate='( ')
+
+        self.trycompletions(prefix + quoted_keyspace, choices=['.', '('])
+
+        self.trycompletions(prefix + quoted_keyspace + '( ',
+                            choices=['<new_column_name>', '<identifier>',
+                                     '<quotedName>'])
+
+        self.trycompletions(prefix + quoted_keyspace + '.',
+                            choices=['<new_table_name>'])
+        self.trycompletions(prefix + quoted_keyspace + '.new_table ',
+                            immediate='( ')
+        self.trycompletions(prefix + quoted_keyspace + '.new_table ( ',
+                            choices=['<new_column_name>', '<identifier>',
+                                     '<quotedName>'])
+
+        self.trycompletions(prefix + ' new_table ( ',
+                            choices=['<new_column_name>', '<identifier>',
+                                     '<quotedName>'])
+        self.trycompletions(prefix + ' new_table (col_a ine',
+                            immediate='t ')
+        self.trycompletions(prefix + ' new_table (col_a int ',
+                            choices=[',', 'PRIMARY'])
+        self.trycompletions(prefix + ' new_table (col_a int P',
+                            immediate='RIMARY KEY ')
+        self.trycompletions(prefix + ' new_table (col_a int PRIMARY KEY ',
+                            choices=[')', ','])
+
+        self.trycompletions(prefix + ' new_table (col_a int PRIMARY KEY,',
+                            choices=['<identifier>', '<quotedName>'])
+        self.trycompletions(prefix + ' new_table (col_a int PRIMARY KEY)',
+                            immediate=' ')
+        self.trycompletions(prefix + ' new_table (col_a int PRIMARY KEY) ',
+                            choices=[';', 'WITH'])
+        self.trycompletions(prefix + ' new_table (col_a int PRIMARY KEY) W',
+                            immediate='ITH ')
+        self.trycompletions(prefix + ' new_table (col_a int PRIMARY KEY) WITH ',
+                            choices=['bloom_filter_fp_chance', 'compaction',
+                                     'compression',
+                                     'dclocal_read_repair_chance',
+                                     'default_time_to_live', 'gc_grace_seconds',
+                                     'max_index_interval',
+                                     'memtable_flush_period_in_ms',
+                                     'read_repair_chance', 'CLUSTERING',
+                                     'COMPACT', 'caching', 'comment',
+                                     'min_index_interval', 'speculative_retry'])
+        self.trycompletions(prefix + ' new_table (col_a int PRIMARY KEY) WITH ',
+                            choices=['bloom_filter_fp_chance', 'compaction',
+                                     'compression',
+                                     'dclocal_read_repair_chance',
+                                     'default_time_to_live', 'gc_grace_seconds',
+                                     'max_index_interval',
+                                     'memtable_flush_period_in_ms',
+                                     'read_repair_chance', 'CLUSTERING',
+                                     'COMPACT', 'caching', 'comment',
+                                     'min_index_interval', 'speculative_retry'])
+        self.trycompletions(prefix + ' new_table (col_a int PRIMARY KEY) WITH bloom_filter_fp_chance ',
+                            immediate='= ')
+        self.trycompletions(prefix + ' new_table (col_a int PRIMARY KEY) WITH bloom_filter_fp_chance = ',
+                            choices=['<float_between_0_and_1>'])
+
+        self.trycompletions(prefix + ' new_table (col_a int PRIMARY KEY) WITH compaction ',
+                            immediate="= {'class': '")
+        self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
+                            + "{'class': '",
+                            choices=['SizeTieredCompactionStrategy',
+                                     'LeveledCompactionStrategy',
+                                     'DateTieredCompactionStrategy',
+                                     'TimeWindowCompactionStrategy'])
+        self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
+                            + "{'class': 'S",
+                            immediate="izeTieredCompactionStrategy'")
+        self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
+                            + "{'class': 'SizeTieredCompactionStrategy",
+                            immediate="'")
+        self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
+                            + "{'class': 'SizeTieredCompactionStrategy'",
+                            choices=['}', ','])
+        self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
+                            + "{'class': 'SizeTieredCompactionStrategy', ",
+                            immediate="'")
+        self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
+                            + "{'class': 'SizeTieredCompactionStrategy', '",
+                            choices=['bucket_high', 'bucket_low', 'class',
+                                     'enabled', 'max_threshold',
+                                     'min_sstable_size', 'min_threshold',
+                                     'tombstone_compaction_interval',
+                                     'tombstone_threshold',
+                                     'unchecked_tombstone_compaction',
+                                     'only_purge_repaired_tombstones'])
+        self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
+                            + "{'class': 'SizeTieredCompactionStrategy'}",
+                            choices=[';', 'AND'])
+        self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
+                            + "{'class': 'SizeTieredCompactionStrategy'} AND ",
+                            choices=['bloom_filter_fp_chance', 'compaction',
+                                     'compression',
+                                     'dclocal_read_repair_chance',
+                                     'default_time_to_live', 'gc_grace_seconds',
+                                     'max_index_interval',
+                                     'memtable_flush_period_in_ms',
+                                     'read_repair_chance', 'CLUSTERING',
+                                     'COMPACT', 'caching', 'comment',
+                                     'min_index_interval', 'speculative_retry'])
+        self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
+                            + "{'class': 'DateTieredCompactionStrategy', '",
+                            choices=['base_time_seconds', 'max_sstable_age_days',
+                                     'timestamp_resolution', 'min_threshold', 'class', 'max_threshold',
+                                     'tombstone_compaction_interval', 'tombstone_threshold',
+                                     'enabled', 'unchecked_tombstone_compaction',
+                                     'max_window_size_seconds', 'only_purge_repaired_tombstones'])
+        self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
+                            + "{'class': 'TimeWindowCompactionStrategy', '",
+                            choices=['compaction_window_unit', 'compaction_window_size',
+                                     'timestamp_resolution', 'min_threshold', 'class', 'max_threshold',
+                                     'tombstone_compaction_interval', 'tombstone_threshold',
+                                     'enabled', 'unchecked_tombstone_compaction',
+                                     'only_purge_repaired_tombstones'])
+
 
     def test_complete_in_create_columnfamily(self):
-        pass
+        self.trycompletions('CREATE C', choices=['COLUMNFAMILY', 'CUSTOM'])
+        self.trycompletions('CREATE CO', immediate='LUMNFAMILY ')
+        self.create_columnfamily_table_template('COLUMNFAMILY')
+
+    def test_complete_in_create_table(self):
+        self.trycompletions('CREATE T', choices=['TRIGGER', 'TABLE', 'TYPE'])
+        self.trycompletions('CREATE TA', immediate='BLE ')
+        self.create_columnfamily_table_template('TABLE')
+
+    def test_complete_in_describe(self):
+        """
+        Tests for Cassandra-10733
+        """
+        self.trycompletions('DES', immediate='C')
+        # quoted_keyspace = '"' + self.cqlsh.keyspace + '"'
+        self.trycompletions('DESCR', immediate='IBE ')
+        self.trycompletions('DESC TABLE ',
+                            choices=['twenty_rows_table',
+                                     'ascii_with_special_chars', 'users',
+                                     'has_all_types', 'system.',
+                                     'empty_composite_table', 'empty_table',
+                                     'system_auth.', 'undefined_values_table',
+                                     'dynamic_columns',
+                                     'twenty_rows_composite_table',
+                                     'utf8_with_special_chars',
+                                     'system_traces.', 'songs',
+                                     'system_distributed.',
+                                     '"' + self.cqlsh.keyspace + '".'],
+                            other_choices_ok=True)
+
+        self.trycompletions('DESC TYPE ',
+                            choices=['system.',
+                                     'system_auth.',
+                                     'system_traces.',
+                                     'system_distributed.',
+                                     'address',
+                                     'phone_number',
+                                     'band_info_type',
+                                     'tags'],
+                            other_choices_ok=True)
+
+        self.trycompletions('DESC FUNCTION ',
+                            choices=['system.',
+                                     'system_auth.',
+                                     'system_traces.',
+                                     'system_distributed.',
+                                     'fbestband',
+                                     'fbestsong',
+                                     'fmax',
+                                     'fmin',
+                                     '"' + self.cqlsh.keyspace + '".'],
+                            other_choices_ok=True)
+
+        self.trycompletions('DESC AGGREGATE ',
+                            choices=['system.',
+                                     'system_auth.',
+                                     'system_traces.',
+                                     'system_distributed.',
+                                     'aggmin',
+                                     'aggmax',
+                                     '"' + self.cqlsh.keyspace + '".'],
+                            other_choices_ok=True)
+
+        # Unfortunately these commented tests will not work. This is due to the keyspace name containing quotes;
+        # cqlsh auto-completes a DESC differently when the keyspace contains quotes. I'll leave the
+        # test here though in case we ever change this script to test using keyspace names without
+        # quotes
+
+        # self.trycompletions('DESC TABLE ' + '"' + self.cqlsh.keyspace + '"', immediate='.')
+
+        self.trycompletions('DESC TABLE ' + '"' + self.cqlsh.keyspace + '".',
+                            choices=['twenty_rows_table',
+                                     'ascii_with_special_chars',
+                                     'users',
+                                     'has_all_types',
+                                     'empty_composite_table',
+                                     'empty_table',
+                                     'undefined_values_table',
+                                     'dynamic_columns',
+                                     'twenty_rows_composite_table',
+                                     'utf8_with_special_chars',
+                                     'songs'],
+                            other_choices_ok=True)
+
+        # See comment above for DESC TABLE
+        # self.trycompletions('DESC TYPE ' + '"' + self.cqlsh.keyspace + '"', immediate='.')
+
+        self.trycompletions('DESC TYPE ' + '"' + self.cqlsh.keyspace + '".',
+                            choices=['address',
+                                     'phone_number',
+                                     'band_info_type',
+                                     'tags'],
+                            other_choices_ok=True)
+
+        # See comment above for DESC TABLE
+        # self.trycompletions('DESC FUNCTION ' + '"' + self.cqlsh.keyspace + '"', immediate='.f')
+
+        self.trycompletions('DESC FUNCTION ' + '"' + self.cqlsh.keyspace + '".', immediate='f')
+
+        self.trycompletions('DESC FUNCTION ' + '"' + self.cqlsh.keyspace + '".f',
+                            choices=['fbestband',
+                                     'fbestsong',
+                                     'fmax',
+                                     'fmin'],
+                            other_choices_ok=True)
+
+        # See comment above for DESC TABLE
+        # self.trycompletions('DESC AGGREGATE ' + '"' + self.cqlsh.keyspace + '"', immediate='.aggm')
+
+        self.trycompletions('DESC AGGREGATE ' + '"' + self.cqlsh.keyspace + '".', immediate='aggm')
+
+        self.trycompletions('DESC AGGREGATE ' + '"' + self.cqlsh.keyspace + '".aggm',
+                            choices=['aggmin',
+                                     'aggmax'],
+                            other_choices_ok=True)
 
     def test_complete_in_drop_columnfamily(self):
         pass

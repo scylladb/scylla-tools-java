@@ -104,7 +104,7 @@ public class FastByteOperations
         {
             String arch = System.getProperty("os.arch");
             boolean unaligned = arch.equals("i386") || arch.equals("x86")
-                                || arch.equals("amd64") || arch.equals("x86_64");
+                                || arch.equals("amd64") || arch.equals("x86_64") || arch.equals("s390x");
             if (!unaligned)
                 return new PureJavaOperations();
             try
@@ -349,8 +349,8 @@ public class FastByteOperations
             int wordComparisons = minLength & ~7;
             for (int i = 0; i < wordComparisons ; i += Longs.BYTES)
             {
-                long lw = theUnsafe.getLong(buffer1, memoryOffset1 + (long) i);
-                long rw = theUnsafe.getLong(buffer2, memoryOffset2 + (long) i);
+                long lw = theUnsafe.getLong(buffer1, memoryOffset1 + i);
+                long rw = theUnsafe.getLong(buffer2, memoryOffset2 + i);
 
                 if (lw != rw)
                 {

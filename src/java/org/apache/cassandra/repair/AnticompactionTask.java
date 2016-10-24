@@ -17,19 +17,23 @@
  */
 package org.apache.cassandra.repair;
 
+import java.io.IOException;
 import java.net.InetAddress;
+import java.util.Collection;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import com.google.common.util.concurrent.AbstractFuture;
 
 import org.apache.cassandra.db.SystemKeyspace;
+import org.apache.cassandra.dht.Range;
+import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.gms.FailureDetector;
 import org.apache.cassandra.net.IAsyncCallbackWithFailure;
 import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.repair.messages.AnticompactionRequest;
-import org.apache.cassandra.repair.messages.CleanupMessage;
-import org.apache.cassandra.utils.SemanticVersion;
+import org.apache.cassandra.utils.CassandraVersion;
 
 public class AnticompactionTask extends AbstractFuture<InetAddress> implements Runnable
 {
@@ -37,40 +41,39 @@ public class AnticompactionTask extends AbstractFuture<InetAddress> implements R
      * Version that anticompaction response is not supported up to.
      * If Cassandra version is more than this, we need to wait for anticompaction response.
      */
-    private static final SemanticVersion VERSION_CHECKER = new SemanticVersion("2.1.5");
+    private static final CassandraVersion VERSION_CHECKER = new CassandraVersion("2.1.5");
 
     private final UUID parentSession;
     private final InetAddress neighbor;
-    private final boolean doAnticompaction;
+    private final Collection<Range<Token>> successfulRanges;
 
-    public AnticompactionTask(UUID parentSession, InetAddress neighbor, boolean doAnticompaction)
+    public AnticompactionTask(UUID parentSession, InetAddress neighbor, Collection<Range<Token>> successfulRanges)
     {
         this.parentSession = parentSession;
         this.neighbor = neighbor;
-        this.doAnticompaction = doAnticompaction;
+        this.successfulRanges = successfulRanges;
     }
 
     public void run()
     {
-        AnticompactionRequest acr = new AnticompactionRequest(parentSession);
-        SemanticVersion peerVersion = SystemKeyspace.getReleaseVersion(neighbor);
-        if (peerVersion != null && peerVersion.compareTo(VERSION_CHECKER) > 0)
+        if (FailureDetector.instance.isAlive(neighbor))
         {
-            if (doAnticompaction)
+            AnticompactionRequest acr = new AnticompactionRequest(parentSession, successfulRanges);
+            CassandraVersion peerVersion = SystemKeyspace.getReleaseVersion(neighbor);
+            if (peerVersion != null && peerVersion.compareTo(VERSION_CHECKER) > 0)
             {
                 MessagingService.instance().sendRR(acr.createMessage(), neighbor, new AnticompactionCallback(this), TimeUnit.DAYS.toMillis(1), true);
             }
             else
             {
-                // we need to clean up parent session
-                MessagingService.instance().sendRR(new CleanupMessage(parentSession).createMessage(), neighbor, new AnticompactionCallback(this), TimeUnit.DAYS.toMillis(1), true);
+                MessagingService.instance().sendOneWay(acr.createMessage(), neighbor);
+                // immediately return after sending request
+                set(neighbor);
             }
         }
         else
         {
-            MessagingService.instance().sendOneWay(acr.createMessage(), neighbor);
-            // immediately return after sending request
-            set(neighbor);
+            setException(new IOException(neighbor + " is down"));
         }
     }
 

@@ -22,16 +22,17 @@ import java.util.UUID;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.dht.ByteOrderedPartitioner;
+import org.apache.cassandra.service.StorageService;
 
 public class UserTypesTest extends CQLTester
 {
     @BeforeClass
     public static void setUpClass()
     {
-        DatabaseDescriptor.setPartitioner(new ByteOrderedPartitioner());
+        // Selecting partitioner for a table is not exposed on CREATE TABLE.
+        StorageService.instance.setPartitionerUnsafe(ByteOrderedPartitioner.instance);
     }
 
     @Test
@@ -126,6 +127,21 @@ public class UserTypesTest extends CQLTester
     }
 
     @Test
+    public void testUDTWithUnsetValues() throws Throwable
+    {
+        // set up
+        String myType = createType("CREATE TYPE %s (x int, y int)");
+        String myOtherType = createType("CREATE TYPE %s (a frozen<" + myType + ">)");
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, v frozen<" + myType + ">, z frozen<" + myOtherType + ">)");
+
+        assertInvalidMessage("Invalid unset value for field 'y' of user defined type " + myType,
+                             "INSERT INTO %s (k, v) VALUES (10, {x:?, y:?})", 1, unset());
+
+        assertInvalidMessage("Invalid unset value for field 'y' of user defined type " + myType,
+                             "INSERT INTO %s (k, v, z) VALUES (10, {x:?, y:?}, {a:{x: ?, y: ?}})", 1, 1, 1, unset());
+    }
+
+    @Test
     public void testAlteringUserTypeNestedWithinMap() throws Throwable
     {
         // test frozen and non-frozen collections
@@ -160,6 +176,34 @@ public class UserTypesTest extends CQLTester
                     row(3, map("thirdValue", userType(3, null))),
                     row(4, map("fourthValue", userType(null, 4))));
         }
+    }
+
+    @Test
+    public void testAlteringUserTypeNestedWithinNonFrozenMap() throws Throwable
+    {
+        String ut1 = createType("CREATE TYPE %s (a int)");
+        String columnType = KEYSPACE + "." + ut1;
+
+        createTable("CREATE TABLE %s (x int PRIMARY KEY, y map<text, frozen<" + columnType + ">>)");
+
+        execute("INSERT INTO %s (x, y) VALUES(1, {'firstValue': {a: 1}})");
+        assertRows(execute("SELECT * FROM %s"),
+                   row(1, map("firstValue", userType(1))));
+
+        flush();
+
+        execute("ALTER TYPE " + columnType + " ADD b int");
+        execute("UPDATE %s SET y['secondValue'] = {a: 2, b: 2} WHERE x = 1");
+
+        assertRows(execute("SELECT * FROM %s"),
+                   row(1, map("firstValue", userType(1),
+                              "secondValue", userType(2, 2))));
+
+        flush();
+
+        assertRows(execute("SELECT * FROM %s"),
+                   row(1, map("firstValue", userType(1),
+                              "secondValue", userType(2, 2))));
     }
 
     @Test
@@ -385,5 +429,122 @@ public class UserTypesTest extends CQLTester
         execute("INSERT INTO %s (key, data) VALUES (1, {fooint: 1, fooset: {'2'}})");
         execute("ALTER TYPE " + keyspace() + "." + typeName + " ADD foomap map <int,text>");
         execute("INSERT INTO %s (key, data) VALUES (1, {fooint: 1, fooset: {'2'}, foomap: {3 : 'bar'}})");
+    }
+
+    @Test
+    public void testCircularReferences() throws Throwable
+    {
+        String type1 = createType("CREATE TYPE %s (foo int)");
+
+        String typeX = createType("CREATE TYPE %s (bar frozen<" + typeWithKs(type1) + ">)");
+        assertInvalidMessage("would create a circular reference", "ALTER TYPE " + typeWithKs(type1) + " ADD needs_to_fail frozen<" + typeWithKs(typeX) + '>');
+
+        typeX = createType("CREATE TYPE %s (bar frozen<list<" + typeWithKs(type1) + ">>)");
+        assertInvalidMessage("would create a circular reference", "ALTER TYPE " + typeWithKs(type1) + " ADD needs_to_fail frozen<" + typeWithKs(typeX) + '>');
+
+        typeX = createType("CREATE TYPE %s (bar frozen<set<" + typeWithKs(type1) + ">>)");
+        assertInvalidMessage("would create a circular reference", "ALTER TYPE " + typeWithKs(type1) + " ADD needs_to_fail frozen<" + typeWithKs(typeX) + '>');
+
+        typeX = createType("CREATE TYPE %s (bar frozen<map<text, " + typeWithKs(type1) + ">>)");
+        assertInvalidMessage("would create a circular reference", "ALTER TYPE " + typeWithKs(type1) + " ADD needs_to_fail frozen<" + typeWithKs(typeX) + '>');
+
+        typeX = createType("CREATE TYPE %s (bar frozen<map<" + typeWithKs(type1) + ", text>>)");
+        assertInvalidMessage("would create a circular reference", "ALTER TYPE " + typeWithKs(type1) + " ADD needs_to_fail frozen<" + typeWithKs(typeX) + '>');
+
+        //
+
+        String type2 = createType("CREATE TYPE %s (foo frozen<" + typeWithKs(type1) + ">)");
+
+        typeX = createType("CREATE TYPE %s (bar frozen<" + keyspace() + '.' + type2 + ">)");
+        assertInvalidMessage("would create a circular reference", "ALTER TYPE " + typeWithKs(type1) + " ADD needs_to_fail frozen<" + typeWithKs(typeX) + '>');
+
+        typeX = createType("CREATE TYPE %s (bar frozen<list<" + keyspace() + '.' + type2 + ">>)");
+        assertInvalidMessage("would create a circular reference", "ALTER TYPE " + typeWithKs(type1) + " ADD needs_to_fail frozen<" + typeWithKs(typeX) + '>');
+
+        typeX = createType("CREATE TYPE %s (bar frozen<set<" + keyspace() + '.' + type2 + ">>)");
+        assertInvalidMessage("would create a circular reference", "ALTER TYPE " + typeWithKs(type1) + " ADD needs_to_fail frozen<" + typeWithKs(typeX) + '>');
+
+        typeX = createType("CREATE TYPE %s (bar frozen<map<text, " + keyspace() + '.' + type2 + ">>)");
+        assertInvalidMessage("would create a circular reference", "ALTER TYPE " + typeWithKs(type1) + " ADD needs_to_fail frozen<" + typeWithKs(typeX) + '>');
+
+        typeX = createType("CREATE TYPE %s (bar frozen<map<" + keyspace() + '.' + type2 + ", text>>)");
+        assertInvalidMessage("would create a circular reference", "ALTER TYPE " + typeWithKs(type1) + " ADD needs_to_fail frozen<" + typeWithKs(typeX) + '>');
+
+        //
+
+        assertInvalidMessage("would create a circular reference", "ALTER TYPE " + typeWithKs(type1) + " ADD needs_to_fail frozen<list<" + typeWithKs(type1) + ">>");
+    }
+
+    @Test
+    public void testTypeAlterUsedInFunction() throws Throwable
+    {
+        String type1 = createType("CREATE TYPE %s (foo ascii)");
+        assertComplexInvalidAlterDropStatements(type1, type1, "{foo: 'abc'}");
+
+        type1 = createType("CREATE TYPE %s (foo ascii)");
+        assertComplexInvalidAlterDropStatements(type1, "list<frozen<" + type1 + ">>", "[{foo: 'abc'}]");
+
+        type1 = createType("CREATE TYPE %s (foo ascii)");
+        assertComplexInvalidAlterDropStatements(type1, "set<frozen<" + type1 + ">>", "{{foo: 'abc'}}");
+
+        type1 = createType("CREATE TYPE %s (foo ascii)");
+        assertComplexInvalidAlterDropStatements(type1, "map<text, frozen<" + type1 + ">>", "{'key': {foo: 'abc'}}");
+
+        type1 = createType("CREATE TYPE %s (foo ascii)");
+        String type2 = createType("CREATE TYPE %s (foo frozen<" + type1 + ">)");
+        assertComplexInvalidAlterDropStatements(type1, type2, "{foo: 'abc'}");
+
+        type1 = createType("CREATE TYPE %s (foo ascii)");
+        type2 = createType("CREATE TYPE %s (foo frozen<" + type1 + ">)");
+        assertComplexInvalidAlterDropStatements(type1,
+                                                "list<frozen<" + type2 + ">>",
+                                                "[{foo: 'abc'}]");
+
+        type1 = createType("CREATE TYPE %s (foo ascii)");
+        type2 = createType("CREATE TYPE %s (foo frozen<set<" + type1 + ">>)");
+        assertComplexInvalidAlterDropStatements(type1,
+                                                "map<text, frozen<" + type2 + ">>",
+                                                "{'key': {foo: {{foo: 'abc'}}}}");
+
+        type1 = createType("CREATE TYPE %s (foo ascii)");
+        assertComplexInvalidAlterDropStatements(type1,
+                                                "tuple<text, frozen<" + type1 + ">>",
+                                                "('key', {foo: 'abc'})");
+
+        type1 = createType("CREATE TYPE %s (foo ascii)");
+        assertComplexInvalidAlterDropStatements(type1,
+                                                "tuple<text, frozen<tuple<tuple<" + type1 + ", int>, int>>>",
+                                                "('key', (({foo: 'abc'}, 0), 0))");
+
+        type1 = createType("CREATE TYPE %s (foo ascii)");
+        type2 = createType("CREATE TYPE %s (foo frozen<set<" + type1 + ">>)");
+        assertComplexInvalidAlterDropStatements(type1,
+                                                "tuple<text, frozen<" + type2 + ">>",
+                                                "('key', {foo: {{foo: 'abc'}}})");
+    }
+
+    private void assertComplexInvalidAlterDropStatements(String type1, String fArgType, String initcond) throws Throwable
+    {
+        String f = createFunction(KEYSPACE, type1, "CREATE FUNCTION %s(arg " + fArgType + ", col int) " +
+                                                   "RETURNS NULL ON NULL INPUT " +
+                                                   "RETURNS " + fArgType + ' ' +
+                                                   "LANGUAGE java AS 'return arg;'");
+        createAggregate(KEYSPACE, "int", "CREATE AGGREGATE %s(int) " +
+                                         "SFUNC " + shortFunctionName(f) + ' ' +
+                                         "STYPE " + fArgType + ' ' +
+                                         "INITCOND " + initcond);
+        assertInvalidAlterDropStatements(type1);
+    }
+
+    private void assertInvalidAlterDropStatements(String t) throws Throwable
+    {
+        assertInvalidMessage("Cannot alter user type " + typeWithKs(t), "ALTER TYPE " + typeWithKs(t) + " RENAME foo TO bar;");
+        assertInvalidMessage("Cannot alter user type " + typeWithKs(t), "ALTER TYPE " + typeWithKs(t) + " ALTER foo TYPE text;");
+        assertInvalidMessage("Cannot drop user type " + typeWithKs(t), "DROP TYPE " + typeWithKs(t) + ';');
+    }
+
+    private String typeWithKs(String type1)
+    {
+        return keyspace() + '.' + type1;
     }
 }

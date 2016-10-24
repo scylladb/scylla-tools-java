@@ -18,8 +18,6 @@
 package org.apache.cassandra.net;
 
 import java.io.Closeable;
-import java.io.DataInput;
-import java.io.DataInputStream;
 import java.io.IOException;
 import java.net.Socket;
 import java.util.Set;
@@ -27,6 +25,9 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.io.util.DataInputPlus;
+import org.apache.cassandra.io.util.DataInputPlus.DataInputStreamPlus;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.streaming.StreamResultFuture;
 import org.apache.cassandra.streaming.messages.StreamInitMessage;
 import org.apache.cassandra.streaming.messages.StreamMessage;
@@ -39,7 +40,7 @@ public class IncomingStreamingConnection extends Thread implements Closeable
     private static final Logger logger = LoggerFactory.getLogger(IncomingStreamingConnection.class);
 
     private final int version;
-    private final Socket socket;
+    public final Socket socket;
     private final Set<Closeable> group;
 
     public IncomingStreamingConnection(int version, Socket socket, Set<Closeable> group)
@@ -51,30 +52,37 @@ public class IncomingStreamingConnection extends Thread implements Closeable
     }
 
     @Override
+    @SuppressWarnings("resource") // Not closing constructed DataInputPlus's as the stream needs to remain open.
     public void run()
     {
         try
         {
-            // streaming connections are per-session and have a fixed version.  we can't do anything with a wrong-version stream connection, so drop it.
+            // streaming connections are per-session and have a fixed version.
+            // we can't do anything with a wrong-version stream connection, so drop it.
             if (version != StreamMessage.CURRENT_VERSION)
-                throw new IOException(String.format("Received stream using protocol version %d (my version %d). Terminating connection", version, MessagingService.current_version));
+                throw new IOException(String.format("Received stream using protocol version %d (my version %d). Terminating connection", version, StreamMessage.CURRENT_VERSION));
 
-            DataInput input = new DataInputStream(socket.getInputStream());
+            DataInputPlus input = new DataInputStreamPlus(socket.getInputStream());
             StreamInitMessage init = StreamInitMessage.serializer.deserialize(input, version);
+
+            //Set SO_TIMEOUT on follower side
+            if (!init.isForOutgoing)
+                socket.setSoTimeout(DatabaseDescriptor.getStreamingSocketTimeout());
 
             // The initiator makes two connections, one for incoming and one for outgoing.
             // The receiving side distinguish two connections by looking at StreamInitMessage#isForOutgoing.
             // Note: we cannot use the same socket for incoming and outgoing streams because we want to
             // parallelize said streams and the socket is blocking, so we might deadlock.
-            StreamResultFuture.initReceivingSide(init.sessionIndex, init.planId, init.description, init.from, socket, init.isForOutgoing, version);
+            StreamResultFuture.initReceivingSide(init.sessionIndex, init.planId, init.description, init.from, this, init.isForOutgoing, version, init.keepSSTableLevel, init.isIncremental);
         }
         catch (IOException e)
         {
-            logger.debug("IOException reading from socket; closing", e);
+            logger.error(String.format("IOException while reading from socket from %s, closing: %s",
+                                       socket.getRemoteSocketAddress(), e));
             close();
         }
     }
-    
+
     @Override
     public void close()
     {

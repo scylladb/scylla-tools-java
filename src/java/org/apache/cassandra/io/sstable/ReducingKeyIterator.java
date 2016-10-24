@@ -17,12 +17,12 @@
  */
 package org.apache.cassandra.io.sstable;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Iterator;
 
 import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.utils.CloseableIterator;
 import org.apache.cassandra.utils.IMergeIterator;
 import org.apache.cassandra.utils.MergeIterator;
@@ -32,42 +32,53 @@ import org.apache.cassandra.utils.MergeIterator;
  */
 public class ReducingKeyIterator implements CloseableIterator<DecoratedKey>
 {
-    private final IMergeIterator<DecoratedKey,DecoratedKey> mi;
+    private final ArrayList<KeyIterator> iters;
+    private IMergeIterator<DecoratedKey,DecoratedKey> mi;
 
     public ReducingKeyIterator(Collection<SSTableReader> sstables)
     {
-        ArrayList<KeyIterator> iters = new ArrayList<KeyIterator>(sstables.size());
+        iters = new ArrayList<>(sstables.size());
         for (SSTableReader sstable : sstables)
-            iters.add(new KeyIterator(sstable.descriptor));
-        mi = MergeIterator.get(iters, DecoratedKey.comparator, new MergeIterator.Reducer<DecoratedKey,DecoratedKey>()
-        {
-            DecoratedKey reduced = null;
-
-            @Override
-            public boolean trivialReduceIsTrivial()
-            {
-                return true;
-            }
-
-            public void reduce(DecoratedKey current)
-            {
-                reduced = current;
-            }
-
-            protected DecoratedKey getReduced()
-            {
-                return reduced;
-            }
-        });
+            iters.add(new KeyIterator(sstable.descriptor, sstable.metadata));
     }
 
-    public void close() throws IOException
+    private void maybeInit()
     {
-        mi.close();
+        if (mi == null)
+        {
+            mi = MergeIterator.get(iters, DecoratedKey.comparator, new MergeIterator.Reducer<DecoratedKey,DecoratedKey>()
+            {
+                DecoratedKey reduced = null;
+
+                @Override
+                public boolean trivialReduceIsTrivial()
+                {
+                    return true;
+                }
+
+                public void reduce(int idx, DecoratedKey current)
+                {
+                    reduced = current;
+                }
+
+                protected DecoratedKey getReduced()
+                {
+                    return reduced;
+                }
+            });
+        }
+    }
+
+    public void close()
+    {
+        if (mi != null)
+            mi.close();
     }
 
     public long getTotalBytes()
     {
+        maybeInit();
+
         long m = 0;
         for (Iterator<DecoratedKey> iter : mi.iterators())
         {
@@ -78,6 +89,8 @@ public class ReducingKeyIterator implements CloseableIterator<DecoratedKey>
 
     public long getBytesRead()
     {
+        maybeInit();
+
         long m = 0;
         for (Iterator<DecoratedKey> iter : mi.iterators())
         {
@@ -86,18 +99,15 @@ public class ReducingKeyIterator implements CloseableIterator<DecoratedKey>
         return m;
     }
 
-    public String getTaskType()
-    {
-        return "Secondary index build";
-    }
-
     public boolean hasNext()
     {
+        maybeInit();
         return mi.hasNext();
     }
 
     public DecoratedKey next()
     {
+        maybeInit();
         return mi.next();
     }
 

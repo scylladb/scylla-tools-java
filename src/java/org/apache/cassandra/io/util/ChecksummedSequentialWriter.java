@@ -18,8 +18,9 @@
 package org.apache.cassandra.io.util;
 
 import java.io.File;
+import java.nio.ByteBuffer;
 
-import org.apache.cassandra.io.sstable.Descriptor;
+import org.apache.cassandra.io.compress.BufferType;
 
 public class ChecksummedSequentialWriter extends SequentialWriter
 {
@@ -28,32 +29,49 @@ public class ChecksummedSequentialWriter extends SequentialWriter
 
     public ChecksummedSequentialWriter(File file, int bufferSize, File crcPath)
     {
-        super(file, bufferSize);
-        crcWriter = new SequentialWriter(crcPath, 8 * 1024);
-        crcMetadata = new DataIntegrityMetadata.ChecksumWriter(crcWriter.stream);
-        crcMetadata.writeChunkSize(buffer.length);
+        super(file, bufferSize, BufferType.ON_HEAP);
+        crcWriter = new SequentialWriter(crcPath, 8 * 1024, BufferType.ON_HEAP);
+        crcMetadata = new DataIntegrityMetadata.ChecksumWriter(crcWriter);
+        crcMetadata.writeChunkSize(buffer.capacity());
     }
 
+    @Override
     protected void flushData()
     {
         super.flushData();
-        crcMetadata.append(buffer, 0, validBufferBytes, false);
+        ByteBuffer toAppend = buffer.duplicate();
+        toAppend.position(0);
+        toAppend.limit(buffer.position());
+        crcMetadata.appendDirect(toAppend, false);
     }
 
-    public void writeFullChecksum(Descriptor descriptor)
+    protected class TransactionalProxy extends SequentialWriter.TransactionalProxy
     {
-        crcMetadata.writeFullChecksum(descriptor);
+        @Override
+        protected Throwable doCommit(Throwable accumulate)
+        {
+            return super.doCommit(crcWriter.commit(accumulate));
+        }
+
+        @Override
+        protected Throwable doAbort(Throwable accumulate)
+        {
+            return super.doAbort(crcWriter.abort(accumulate));
+        }
+
+        @Override
+        protected void doPrepare()
+        {
+            syncInternal();
+            if (descriptor != null)
+                crcMetadata.writeFullChecksum(descriptor);
+            crcWriter.setDescriptor(descriptor).prepareToCommit();
+        }
     }
 
-    public void close()
+    @Override
+    protected SequentialWriter.TransactionalProxy txnProxy()
     {
-        super.close();
-        crcWriter.close();
-    }
-
-    public void abort()
-    {
-        super.abort();
-        crcWriter.abort();
+        return new TransactionalProxy();
     }
 }

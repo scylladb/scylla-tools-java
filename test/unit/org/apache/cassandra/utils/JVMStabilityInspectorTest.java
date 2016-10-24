@@ -17,19 +17,15 @@
  */
 package org.apache.cassandra.utils;
 
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.net.SocketException;
+
+import org.junit.Test;
+
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.io.FSReadError;
-import org.junit.Test;
-
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.net.SocketException;
-import java.util.ArrayList;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -63,6 +59,15 @@ public class JVMStabilityInspectorTest
             killerForTests.reset();
             JVMStabilityInspector.inspectCommitLogThrowable(new Throwable());
             assertTrue(killerForTests.wasKilled());
+
+            killerForTests.reset();
+            JVMStabilityInspector.inspectThrowable(new Exception(new IOException()));
+            assertFalse(killerForTests.wasKilled());
+
+            killerForTests.reset();
+            JVMStabilityInspector.inspectThrowable(new Exception(new OutOfMemoryError()));
+            assertTrue(killerForTests.wasKilled());
+
         }
         finally
         {
@@ -73,7 +78,7 @@ public class JVMStabilityInspectorTest
     }
 
     @Test
-    public void fileHandleTest() throws FileNotFoundException
+    public void fileHandleTest()
     {
         KillerForTests killerForTests = new KillerForTests();
         JVMStabilityInspector.Killer originalKiller = JVMStabilityInspector.replaceKiller(killerForTests);

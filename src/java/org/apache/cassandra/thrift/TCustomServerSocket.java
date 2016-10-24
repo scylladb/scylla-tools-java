@@ -72,7 +72,7 @@ public class TCustomServerSocket extends TServerTransport
         catch (IOException ioe)
         {
             serverSocket = null;
-            throw new TTransportException("Could not create ServerSocket on address " + bindAddr.toString() + ".");
+            throw new TTransportException("Could not create ServerSocket on address " + bindAddr + ".");
         }
 
         this.keepAlive = keepAlive;
@@ -89,6 +89,7 @@ public class TCustomServerSocket extends TServerTransport
     }
 
     @Override
+    @SuppressWarnings("resource")
     protected TCustomSocket acceptImpl() throws TTransportException
     {
 

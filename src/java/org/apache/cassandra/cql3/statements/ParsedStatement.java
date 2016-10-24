@@ -21,6 +21,7 @@ import java.util.Collections;
 import java.util.List;
 
 import org.apache.cassandra.cql3.*;
+import org.apache.cassandra.cql3.functions.Function;
 import org.apache.cassandra.exceptions.RequestValidationException;
 
 public abstract class ParsedStatement
@@ -38,27 +39,39 @@ public abstract class ParsedStatement
         this.variables = new VariableSpecifications(boundNames);
     }
 
+    public void setBoundVariables(VariableSpecifications variables)
+    {
+        this.variables = variables;
+    }
+
     public abstract Prepared prepare() throws RequestValidationException;
 
     public static class Prepared
     {
         public final CQLStatement statement;
         public final List<ColumnSpecification> boundNames;
+        public final Short[] partitionKeyBindIndexes;
 
-        public Prepared(CQLStatement statement, List<ColumnSpecification> boundNames)
+        protected Prepared(CQLStatement statement, List<ColumnSpecification> boundNames, Short[] partitionKeyBindIndexes)
         {
             this.statement = statement;
             this.boundNames = boundNames;
+            this.partitionKeyBindIndexes = partitionKeyBindIndexes;
         }
 
-        public Prepared(CQLStatement statement, VariableSpecifications names)
+        public Prepared(CQLStatement statement, VariableSpecifications names, Short[] partitionKeyBindIndexes)
         {
-            this(statement, names.getSpecifications());
+            this(statement, names.getSpecifications(), partitionKeyBindIndexes);
         }
 
         public Prepared(CQLStatement statement)
         {
-            this(statement, Collections.<ColumnSpecification>emptyList());
+            this(statement, Collections.<ColumnSpecification>emptyList(), null);
         }
+    }
+
+    public Iterable<Function> getFunctions()
+    {
+        return Collections.emptyList();
     }
 }

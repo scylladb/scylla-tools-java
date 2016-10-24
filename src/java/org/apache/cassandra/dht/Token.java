@@ -22,12 +22,10 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
 
-import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.db.PartitionPosition;
 import org.apache.cassandra.db.TypeSizes;
-import org.apache.cassandra.db.RowPosition;
-import org.apache.cassandra.io.ISerializer;
+import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.util.DataOutputPlus;
-import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 public abstract class Token implements RingPosition<Token>, Serializable
@@ -46,47 +44,60 @@ public abstract class Token implements RingPosition<Token>, Serializable
         public abstract void validate(String token) throws ConfigurationException;
     }
 
-    public static class TokenSerializer implements ISerializer<Token>
+    public static class TokenSerializer implements IPartitionerDependentSerializer<Token>
     {
-        public void serialize(Token token, DataOutputPlus out) throws IOException
+        public void serialize(Token token, DataOutputPlus out, int version) throws IOException
         {
-            IPartitioner p = StorageService.getPartitioner();
+            IPartitioner p = token.getPartitioner();
             ByteBuffer b = p.getTokenFactory().toByteArray(token);
             ByteBufferUtil.writeWithLength(b, out);
         }
 
-        public Token deserialize(DataInput in) throws IOException
+        public Token deserialize(DataInput in, IPartitioner p, int version) throws IOException
         {
-            IPartitioner p = StorageService.getPartitioner();
             int size = in.readInt();
             byte[] bytes = new byte[size];
             in.readFully(bytes);
             return p.getTokenFactory().fromByteArray(ByteBuffer.wrap(bytes));
         }
 
-        public long serializedSize(Token object, TypeSizes typeSizes)
+        public long serializedSize(Token object, int version)
         {
-            IPartitioner p = StorageService.getPartitioner();
+            IPartitioner p = object.getPartitioner();
             ByteBuffer b = p.getTokenFactory().toByteArray(object);
-            return TypeSizes.NATIVE.sizeof(b.remaining()) + b.remaining();
+            return TypeSizes.sizeof(b.remaining()) + b.remaining();
         }
     }
 
+    abstract public IPartitioner getPartitioner();
+    abstract public long getHeapSize();
     abstract public Object getTokenValue();
+
+    /**
+     * Returns a measure for the token space covered between this token and next.
+     * Used by the token allocation algorithm (see CASSANDRA-7032).
+     */
+    abstract public double size(Token next);
+    /**
+     * Returns a token that is slightly greater than this. Used to avoid clashes
+     * between nodes in separate datacentres trying to use the same token via
+     * the token allocation algorithm.
+     */
+    abstract public Token increaseSlightly();
 
     public Token getToken()
     {
         return this;
     }
 
-    public boolean isMinimum(IPartitioner partitioner)
+    public Token minValue()
     {
-        return this.equals(partitioner.getMinimumToken());
+        return getPartitioner().getMinimumToken();
     }
 
     public boolean isMinimum()
     {
-        return isMinimum(StorageService.getPartitioner());
+        return this.equals(minValue());
     }
 
     /*
@@ -103,17 +114,12 @@ public abstract class Token implements RingPosition<Token>, Serializable
      * Note that those are "fake" keys and should only be used for comparison
      * of other keys, for selection of keys when only a token is known.
      */
-    public KeyBound minKeyBound(IPartitioner partitioner)
+    public KeyBound minKeyBound()
     {
         return new KeyBound(this, true);
     }
 
-    public KeyBound minKeyBound()
-    {
-        return minKeyBound(null);
-    }
-
-    public KeyBound maxKeyBound(IPartitioner partitioner)
+    public KeyBound maxKeyBound()
     {
         /*
          * For each token, we needs both minKeyBound and maxKeyBound
@@ -122,14 +128,9 @@ public abstract class Token implements RingPosition<Token>, Serializable
          * simpler to associate the same value for minKeyBound and
          * maxKeyBound for the minimun token.
          */
-        if (isMinimum(partitioner))
+        if (isMinimum())
             return minKeyBound();
         return new KeyBound(this, false);
-    }
-
-    public KeyBound maxKeyBound()
-    {
-        return maxKeyBound(StorageService.getPartitioner());
     }
 
     @SuppressWarnings("unchecked")
@@ -141,7 +142,7 @@ public abstract class Token implements RingPosition<Token>, Serializable
             return (R)maxKeyBound();
     }
 
-    public static class KeyBound implements RowPosition
+    public static class KeyBound implements PartitionPosition
     {
         private final Token token;
         public final boolean isMinimumBound;
@@ -157,7 +158,7 @@ public abstract class Token implements RingPosition<Token>, Serializable
             return token;
         }
 
-        public int compareTo(RowPosition pos)
+        public int compareTo(PartitionPosition pos)
         {
             if (this == pos)
                 return 0;
@@ -172,19 +173,24 @@ public abstract class Token implements RingPosition<Token>, Serializable
                 return ((pos instanceof KeyBound) && !((KeyBound)pos).isMinimumBound) ? 0 : 1;
         }
 
-        public boolean isMinimum(IPartitioner partitioner)
+        public IPartitioner getPartitioner()
         {
-            return getToken().isMinimum(partitioner);
+            return getToken().getPartitioner();
+        }
+
+        public KeyBound minValue()
+        {
+            return getPartitioner().getMinimumToken().minKeyBound();
         }
 
         public boolean isMinimum()
         {
-            return isMinimum(StorageService.getPartitioner());
+            return getToken().isMinimum();
         }
 
-        public RowPosition.Kind kind()
+        public PartitionPosition.Kind kind()
         {
-            return isMinimumBound ? RowPosition.Kind.MIN_BOUND : RowPosition.Kind.MAX_BOUND;
+            return isMinimumBound ? PartitionPosition.Kind.MIN_BOUND : PartitionPosition.Kind.MAX_BOUND;
         }
 
         @Override

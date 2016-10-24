@@ -25,7 +25,6 @@ import io.netty.buffer.ByteBuf;
 
 import org.junit.Test;
 import org.apache.cassandra.cql3.*;
-import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.serializers.CollectionSerializer;
 import org.apache.cassandra.transport.Event.TopologyChange;
@@ -36,6 +35,7 @@ import org.apache.cassandra.utils.Pair;
 
 import static org.junit.Assert.assertEquals;
 import static org.apache.cassandra.utils.ByteBufferUtil.bytes;
+import static org.junit.Assert.assertNotSame;
 
 /**
  * Serialization/deserialization tests for protocol objects and messages.
@@ -45,8 +45,8 @@ public class SerDeserTest
     @Test
     public void collectionSerDeserTest() throws Exception
     {
-        collectionSerDeserTest(2);
         collectionSerDeserTest(3);
+        collectionSerDeserTest(4);
     }
 
     public void collectionSerDeserTest(int version) throws Exception
@@ -92,8 +92,8 @@ public class SerDeserTest
     @Test
     public void eventSerDeserTest() throws Exception
     {
-        eventSerDeserTest(2);
         eventSerDeserTest(3);
+        eventSerDeserTest(4);
     }
 
     public void eventSerDeserTest(int version) throws Exception
@@ -120,6 +120,19 @@ public class SerDeserTest
             events.add(new SchemaChange(SchemaChange.Change.CREATED, SchemaChange.Target.TYPE, "ks", "type"));
             events.add(new SchemaChange(SchemaChange.Change.UPDATED, SchemaChange.Target.TYPE, "ks", "type"));
             events.add(new SchemaChange(SchemaChange.Change.DROPPED, SchemaChange.Target.TYPE, "ks", "type"));
+        }
+
+        if (version >= 4)
+        {
+            List<String> moreTypes = Arrays.asList("text", "bigint");
+
+            events.add(new SchemaChange(SchemaChange.Change.CREATED, SchemaChange.Target.FUNCTION, "ks", "func", Collections.<String>emptyList()));
+            events.add(new SchemaChange(SchemaChange.Change.UPDATED, SchemaChange.Target.FUNCTION, "ks", "func", moreTypes));
+            events.add(new SchemaChange(SchemaChange.Change.DROPPED, SchemaChange.Target.FUNCTION, "ks", "func", moreTypes));
+
+            events.add(new SchemaChange(SchemaChange.Change.CREATED, SchemaChange.Target.AGGREGATE, "ks", "aggr", Collections.<String>emptyList()));
+            events.add(new SchemaChange(SchemaChange.Change.UPDATED, SchemaChange.Target.AGGREGATE, "ks", "aggr", moreTypes));
+            events.add(new SchemaChange(SchemaChange.Change.DROPPED, SchemaChange.Target.AGGREGATE, "ks", "aggr", moreTypes));
         }
 
         for (Event ev : events)
@@ -158,8 +171,8 @@ public class SerDeserTest
     @Test
     public void udtSerDeserTest() throws Exception
     {
-        udtSerDeserTest(2);
         udtSerDeserTest(3);
+        udtSerDeserTest(4);
     }
 
     public void udtSerDeserTest(int version) throws Exception
@@ -185,10 +198,6 @@ public class SerDeserTest
         Term t = u.prepare("ks", columnSpec("myValue", udt));
 
         QueryOptions options = QueryOptions.DEFAULT;
-        if (version == 2)
-            options = QueryOptions.fromProtocolV2(ConsistencyLevel.ONE, Collections.<ByteBuffer>emptyList());
-        else if (version != 3)
-            throw new AssertionError("Invalid protocol version for test");
 
         ByteBuffer serialized = t.bindAndGet(options);
 
@@ -212,5 +221,35 @@ public class SerDeserTest
         m.put("bar", 12L);
         m.put("foo", 24L);
         assertEquals(m, mt.getSerializer().deserializeForNativeProtocol(fields[3], 3));
+    }
+
+    @Test
+    public void preparedMetadataSerializationTest()
+    {
+        List<ColumnSpecification> columnNames = new ArrayList<>();
+        for (int i = 0; i < 3; i++)
+            columnNames.add(new ColumnSpecification("ks", "cf", new ColumnIdentifier("col" + i, false), Int32Type.instance));
+
+        ResultSet.PreparedMetadata meta = new ResultSet.PreparedMetadata(columnNames, new Short[]{2, 1});
+        ByteBuf buf = Unpooled.buffer(meta.codec.encodedSize(meta, Server.VERSION_4));
+        meta.codec.encode(meta, buf, Server.VERSION_4);
+        ResultSet.PreparedMetadata decodedMeta = meta.codec.decode(buf, Server.VERSION_4);
+
+        assertEquals(meta, decodedMeta);
+
+        // v3 encoding doesn't include partition key bind indexes
+        buf = Unpooled.buffer(meta.codec.encodedSize(meta, Server.VERSION_3));
+        meta.codec.encode(meta, buf, Server.VERSION_3);
+        decodedMeta = meta.codec.decode(buf, Server.VERSION_3);
+
+        assertNotSame(meta, decodedMeta);
+
+        // however, if there are no partition key indexes, they should be the same
+        ResultSet.PreparedMetadata metaWithoutIndexes = new ResultSet.PreparedMetadata(columnNames, null);
+        buf = Unpooled.buffer(metaWithoutIndexes.codec.encodedSize(metaWithoutIndexes, Server.VERSION_4));
+        metaWithoutIndexes.codec.encode(metaWithoutIndexes, buf, Server.VERSION_4);
+        ResultSet.PreparedMetadata decodedMetaWithoutIndexes = metaWithoutIndexes.codec.decode(buf, Server.VERSION_4);
+
+        assertEquals(decodedMeta, decodedMetaWithoutIndexes);
     }
 }

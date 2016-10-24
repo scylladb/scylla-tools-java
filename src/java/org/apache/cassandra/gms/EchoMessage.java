@@ -21,25 +21,31 @@ package org.apache.cassandra.gms;
  */
 
 
-import java.io.DataInput;
 import java.io.IOException;
 
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 
-public class EchoMessage
+public final class EchoMessage
 {
-    public static IVersionedSerializer<EchoMessage> serializer = new EchoMessageSerializer();
+	public static final EchoMessage instance = new EchoMessage();
+	
+    public static final IVersionedSerializer<EchoMessage> serializer = new EchoMessageSerializer();
 
+	private EchoMessage()
+	{
+	}
+	
     public static class EchoMessageSerializer implements IVersionedSerializer<EchoMessage>
     {
         public void serialize(EchoMessage t, DataOutputPlus out, int version) throws IOException
         {
         }
 
-        public EchoMessage deserialize(DataInput in, int version) throws IOException
+        public EchoMessage deserialize(DataInputPlus in, int version) throws IOException
         {
-            return new EchoMessage();
+            return EchoMessage.instance;
         }
 
         public long serializedSize(EchoMessage t, int version)

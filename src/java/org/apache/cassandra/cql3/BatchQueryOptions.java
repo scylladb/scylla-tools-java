@@ -22,9 +22,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import org.apache.cassandra.utils.MD5Digest;
+
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.service.QueryState;
-import org.apache.cassandra.service.pager.PagingState;
 
 public abstract class BatchQueryOptions
 {
@@ -50,6 +51,11 @@ public abstract class BatchQueryOptions
     }
 
     public abstract QueryOptions forStatement(int i);
+
+    public void prepareStatement(int i, List<ColumnSpecification> boundNames)
+    {
+        forStatement(i).prepare(boundNames);
+    }
 
     public ConsistencyLevel getConsistency()
     {
@@ -107,6 +113,27 @@ public abstract class BatchQueryOptions
         public QueryOptions forStatement(int i)
         {
             return perStatementOptions.get(i);
+        }
+
+        @Override
+        public void prepareStatement(int i, List<ColumnSpecification> boundNames)
+        {
+            if (isPreparedStatement(i))
+            {
+                QueryOptions options = perStatementOptions.get(i);
+                options.prepare(boundNames);
+                options = QueryOptions.addColumnSpecifications(options, boundNames);
+                perStatementOptions.set(i, options);
+            }
+            else
+            {
+                super.prepareStatement(i, boundNames);
+            }
+        }
+
+        private boolean isPreparedStatement(int i)
+        {
+            return getQueryOrIdList().get(i) instanceof MD5Digest;
         }
     }
 }

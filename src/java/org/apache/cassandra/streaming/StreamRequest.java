@@ -17,7 +17,6 @@
  */
 package org.apache.cassandra.streaming;
 
-import java.io.DataInput;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -28,7 +27,9 @@ import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
+import org.apache.cassandra.net.MessagingService;
 
 public class StreamRequest
 {
@@ -55,15 +56,16 @@ public class StreamRequest
             out.writeInt(request.ranges.size());
             for (Range<Token> range : request.ranges)
             {
-                Token.serializer.serialize(range.left, out);
-                Token.serializer.serialize(range.right, out);
+                MessagingService.validatePartitioner(range);
+                Token.serializer.serialize(range.left, out, version);
+                Token.serializer.serialize(range.right, out, version);
             }
             out.writeInt(request.columnFamilies.size());
             for (String cf : request.columnFamilies)
                 out.writeUTF(cf);
         }
 
-        public StreamRequest deserialize(DataInput in, int version) throws IOException
+        public StreamRequest deserialize(DataInputPlus in, int version) throws IOException
         {
             String keyspace = in.readUTF();
             long repairedAt = in.readLong();
@@ -71,8 +73,8 @@ public class StreamRequest
             List<Range<Token>> ranges = new ArrayList<>(rangeCount);
             for (int i = 0; i < rangeCount; i++)
             {
-                Token left = Token.serializer.deserialize(in);
-                Token right = Token.serializer.deserialize(in);
+                Token left = Token.serializer.deserialize(in, MessagingService.globalPartitioner(), version);
+                Token right = Token.serializer.deserialize(in, MessagingService.globalPartitioner(), version);
                 ranges.add(new Range<>(left, right));
             }
             int cfCount = in.readInt();
@@ -84,17 +86,17 @@ public class StreamRequest
 
         public long serializedSize(StreamRequest request, int version)
         {
-            int size = TypeSizes.NATIVE.sizeof(request.keyspace);
-            size += TypeSizes.NATIVE.sizeof(request.repairedAt);
-            size += TypeSizes.NATIVE.sizeof(request.ranges.size());
+            int size = TypeSizes.sizeof(request.keyspace);
+            size += TypeSizes.sizeof(request.repairedAt);
+            size += TypeSizes.sizeof(request.ranges.size());
             for (Range<Token> range : request.ranges)
             {
-                size += Token.serializer.serializedSize(range.left, TypeSizes.NATIVE);
-                size += Token.serializer.serializedSize(range.right, TypeSizes.NATIVE);
+                size += Token.serializer.serializedSize(range.left, version);
+                size += Token.serializer.serializedSize(range.right, version);
             }
-            size += TypeSizes.NATIVE.sizeof(request.columnFamilies.size());
+            size += TypeSizes.sizeof(request.columnFamilies.size());
             for (String cf : request.columnFamilies)
-                size += TypeSizes.NATIVE.sizeof(cf);
+                size += TypeSizes.sizeof(cf);
             return size;
         }
     }

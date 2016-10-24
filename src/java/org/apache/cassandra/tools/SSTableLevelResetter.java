@@ -17,14 +17,13 @@
  */
 package org.apache.cassandra.tools;
 
-import java.io.IOException;
 import java.io.PrintStream;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
@@ -40,13 +39,13 @@ public class SSTableLevelResetter
     /**
      * @param args a list of sstables whose metadata we are changing
      */
-    public static void main(String[] args) throws IOException
+    public static void main(String[] args)
     {
         PrintStream out = System.out;
         if (args.length == 0)
         {
             out.println("This command should be run with Cassandra stopped!");
-            out.println("Usage: sstablelevelreset <keyspace> <columnfamily>");
+            out.println("Usage: sstablelevelreset <keyspace> <table>");
             System.exit(1);
         }
 
@@ -54,16 +53,18 @@ public class SSTableLevelResetter
         {
             out.println("This command should be run with Cassandra stopped, otherwise you will get very strange behavior");
             out.println("Verify that Cassandra is not running and then execute the command like this:");
-            out.println("Usage: sstablelevelreset --really-reset <keyspace> <columnfamily>");
+            out.println("Usage: sstablelevelreset --really-reset <keyspace> <table>");
             System.exit(1);
         }
+
+        Util.initDatabaseDescriptor();
 
         // TODO several daemon threads will run from here.
         // So we have to explicitly call System.exit.
         try
         {
             // load keyspace descriptions.
-            DatabaseDescriptor.loadSchemas();
+            Schema.instance.loadFromDisk(false);
 
             String keyspaceName = args[1];
             String columnfamily = args[2];
@@ -77,7 +78,7 @@ public class SSTableLevelResetter
             Keyspace keyspace = Keyspace.openWithoutSSTables(keyspaceName);
             ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(columnfamily);
             boolean foundSSTable = false;
-            for (Map.Entry<Descriptor, Set<Component>> sstable : cfs.directories.sstableLister().list().entrySet())
+            for (Map.Entry<Descriptor, Set<Component>> sstable : cfs.getDirectories().sstableLister(Directories.OnTxnErr.THROW).list().entrySet())
             {
                 if (sstable.getValue().contains(Component.STATS))
                 {
@@ -98,7 +99,7 @@ public class SSTableLevelResetter
 
             if (!foundSSTable)
             {
-                out.println("Found no sstables, did you give the correct keyspace/columnfamily?");
+                out.println("Found no sstables, did you give the correct keyspace/table?");
             }
         }
         catch (Throwable t)

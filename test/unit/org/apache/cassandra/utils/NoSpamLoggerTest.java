@@ -32,120 +32,20 @@ import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.slf4j.Logger;
-import org.slf4j.helpers.MarkerIgnoringBase;
+import org.slf4j.helpers.SubstituteLogger;
 
 
 public class NoSpamLoggerTest
 {
     Map<Level, Queue<Pair<String, Object[]>>> logged = new HashMap<>();
 
-   Logger mock = new MarkerIgnoringBase()
+   Logger mock = new SubstituteLogger(null)
    {
-
-       public boolean isTraceEnabled()
-       {
-           return false;
-       }
-
-       public void trace(String s)
-       {
-
-       }
-
-       public void trace(String s, Object o)
-       {
-
-       }
-
-       public void trace(String s, Object o, Object o1)
-       {
-
-       }
-
-       public void trace(String s, Object... objects)
-       {
-
-       }
-
-       public void trace(String s, Throwable throwable)
-       {
-
-       }
-
-       public boolean isDebugEnabled()
-       {
-           return false;
-       }
-
-       public void debug(String s)
-       {
-
-       }
-
-       public void debug(String s, Object o)
-       {
-
-       }
-
-       public void debug(String s, Object o, Object o1)
-       {
-
-       }
-
-       public void debug(String s, Object... objects)
-       {
-
-       }
-
-       public void debug(String s, Throwable throwable)
-       {
-
-       }
-
-       public boolean isInfoEnabled()
-       {
-           return false;
-       }
-
-       public void info(String s)
-       {
-
-       }
-
-       public void info(String s, Object o)
-       {
-
-       }
-
-       public void info(String s, Object o, Object o1)
-       {
-
-       }
 
        @Override
        public void info(String statement, Object... args)
        {
            logged.get(Level.INFO).offer(Pair.create(statement, args));
-       }
-
-       public void info(String s, Throwable throwable)
-       {
-
-       }
-
-       public boolean isWarnEnabled()
-       {
-           return false;
-       }
-
-       public void warn(String s)
-       {
-
-       }
-
-       public void warn(String s, Object o)
-       {
-
        }
 
        @Override
@@ -154,45 +54,10 @@ public class NoSpamLoggerTest
            logged.get(Level.WARN).offer(Pair.create(statement, args));
        }
 
-       public void warn(String s, Object o, Object o1)
-       {
-
-       }
-
-       public void warn(String s, Throwable throwable)
-       {
-
-       }
-
-       public boolean isErrorEnabled()
-       {
-           return false;
-       }
-
-       public void error(String s)
-       {
-
-       }
-
-       public void error(String s, Object o)
-       {
-
-       }
-
-       public void error(String s, Object o, Object o1)
-       {
-
-       }
-
        @Override
        public void error(String statement, Object... args)
        {
            logged.get(Level.ERROR).offer(Pair.create(statement, args));
-       }
-
-       public void error(String s, Throwable throwable)
-       {
-
        }
 
        @Override
@@ -248,19 +113,27 @@ public class NoSpamLoggerTest
        setUp();
        now = 5;
 
-       NoSpamLogger.log( mock, l, 5,  TimeUnit.NANOSECONDS, statement, param);
+       assertTrue(NoSpamLogger.log( mock, l, 5,  TimeUnit.NANOSECONDS, statement, param));
 
        assertEquals(1, logged.get(l).size());
 
-       NoSpamLogger.log( mock, l, 5,  TimeUnit.NANOSECONDS, statement, param);
+       assertFalse(NoSpamLogger.log( mock, l, 5,  TimeUnit.NANOSECONDS, statement, param));
 
        assertEquals(1, logged.get(l).size());
 
        now += 5;
 
-       NoSpamLogger.log(mock, l, 5, TimeUnit.NANOSECONDS, statement, param);
+       assertTrue(NoSpamLogger.log( mock, l, 5,  TimeUnit.NANOSECONDS, statement, param));
 
        assertEquals(2, logged.get(l).size());
+
+       assertTrue(NoSpamLogger.log( mock, l, "key", 5,  TimeUnit.NANOSECONDS, statement, param));
+
+       assertEquals(3, logged.get(l).size());
+
+       assertFalse(NoSpamLogger.log( mock, l, "key", 5,  TimeUnit.NANOSECONDS, statement, param));
+
+       assertEquals(3, logged.get(l).size());
    }
 
    private void assertLoggedSizes(int info, int warn, int error)
@@ -276,20 +149,20 @@ public class NoSpamLoggerTest
        now = 5;
        NoSpamLogger logger = NoSpamLogger.getLogger( mock, 5, TimeUnit.NANOSECONDS);
 
-       logger.info(statement, param);
-       logger.info(statement, param);
-       logger.warn(statement, param);
-       logger.error(statement, param);
+       assertTrue(logger.info(statement, param));
+       assertFalse(logger.info(statement, param));
+       assertFalse(logger.warn(statement, param));
+       assertFalse(logger.error(statement, param));
 
        assertLoggedSizes(1, 0, 0);
 
        NoSpamLogStatement statement = logger.getStatement("swizzle2{}", 10, TimeUnit.NANOSECONDS);
-       statement.warn(param);
+       assertFalse(statement.warn(param));
        //now is 5 so it won't log
        assertLoggedSizes(1, 0, 0);
 
        now = 10;
-       statement.warn(param);
+       assertTrue(statement.warn(param));
        assertLoggedSizes(1, 1, 0);
 
    }
@@ -301,10 +174,10 @@ public class NoSpamLoggerTest
 
        now = 5;
 
-       nospam.info(statement, param);
-       nospam.info(statement, param);
-       nospam.warn(statement, param);
-       nospam.error(statement, param);
+       assertTrue(nospam.info(statement, param));
+       assertFalse(nospam.info(statement, param));
+       assertFalse(nospam.warn(statement, param));
+       assertFalse(nospam.error(statement, param));
 
        assertLoggedSizes(1, 0, 0);
    }
@@ -328,51 +201,51 @@ public class NoSpamLoggerTest
    {
        now = 5;
 
-       NoSpamLogger.log( mock, Level.INFO, 5,  TimeUnit.NANOSECONDS, statement, param);
+       assertTrue(NoSpamLogger.log( mock, Level.INFO, 5,  TimeUnit.NANOSECONDS, statement, param));
        checkMock(Level.INFO);
 
        now = 10;
 
-       NoSpamLogger.log( mock, Level.WARN, 5,  TimeUnit.NANOSECONDS, statement, param);
+       assertTrue(NoSpamLogger.log( mock, Level.WARN, 5,  TimeUnit.NANOSECONDS, statement, param));
        checkMock(Level.WARN);
 
        now = 15;
 
-       NoSpamLogger.log( mock, Level.ERROR, 5,  TimeUnit.NANOSECONDS, statement, param);
+       assertTrue(NoSpamLogger.log( mock, Level.ERROR, 5,  TimeUnit.NANOSECONDS, statement, param));
        checkMock(Level.ERROR);
 
        now = 20;
 
        NoSpamLogger logger = NoSpamLogger.getLogger(mock, 5, TimeUnit.NANOSECONDS);
 
-       logger.info(statement, param);
+       assertTrue(logger.info(statement, param));
        checkMock(Level.INFO);
 
        now = 25;
 
-       logger.warn(statement, param);
+       assertTrue(logger.warn(statement, param));
        checkMock(Level.WARN);
 
        now = 30;
 
-       logger.error(statement, param);
+       assertTrue(logger.error(statement, param));
        checkMock(Level.ERROR);
 
        NoSpamLogger.NoSpamLogStatement nospamStatement = logger.getStatement(statement);
 
        now = 35;
 
-       nospamStatement.info(param);
+       assertTrue(nospamStatement.info(param));
        checkMock(Level.INFO);
 
        now = 40;
 
-       nospamStatement.warn(param);
+       assertTrue(nospamStatement.warn(param));
        checkMock(Level.WARN);
 
        now = 45;
 
-       nospamStatement.error(param);
+       assertTrue(nospamStatement.error(param));
        checkMock(Level.ERROR);
    }
 }

@@ -21,20 +21,21 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.apache.cassandra.metrics.SEPMetrics;
 import org.apache.cassandra.utils.concurrent.SimpleCondition;
 import org.apache.cassandra.utils.concurrent.WaitQueue;
 
 import static org.apache.cassandra.concurrent.SEPWorker.Work;
 
-public class SEPExecutor extends AbstractTracingAwareExecutorService
+public class SEPExecutor extends AbstractLocalAwareExecutorService
 {
     private final SharedExecutorPool pool;
 
     public final int maxWorkers;
     private final int maxTasksQueued;
+    private final SEPMetrics metrics;
 
     // stores both a set of work permits and task permits:
     //  bottom 32 bits are number of queued tasks, in the range [0..maxTasksQueued]   (initially 0)
@@ -43,8 +44,6 @@ public class SEPExecutor extends AbstractTracingAwareExecutorService
 
     // producers wait on this when there is no room on the queue
     private final WaitQueue hasRoom = new WaitQueue();
-    private final AtomicLong totalBlocked = new AtomicLong();
-    private final AtomicInteger currentlyBlocked = new AtomicInteger();
     private final AtomicLong completedTasks = new AtomicLong();
 
     volatile boolean shuttingDown = false;
@@ -53,12 +52,13 @@ public class SEPExecutor extends AbstractTracingAwareExecutorService
     // TODO: see if other queue implementations might improve throughput
     protected final ConcurrentLinkedQueue<FutureTask<?>> tasks = new ConcurrentLinkedQueue<>();
 
-    SEPExecutor(SharedExecutorPool pool, int maxWorkers, int maxTasksQueued)
+    SEPExecutor(SharedExecutorPool pool, int maxWorkers, int maxTasksQueued, String jmxPath, String name)
     {
         this.pool = pool;
         this.maxWorkers = maxWorkers;
         this.maxTasksQueued = maxTasksQueued;
         this.permits.set(combine(0, maxWorkers));
+        this.metrics = new SEPMetrics(this, jmxPath, name);
     }
 
     protected void onCompletion()
@@ -116,10 +116,11 @@ public class SEPExecutor extends AbstractTracingAwareExecutorService
                 // if we're blocking, we might as well directly schedule a worker if we aren't already at max
                 if (takeWorkPermit(true))
                     pool.schedule(new Work(this));
-                totalBlocked.incrementAndGet();
-                currentlyBlocked.incrementAndGet();
+
+                metrics.totalBlocked.inc();
+                metrics.currentBlocked.inc();
                 s.awaitUninterruptibly();
-                currentlyBlocked.decrementAndGet();
+                metrics.currentBlocked.dec();
             }
             else // don't propagate our signal when we cancel, just cancel
                 s.cancel();
@@ -207,6 +208,9 @@ public class SEPExecutor extends AbstractTracingAwareExecutorService
         pool.executors.remove(this);
         if (getActiveCount() == 0)
             shutdown.signalAll();
+
+        // release metrics
+        metrics.release();
     }
 
     public synchronized List<Runnable> shutdownNow()
@@ -247,21 +251,6 @@ public class SEPExecutor extends AbstractTracingAwareExecutorService
     public int getActiveCount()
     {
         return maxWorkers - workPermits(permits.get());
-    }
-
-    public int getTotalBlockedTasks()
-    {
-        return (int) totalBlocked.get();
-    }
-
-    public int getMaximumThreads()
-    {
-        return maxWorkers;
-    }
-
-    public int getCurrentlyBlockedTasks()
-    {
-        return currentlyBlocked.get();
     }
 
     private static int taskPermits(long both)

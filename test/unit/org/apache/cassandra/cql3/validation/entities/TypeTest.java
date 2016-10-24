@@ -22,11 +22,20 @@ import org.apache.cassandra.cql3.CQLTester;
 
 import org.junit.Test;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class TypeTest extends CQLTester
 {
+    @Test
+    public void testNonExistingOnes() throws Throwable
+    {
+        assertInvalidMessage("No user type named", "DROP TYPE " + KEYSPACE + ".type_does_not_exist");
+        assertInvalidMessage("Cannot drop type in unknown keyspace", "DROP TYPE keyspace_does_not_exist.type_does_not_exist");
+
+        execute("DROP TYPE IF EXISTS " + KEYSPACE + ".type_does_not_exist");
+        execute("DROP TYPE IF EXISTS keyspace_does_not_exist.type_does_not_exist");
+    }
+
     @Test
     public void testNowToUUIDCompatibility() throws Throwable
     {
@@ -40,8 +49,13 @@ public class TypeTest extends CQLTester
     public void testDateCompatibility() throws Throwable
     {
         createTable("CREATE TABLE %s (a int, b timestamp, c bigint, d varint, PRIMARY KEY (a, b, c, d))");
-        execute("INSERT INTO %s (a, b, c, d) VALUES (0, unixTimestampOf(now()), dateOf(now()), dateOf(now()))");
-        UntypedResultSet results = execute("SELECT * FROM %s WHERE a=0 AND b < unixTimestampOf(now())");
+
+        execute("INSERT INTO %s (a, b, c, d) VALUES (0, toUnixTimestamp(now()), toTimestamp(now()), toTimestamp(now()))");
+        UntypedResultSet results = execute("SELECT * FROM %s WHERE a=0 AND b <= toUnixTimestamp(now())");
+        assertEquals(1, results.size());
+
+        execute("INSERT INTO %s (a, b, c, d) VALUES (1, unixTimestampOf(now()), dateOf(now()), dateOf(now()))");
+        results = execute("SELECT * FROM %s WHERE a=1 AND b <= toUnixTimestamp(now())");
         assertEquals(1, results.size());
     }
 

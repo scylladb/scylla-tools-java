@@ -22,6 +22,7 @@ import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.apache.cassandra.cql3.Term;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -105,14 +106,6 @@ public class DynamicCompositeType extends AbstractCompositeType
         {
             throw new RuntimeException(e);
         }
-        catch (ConfigurationException e)
-        {
-            throw new RuntimeException(e);
-        }
-        catch (SyntaxException e)
-        {
-            throw new RuntimeException(e);
-        }
     }
 
     protected AbstractType<?> getComparator(int i, ByteBuffer bb)
@@ -177,14 +170,6 @@ public class DynamicCompositeType extends AbstractCompositeType
             }
         }
         catch (CharacterCodingException e)
-        {
-            throw new RuntimeException(e);
-        }
-        catch (ConfigurationException e)
-        {
-            throw new RuntimeException(e);
-        }
-        catch (SyntaxException e)
         {
             throw new RuntimeException(e);
         }
@@ -304,11 +289,7 @@ public class DynamicCompositeType extends AbstractCompositeType
                 }
                 type = t;
             }
-            catch (SyntaxException e)
-            {
-                throw new IllegalArgumentException(e);
-            }
-            catch (ConfigurationException e)
+            catch (SyntaxException | ConfigurationException e)
             {
                 throw new IllegalArgumentException(e);
             }
@@ -362,10 +343,11 @@ public class DynamicCompositeType extends AbstractCompositeType
 
         public FixedValueComparator(int cmp)
         {
+            super(ComparisonType.CUSTOM);
             this.cmp = cmp;
         }
 
-        public int compare(ByteBuffer v1, ByteBuffer v2)
+        public int compareCustom(ByteBuffer v1, ByteBuffer v2)
         {
             return cmp;
         }
@@ -393,6 +375,18 @@ public class DynamicCompositeType extends AbstractCompositeType
         }
 
         @Override
+        public Term fromJSONObject(Object parsed)
+        {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public String toJSONString(ByteBuffer buffer, int protocolVersion)
+        {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public void validate(ByteBuffer bytes)
         {
             throw new UnsupportedOperationException();
@@ -401,11 +395,6 @@ public class DynamicCompositeType extends AbstractCompositeType
         public TypeSerializer<Void> getSerializer()
         {
             throw new UnsupportedOperationException();
-        }
-
-        public boolean isByteOrderComparable()
-        {
-            return false;
         }
     }
 }

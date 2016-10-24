@@ -18,32 +18,30 @@
 package org.apache.cassandra.tools;
 
 import java.io.File;
-import java.net.*;
+import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.net.InetAddress;
+import java.net.MalformedURLException;
+import java.net.UnknownHostException;
 import java.util.*;
 
-import com.google.common.base.Joiner;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
-import com.google.common.collect.Sets;
-
 import org.apache.commons.cli.*;
-import org.apache.thrift.protocol.TBinaryProtocol;
-import org.apache.thrift.protocol.TProtocol;
-import org.apache.thrift.transport.TTransport;
 
-import org.apache.cassandra.auth.IAuthenticator;
+import com.datastax.driver.core.AuthProvider;
+import com.datastax.driver.core.JdkSSLOptions;
+import com.datastax.driver.core.PlainTextAuthProvider;
+import com.datastax.driver.core.SSLOptions;
+import javax.net.ssl.SSLContext;
 import org.apache.cassandra.config.*;
-import org.apache.cassandra.db.Keyspace;
-import org.apache.cassandra.db.SystemKeyspace;
-import org.apache.cassandra.db.marshal.UTF8Type;
-import org.apache.cassandra.dht.Range;
-import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.SSTableLoader;
+import org.apache.cassandra.security.SSLFactory;
 import org.apache.cassandra.streaming.*;
-import org.apache.cassandra.thrift.*;
-import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.JVMStabilityInspector;
+import org.apache.cassandra.utils.NativeSSTableLoaderClient;
 import org.apache.cassandra.utils.OutputHandler;
 
 public class BulkLoader
@@ -54,12 +52,12 @@ public class BulkLoader
     private static final String NOPROGRESS_OPTION  = "no-progress";
     private static final String IGNORE_NODES_OPTION  = "ignore";
     private static final String INITIAL_HOST_ADDRESS_OPTION = "nodes";
-    private static final String RPC_PORT_OPTION = "port";
+    private static final String NATIVE_PORT_OPTION = "port";
     private static final String USER_OPTION = "username";
     private static final String PASSWD_OPTION = "password";
+    private static final String AUTH_PROVIDER_OPTION = "auth-provider";
     private static final String THROTTLE_MBITS = "throttle";
-
-    private static final String TRANSPORT_FACTORY = "transport-factory";
+    private static final String INTER_DC_THROTTLE_MBITS = "inter-dc-throttle";
 
     /* client encryption options */
     private static final String SSL_TRUSTSTORE = "truststore";
@@ -76,22 +74,22 @@ public class BulkLoader
     public static void main(String args[])
     {
         Config.setClientMode(true);
-        LoaderOptions options = LoaderOptions.parseArgs(args);
+        LoaderOptions options = LoaderOptions.parseArgs(args).validateArguments();
         OutputHandler handler = new OutputHandler.SystemOutput(options.verbose, options.debug);
         SSTableLoader loader = new SSTableLoader(
                 options.directory,
                 new ExternalClient(
                         options.hosts,
-                        options.rpcPort,
-                        options.user,
-                        options.passwd,
-                        options.transportFactory,
+                        options.nativePort,
+                        options.authProvider,
                         options.storagePort,
                         options.sslStoragePort,
-                        options.serverEncOptions),
+                        options.serverEncOptions,
+                        buildSSLOptions(options.clientEncOptions)),
                 handler,
                 options.connectionsPerHost);
         DatabaseDescriptor.setStreamThroughputOutboundMegabitsPerSec(options.throttle);
+        DatabaseDescriptor.setInterDCStreamThroughputOutboundMegabitsPerSec(options.interDcThrottle);
         StreamResultFuture future = null;
 
         ProgressIndicator indicator = new ProgressIndicator();
@@ -154,8 +152,13 @@ public class BulkLoader
             start = lastTime = System.nanoTime();
         }
 
-        public void onSuccess(StreamState finalState) {}
-        public void onFailure(Throwable t) {}
+        public void onSuccess(StreamState finalState)
+        {
+        }
+
+        public void onFailure(Throwable t)
+        {
+        }
 
         public synchronized void handleStreamEvent(StreamEvent event)
         {
@@ -185,7 +188,7 @@ public class BulkLoader
                 // recalculate progress across all sessions in all hosts and display
                 for (InetAddress peer : sessionsByHost.keySet())
                 {
-                    sb.append("[").append(peer.toString()).append("]");
+                    sb.append("[").append(peer).append("]");
 
                     for (SessionInfo session : sessionsByHost.get(peer))
                     {
@@ -254,118 +257,52 @@ public class BulkLoader
         }
     }
 
-    static class ExternalClient extends SSTableLoader.Client
+    private static SSLOptions buildSSLOptions(EncryptionOptions.ClientEncryptionOptions clientEncryptionOptions)
     {
-        private final Map<String, CFMetaData> knownCfs = new HashMap<>();
-        private final Set<InetAddress> hosts;
-        private final int rpcPort;
-        private final String user;
-        private final String passwd;
-        private final ITransportFactory transportFactory;
+
+        if (!clientEncryptionOptions.enabled)
+            return null;
+
+        SSLContext sslContext;
+        try
+        {
+            sslContext = SSLFactory.createSSLContext(clientEncryptionOptions, true);
+        }
+        catch (IOException e)
+        {
+            throw new RuntimeException("Could not create SSL Context.", e);
+        }
+
+        return JdkSSLOptions.builder()
+                            .withSSLContext(sslContext)
+                            .withCipherSuites(clientEncryptionOptions.cipher_suites)
+                            .build();
+    }
+
+    static class ExternalClient extends NativeSSTableLoaderClient
+    {
         private final int storagePort;
         private final int sslStoragePort;
         private final EncryptionOptions.ServerEncryptionOptions serverEncOptions;
 
         public ExternalClient(Set<InetAddress> hosts,
                               int port,
-                              String user,
-                              String passwd,
-                              ITransportFactory transportFactory,
+                              AuthProvider authProvider,
                               int storagePort,
                               int sslStoragePort,
-                              EncryptionOptions.ServerEncryptionOptions serverEncryptionOptions)
+                              EncryptionOptions.ServerEncryptionOptions serverEncryptionOptions,
+                              SSLOptions sslOptions)
         {
-            super();
-            this.hosts = hosts;
-            this.rpcPort = port;
-            this.user = user;
-            this.passwd = passwd;
-            this.transportFactory = transportFactory;
+            super(hosts, port, authProvider, sslOptions);
             this.storagePort = storagePort;
             this.sslStoragePort = sslStoragePort;
             this.serverEncOptions = serverEncryptionOptions;
         }
 
         @Override
-        public void init(String keyspace)
-        {
-            Iterator<InetAddress> hostiter = hosts.iterator();
-            while (hostiter.hasNext())
-            {
-                try
-                {
-                    // Query endpoint to ranges map and schemas from thrift
-                    InetAddress host = hostiter.next();
-                    Cassandra.Client client = createThriftClient(host.getHostAddress(), rpcPort, this.user, this.passwd, this.transportFactory);
-
-                    setPartitioner(client.describe_partitioner());
-                    Token.TokenFactory tkFactory = getPartitioner().getTokenFactory();
-
-                    for (TokenRange tr : client.describe_ring(keyspace))
-                    {
-                        Range<Token> range = new Range<>(tkFactory.fromString(tr.start_token), tkFactory.fromString(tr.end_token), getPartitioner());
-                        for (String ep : tr.endpoints)
-                        {
-                            addRangeForEndpoint(range, InetAddress.getByName(ep));
-                        }
-                    }
-
-                    String cfQuery = String.format("SELECT * FROM %s.%s WHERE keyspace_name = '%s'",
-                                                 Keyspace.SYSTEM_KS,
-                                                 SystemKeyspace.SCHEMA_COLUMNFAMILIES_CF,
-                                                 keyspace);
-                    CqlResult cfRes = client.execute_cql3_query(ByteBufferUtil.bytes(cfQuery), Compression.NONE, ConsistencyLevel.ONE);
-
-
-                    for (CqlRow row : cfRes.rows)
-                    {
-                        String columnFamily = UTF8Type.instance.getString(row.columns.get(1).bufferForName());
-                        String columnsQuery = String.format("SELECT * FROM %s.%s WHERE keyspace_name = '%s' AND columnfamily_name = '%s'",
-                                                            Keyspace.SYSTEM_KS,
-                                                            SystemKeyspace.SCHEMA_COLUMNS_CF,
-                                                            keyspace,
-                                                            columnFamily);
-                        CqlResult columnsRes = client.execute_cql3_query(ByteBufferUtil.bytes(columnsQuery), Compression.NONE, ConsistencyLevel.ONE);
-
-                        CFMetaData metadata = CFMetaData.fromThriftCqlRow(row, columnsRes);
-                        knownCfs.put(metadata.cfName, metadata);
-                    }
-                    break;
-                }
-                catch (Exception e)
-                {
-                    if (!hostiter.hasNext())
-                        throw new RuntimeException("Could not retrieve endpoint ranges: ", e);
-                }
-            }
-        }
-
-        @Override
         public StreamConnectionFactory getConnectionFactory()
         {
             return new BulkLoadConnectionFactory(storagePort, sslStoragePort, serverEncOptions, false);
-        }
-
-        @Override
-        public CFMetaData getCFMetaData(String keyspace, String cfName)
-        {
-            return knownCfs.get(cfName);
-        }
-
-        private static Cassandra.Client createThriftClient(String host, int port, String user, String passwd, ITransportFactory transportFactory) throws Exception
-        {
-            TTransport trans = transportFactory.openTransport(host, port);
-            TProtocol protocol = new TBinaryProtocol(trans);
-            Cassandra.Client client = new Cassandra.Client(protocol);
-            if (user != null && passwd != null)
-            {
-                Map<String, String> credentials = new HashMap<>();
-                credentials.put(IAuthenticator.USERNAME_KEY, user);
-                credentials.put(IAuthenticator.PASSWORD_KEY, passwd);
-                AuthenticationRequest authenticationRequest = new AuthenticationRequest(credentials);
-                client.login(authenticationRequest);
-            }
-            return client;
         }
     }
 
@@ -376,14 +313,16 @@ public class BulkLoader
         public boolean debug;
         public boolean verbose;
         public boolean noProgress;
-        public int rpcPort = 9160;
+        public int nativePort = 9042;
         public String user;
         public String passwd;
+        public String authProviderName;
+        public AuthProvider authProvider;
         public int throttle = 0;
+        public int interDcThrottle = 0;
         public int storagePort;
         public int sslStoragePort;
-        public ITransportFactory transportFactory = new TFramedTransportFactory();
-        public EncryptionOptions encOptions = new EncryptionOptions.ClientEncryptionOptions();
+        public EncryptionOptions.ClientEncryptionOptions clientEncOptions = new EncryptionOptions.ClientEncryptionOptions();
         public int connectionsPerHost = 1;
         public EncryptionOptions.ServerEncryptionOptions serverEncOptions = new EncryptionOptions.ServerEncryptionOptions();
 
@@ -438,14 +377,17 @@ public class BulkLoader
                 opts.verbose = cmd.hasOption(VERBOSE_OPTION);
                 opts.noProgress = cmd.hasOption(NOPROGRESS_OPTION);
 
-                if (cmd.hasOption(RPC_PORT_OPTION))
-                    opts.rpcPort = Integer.parseInt(cmd.getOptionValue(RPC_PORT_OPTION));
+                if (cmd.hasOption(NATIVE_PORT_OPTION))
+                    opts.nativePort = Integer.parseInt(cmd.getOptionValue(NATIVE_PORT_OPTION));
 
                 if (cmd.hasOption(USER_OPTION))
                     opts.user = cmd.getOptionValue(USER_OPTION);
 
                 if (cmd.hasOption(PASSWD_OPTION))
                     opts.passwd = cmd.getOptionValue(PASSWD_OPTION);
+
+                if (cmd.hasOption(AUTH_PROVIDER_OPTION))
+                    opts.authProviderName = cmd.getOptionValue(AUTH_PROVIDER_OPTION);
 
                 if (cmd.hasOption(INITIAL_HOST_ADDRESS_OPTION))
                 {
@@ -504,11 +446,15 @@ public class BulkLoader
                 else
                 {
                     config = new Config();
+                    // unthrottle stream by default
+                    config.stream_throughput_outbound_megabits_per_sec = 0;
+                    config.inter_dc_stream_throughput_outbound_megabits_per_sec = 0;
                 }
                 opts.storagePort = config.storage_port;
                 opts.sslStoragePort = config.ssl_storage_port;
                 opts.throttle = config.stream_throughput_outbound_megabits_per_sec;
-                opts.encOptions = config.client_encryption_options;
+                opts.interDcThrottle = config.inter_dc_stream_throughput_outbound_megabits_per_sec;
+                opts.clientEncOptions = config.client_encryption_options;
                 opts.serverEncOptions = config.server_encryption_options;
 
                 if (cmd.hasOption(THROTTLE_MBITS))
@@ -516,53 +462,57 @@ public class BulkLoader
                     opts.throttle = Integer.parseInt(cmd.getOptionValue(THROTTLE_MBITS));
                 }
 
+                if (cmd.hasOption(INTER_DC_THROTTLE_MBITS))
+                {
+                    opts.interDcThrottle = Integer.parseInt(cmd.getOptionValue(INTER_DC_THROTTLE_MBITS));
+                }
+
+                if (cmd.hasOption(SSL_TRUSTSTORE) || cmd.hasOption(SSL_TRUSTSTORE_PW) ||
+                    cmd.hasOption(SSL_KEYSTORE) || cmd.hasOption(SSL_KEYSTORE_PW))
+                {
+                    opts.clientEncOptions.enabled = true;
+                }
+
                 if (cmd.hasOption(SSL_TRUSTSTORE))
                 {
-                    opts.encOptions.truststore = cmd.getOptionValue(SSL_TRUSTSTORE);
+                    opts.clientEncOptions.truststore = cmd.getOptionValue(SSL_TRUSTSTORE);
                 }
 
                 if (cmd.hasOption(SSL_TRUSTSTORE_PW))
                 {
-                    opts.encOptions.truststore_password = cmd.getOptionValue(SSL_TRUSTSTORE_PW);
+                    opts.clientEncOptions.truststore_password = cmd.getOptionValue(SSL_TRUSTSTORE_PW);
                 }
 
                 if (cmd.hasOption(SSL_KEYSTORE))
                 {
-                    opts.encOptions.keystore = cmd.getOptionValue(SSL_KEYSTORE);
+                    opts.clientEncOptions.keystore = cmd.getOptionValue(SSL_KEYSTORE);
                     // if a keystore was provided, lets assume we'll need to use it
-                    opts.encOptions.require_client_auth = true;
+                    opts.clientEncOptions.require_client_auth = true;
                 }
 
                 if (cmd.hasOption(SSL_KEYSTORE_PW))
                 {
-                    opts.encOptions.keystore_password = cmd.getOptionValue(SSL_KEYSTORE_PW);
+                    opts.clientEncOptions.keystore_password = cmd.getOptionValue(SSL_KEYSTORE_PW);
                 }
 
                 if (cmd.hasOption(SSL_PROTOCOL))
                 {
-                    opts.encOptions.protocol = cmd.getOptionValue(SSL_PROTOCOL);
+                    opts.clientEncOptions.protocol = cmd.getOptionValue(SSL_PROTOCOL);
                 }
 
                 if (cmd.hasOption(SSL_ALGORITHM))
                 {
-                    opts.encOptions.algorithm = cmd.getOptionValue(SSL_ALGORITHM);
+                    opts.clientEncOptions.algorithm = cmd.getOptionValue(SSL_ALGORITHM);
                 }
 
                 if (cmd.hasOption(SSL_STORE_TYPE))
                 {
-                    opts.encOptions.store_type = cmd.getOptionValue(SSL_STORE_TYPE);
+                    opts.clientEncOptions.store_type = cmd.getOptionValue(SSL_STORE_TYPE);
                 }
 
                 if (cmd.hasOption(SSL_CIPHER_SUITES))
                 {
-                    opts.encOptions.cipher_suites = cmd.getOptionValue(SSL_CIPHER_SUITES).split(",");
-                }
-
-                if (cmd.hasOption(TRANSPORT_FACTORY))
-                {
-                    ITransportFactory transportFactory = getTransportFactory(cmd.getOptionValue(TRANSPORT_FACTORY));
-                    configureTransportFactory(transportFactory, opts);
-                    opts.transportFactory = transportFactory;
+                    opts.clientEncOptions.cipher_suites = cmd.getOptionValue(SSL_CIPHER_SUITES).split(",");
                 }
 
                 return opts;
@@ -574,48 +524,62 @@ public class BulkLoader
             }
         }
 
-        private static ITransportFactory getTransportFactory(String transportFactory)
+        public LoaderOptions validateArguments()
         {
-            try
+            // Both username and password need to be provided
+            if ((user != null) != (passwd != null))
+                errorMsg("Username and password must both be provided", getCmdLineOptions());
+
+            if (user != null)
             {
-                Class<?> factory = Class.forName(transportFactory);
-                if (!ITransportFactory.class.isAssignableFrom(factory))
-                    throw new IllegalArgumentException(String.format("transport factory '%s' " +
-                            "not derived from ITransportFactory", transportFactory));
-                return (ITransportFactory) factory.newInstance();
+                // Support for 3rd party auth providers that support plain text credentials.
+                // In this case the auth provider must provide a constructor of the form:
+                //
+                // public MyAuthProvider(String username, String password)
+                if (authProviderName != null)
+                {
+                    try
+                    {
+                        Class authProviderClass = Class.forName(authProviderName);
+                        Constructor constructor = authProviderClass.getConstructor(String.class, String.class);
+                        authProvider = (AuthProvider)constructor.newInstance(user, passwd);
+                    }
+                    catch (ClassNotFoundException e)
+                    {
+                        errorMsg("Unknown auth provider: " + e.getMessage(), getCmdLineOptions());
+                    }
+                    catch (NoSuchMethodException e)
+                    {
+                        errorMsg("Auth provider does not support plain text credentials: " + e.getMessage(), getCmdLineOptions());
+                    }
+                    catch (InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException e)
+                    {
+                        errorMsg("Could not create auth provider with plain text credentials: " + e.getMessage(), getCmdLineOptions());
+                    }
+                }
+                else
+                {
+                    // If a 3rd party auth provider wasn't provided use the driver plain text provider
+                    authProvider = new PlainTextAuthProvider(user, passwd);
+                }
             }
-            catch (Exception e)
+            // Alternate support for 3rd party auth providers that don't use plain text credentials.
+            // In this case the auth provider must provide a nullary constructor of the form:
+            //
+            // public MyAuthProvider()
+            else if (authProviderName != null)
             {
-                throw new IllegalArgumentException(String.format("Cannot create a transport factory '%s'.", transportFactory), e);
+                try
+                {
+                    authProvider = (AuthProvider)Class.forName(authProviderName).newInstance();
+                }
+                catch (ClassNotFoundException | InstantiationException | IllegalAccessException e)
+                {
+                    errorMsg("Unknown auth provider" + e.getMessage(), getCmdLineOptions());
+                }
             }
-        }
 
-        private static void configureTransportFactory(ITransportFactory transportFactory, LoaderOptions opts)
-        {
-            Map<String, String> options = new HashMap<>();
-            // If the supplied factory supports the same set of options as our SSL impl, set those 
-            if (transportFactory.supportedOptions().contains(SSLTransportFactory.TRUSTSTORE))
-                options.put(SSLTransportFactory.TRUSTSTORE, opts.encOptions.truststore);
-            if (transportFactory.supportedOptions().contains(SSLTransportFactory.TRUSTSTORE_PASSWORD))
-                options.put(SSLTransportFactory.TRUSTSTORE_PASSWORD, opts.encOptions.truststore_password);
-            if (transportFactory.supportedOptions().contains(SSLTransportFactory.PROTOCOL))
-                options.put(SSLTransportFactory.PROTOCOL, opts.encOptions.protocol);
-            if (transportFactory.supportedOptions().contains(SSLTransportFactory.CIPHER_SUITES))
-                options.put(SSLTransportFactory.CIPHER_SUITES, Joiner.on(',').join(opts.encOptions.cipher_suites));
-
-            if (transportFactory.supportedOptions().contains(SSLTransportFactory.KEYSTORE)
-                    && opts.encOptions.require_client_auth)
-                options.put(SSLTransportFactory.KEYSTORE, opts.encOptions.keystore);
-            if (transportFactory.supportedOptions().contains(SSLTransportFactory.KEYSTORE_PASSWORD)
-                    && opts.encOptions.require_client_auth)
-                options.put(SSLTransportFactory.KEYSTORE_PASSWORD, opts.encOptions.keystore_password);
-
-            // Now check if any of the factory's supported options are set as system properties
-            for (String optionKey : transportFactory.supportedOptions())
-                if (System.getProperty(optionKey) != null)
-                    options.put(optionKey, System.getProperty(optionKey));
-
-            transportFactory.setOptions(options);
+            return this;
         }
 
         private static void errorMsg(String msg, CmdLineOptions options)
@@ -633,11 +597,12 @@ public class BulkLoader
             options.addOption(null, NOPROGRESS_OPTION,   "don't display progress");
             options.addOption("i",  IGNORE_NODES_OPTION, "NODES", "don't stream to this (comma separated) list of nodes");
             options.addOption("d",  INITIAL_HOST_ADDRESS_OPTION, "initial hosts", "Required. try to connect to these hosts (comma separated) initially for ring information");
-            options.addOption("p",  RPC_PORT_OPTION, "rpc port", "port used for rpc (default 9160)");
+            options.addOption("p",  NATIVE_PORT_OPTION, "rpc port", "port used for native connection (default 9042)");
             options.addOption("t",  THROTTLE_MBITS, "throttle", "throttle speed in Mbits (default unlimited)");
+            options.addOption("idct",  INTER_DC_THROTTLE_MBITS, "inter-dc-throttle", "inter-datacenter throttle speed in Mbits (default unlimited)");
             options.addOption("u",  USER_OPTION, "username", "username for cassandra authentication");
             options.addOption("pw", PASSWD_OPTION, "password", "password for cassandra authentication");
-            options.addOption("tf", TRANSPORT_FACTORY, "transport factory", "Fully-qualified ITransportFactory class name for creating a connection to cassandra");
+            options.addOption("ap", AUTH_PROVIDER_OPTION, "auth provider", "custom AuthProvider class name for cassandra authentication");
             options.addOption("cph", CONNECTIONS_PER_HOST, "connectionsPerHost", "number of concurrent connections-per-host.");
             // ssl connection-related options
             options.addOption("ts", SSL_TRUSTSTORE, "TRUSTSTORE", "Client SSL: full path to truststore");
@@ -662,7 +627,7 @@ public class BulkLoader
                             "you will need to have the files Standard1-g-1-Data.db and Standard1-g-1-Index.db into a directory /path/to/Keyspace1/Standard1/.";
             String footer = System.lineSeparator() +
                             "You can provide cassandra.yaml file with -f command line option to set up streaming throughput, client and server encryption options. " +
-                            "Only stream_throughput_outbound_megabits_per_sec, server_encryption_options and client_encryption_options are read from yaml. " +
+                            "Only stream_throughput_outbound_megabits_per_sec, inter_dc_stream_throughput_outbound_megabits_per_sec, server_encryption_options and client_encryption_options are read from yaml. " +
                             "You can override options read from cassandra.yaml with corresponding command line options.";
             new HelpFormatter().printHelp(usage, header, options, footer);
         }

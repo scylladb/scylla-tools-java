@@ -17,11 +17,10 @@
  */
 package org.apache.cassandra.utils;
 
-import java.io.DataInput;
-import java.io.DataOutput;
 import java.io.IOException;
 
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 
 public class BooleanSerializer implements IVersionedSerializer<Boolean>
@@ -33,7 +32,7 @@ public class BooleanSerializer implements IVersionedSerializer<Boolean>
         out.writeBoolean(b);
     }
 
-    public Boolean deserialize(DataInput in, int version) throws IOException
+    public Boolean deserialize(DataInputPlus in, int version) throws IOException
     {
         return in.readBoolean();
     }

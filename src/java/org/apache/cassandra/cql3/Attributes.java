@@ -18,13 +18,17 @@
 package org.apache.cassandra.cql3;
 
 import java.nio.ByteBuffer;
+import java.util.Collections;
 import java.util.List;
 
-import org.apache.cassandra.db.ExpiringCell;
+import com.google.common.collect.Iterables;
+
+import org.apache.cassandra.cql3.functions.Function;
 import org.apache.cassandra.db.marshal.Int32Type;
 import org.apache.cassandra.db.marshal.LongType;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.serializers.MarshalException;
+import org.apache.cassandra.utils.ByteBufferUtil;
 
 /**
  * Utility class for the Parser to gather attributes for modification
@@ -32,6 +36,8 @@ import org.apache.cassandra.serializers.MarshalException;
  */
 public class Attributes
 {
+    public static final int MAX_TTL = 20 * 365 * 24 * 60 * 60; // 20 years in seconds
+
     private final Term timestamp;
     private final Term timeToLive;
 
@@ -44,6 +50,14 @@ public class Attributes
     {
         this.timestamp = timestamp;
         this.timeToLive = timeToLive;
+    }
+
+    public void addFunctionsTo(List<Function> functions)
+    {
+        if (timestamp != null)
+            timestamp.addFunctionsTo(functions);
+        if (timeToLive != null)
+            timeToLive.addFunctionsTo(functions);
     }
 
     public boolean isTimestampSet()
@@ -65,13 +79,16 @@ public class Attributes
         if (tval == null)
             throw new InvalidRequestException("Invalid null value of timestamp");
 
+        if (tval == ByteBufferUtil.UNSET_BYTE_BUFFER)
+            return now;
+
         try
         {
             LongType.instance.validate(tval);
         }
         catch (MarshalException e)
         {
-            throw new InvalidRequestException("Invalid timestamp value");
+            throw new InvalidRequestException("Invalid timestamp value: " + tval);
         }
 
         return LongType.instance.compose(tval);
@@ -86,21 +103,24 @@ public class Attributes
         if (tval == null)
             throw new InvalidRequestException("Invalid null value of TTL");
 
+        if (tval == ByteBufferUtil.UNSET_BYTE_BUFFER) // treat as unlimited
+            return 0;
+
         try
         {
             Int32Type.instance.validate(tval);
         }
         catch (MarshalException e)
         {
-            throw new InvalidRequestException("Invalid timestamp value");
+            throw new InvalidRequestException("Invalid timestamp value: " + tval);
         }
 
         int ttl = Int32Type.instance.compose(tval);
         if (ttl < 0)
-            throw new InvalidRequestException("A TTL must be greater or equal to 0");
+            throw new InvalidRequestException("A TTL must be greater or equal to 0, but was " + ttl);
 
-        if (ttl > ExpiringCell.MAX_TTL)
-            throw new InvalidRequestException(String.format("ttl is too large. requested (%d) maximum (%d)", ttl, ExpiringCell.MAX_TTL));
+        if (ttl > MAX_TTL)
+            throw new InvalidRequestException(String.format("ttl is too large. requested (%d) maximum (%d)", ttl, MAX_TTL));
 
         return ttl;
     }

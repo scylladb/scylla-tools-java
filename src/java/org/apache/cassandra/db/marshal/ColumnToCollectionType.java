@@ -23,6 +23,7 @@ import java.util.Map;
 
 import com.google.common.collect.ImmutableMap;
 
+import org.apache.cassandra.cql3.Term;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.serializers.TypeSerializer;
@@ -30,6 +31,9 @@ import org.apache.cassandra.serializers.BytesSerializer;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
+/*
+ * This class is deprecated and only kept for backward compatibility.
+ */
 public class ColumnToCollectionType extends AbstractType<ByteBuffer>
 {
     // interning instances
@@ -57,10 +61,11 @@ public class ColumnToCollectionType extends AbstractType<ByteBuffer>
 
     private ColumnToCollectionType(Map<ByteBuffer, CollectionType> defined)
     {
+        super(ComparisonType.CUSTOM);
         this.defined = ImmutableMap.copyOf(defined);
     }
 
-    public int compare(ByteBuffer o1, ByteBuffer o2)
+    public int compareCustom(ByteBuffer o1, ByteBuffer o2)
     {
         throw new UnsupportedOperationException("ColumnToCollectionType should only be used in composite types, never alone");
     }
@@ -89,6 +94,18 @@ public class ColumnToCollectionType extends AbstractType<ByteBuffer>
         {
             throw new MarshalException(String.format("cannot parse '%s' as hex bytes", source), e);
         }
+    }
+
+    @Override
+    public Term fromJSONObject(Object parsed) throws MarshalException
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
+    {
+        throw new UnsupportedOperationException();
     }
 
     @Override

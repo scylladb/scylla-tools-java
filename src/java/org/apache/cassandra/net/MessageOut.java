@@ -18,7 +18,6 @@
 
 package org.apache.cassandra.net;
 
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.util.Collections;
@@ -37,6 +36,7 @@ import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.UUIDGen;
 
 import static org.apache.cassandra.tracing.Tracing.TRACE_HEADER;
+import static org.apache.cassandra.tracing.Tracing.TRACE_TYPE;
 import static org.apache.cassandra.tracing.Tracing.isTracing;
 
 public class MessageOut<T>
@@ -46,6 +46,8 @@ public class MessageOut<T>
     public final T payload;
     public final IVersionedSerializer<T> serializer;
     public final Map<String, byte[]> parameters;
+    private long payloadSize = -1;
+    private int payloadSizeVersion = -1;
 
     // we do support messages that just consist of a verb
     public MessageOut(MessagingService.Verb verb)
@@ -58,8 +60,10 @@ public class MessageOut<T>
         this(verb,
              payload,
              serializer,
-             isTracing() ? ImmutableMap.of(TRACE_HEADER, UUIDGen.decompose(Tracing.instance.getSessionId()))
-                         : Collections.<String, byte[]>emptyMap());
+             isTracing()
+                 ? ImmutableMap.of(TRACE_HEADER, UUIDGen.decompose(Tracing.instance.getSessionId()),
+                                   TRACE_TYPE, new byte[] { Tracing.TraceType.serialize(Tracing.instance.getTraceType()) })
+                 : Collections.<String, byte[]>emptyMap());
     }
 
     private MessageOut(MessagingService.Verb verb, T payload, IVersionedSerializer<T> serializer, Map<String, byte[]> parameters)
@@ -114,7 +118,7 @@ public class MessageOut<T>
             out.write(entry.getValue());
         }
 
-        long longSize = payload == null ? 0 : serializer.serializedSize(payload, version);
+        long longSize = payloadSize(version);
         assert longSize <= Integer.MAX_VALUE; // larger values are supported in sstables but not messages
         out.writeInt((int) longSize);
         if (payload != null)
@@ -125,19 +129,47 @@ public class MessageOut<T>
     {
         int size = CompactEndpointSerializationHelper.serializedSize(from);
 
-        size += TypeSizes.NATIVE.sizeof(verb.ordinal());
-        size += TypeSizes.NATIVE.sizeof(parameters.size());
+        size += TypeSizes.sizeof(verb.ordinal());
+        size += TypeSizes.sizeof(parameters.size());
         for (Map.Entry<String, byte[]> entry : parameters.entrySet())
         {
-            size += TypeSizes.NATIVE.sizeof(entry.getKey());
-            size += TypeSizes.NATIVE.sizeof(entry.getValue().length);
+            size += TypeSizes.sizeof(entry.getKey());
+            size += TypeSizes.sizeof(entry.getValue().length);
             size += entry.getValue().length;
         }
 
-        long longSize = payload == null ? 0 : serializer.serializedSize(payload, version);
+        long longSize = payloadSize(version);
         assert longSize <= Integer.MAX_VALUE; // larger values are supported in sstables but not messages
-        size += TypeSizes.NATIVE.sizeof((int) longSize);
+        size += TypeSizes.sizeof((int) longSize);
         size += longSize;
         return size;
+    }
+
+    /**
+     * Calculate the size of the payload of this message for the specified protocol version
+     * and memoize the result for the specified protocol version. Memoization only covers the protocol
+     * version of the first invocation.
+     *
+     * It is not safe to call payloadSize concurrently from multiple threads unless it has already been invoked
+     * once from a single thread and there is a happens before relationship between that invocation and other
+     * threads concurrently invoking payloadSize.
+     *
+     * For instance it would be safe to invokePayload size to make a decision in the thread that created the message
+     * and then hand it off to other threads via a thread-safe queue, volatile write, or synchronized/ReentrantLock.
+     * @param version Protocol version to use when calculating payload size
+     * @return Size of the payload of this message in bytes
+     */
+    public long payloadSize(int version)
+    {
+        if (payloadSize == -1)
+        {
+            payloadSize = payload == null ? 0 : serializer.serializedSize(payload, version);
+            payloadSizeVersion = version;
+        }
+        else if (payloadSizeVersion != version)
+        {
+            return payload == null ? 0 : serializer.serializedSize(payload, version);
+        }
+        return payloadSize;
     }
 }

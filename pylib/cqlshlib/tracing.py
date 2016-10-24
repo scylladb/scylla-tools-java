@@ -15,18 +15,19 @@
 # limitations under the License.
 
 from cqlshlib.displaying import MAGENTA
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 from cassandra.query import QueryTrace, TraceUnavailable
 
 
-def print_trace_session(shell, session, session_id):
+def print_trace_session(shell, session, session_id, partial_session=False):
     """
     Lookup a trace by session and trace session ID, then print it.
     """
     trace = QueryTrace(session_id, session)
     try:
-        trace.populate()
+        wait_for_complete = not partial_session
+        trace.populate(wait_for_complete=wait_for_complete)
     except TraceUnavailable:
         shell.printerr("Session %s wasn't found." % session_id)
     else:
@@ -65,16 +66,22 @@ def make_trace_rows(trace):
         rows.append(["%s [%s]" % (event.description, event.thread_name),
                      str(datetime_from_utc_to_local(event.datetime)),
                      event.source,
-                     event.source_elapsed.microseconds if event.source_elapsed else "--"])
+                     total_micro_seconds(event.source_elapsed)])
     # append footer row (from sessions table).
     if trace.duration:
         finished_at = (datetime_from_utc_to_local(trace.started_at) + trace.duration)
+        rows.append(['Request complete', str(finished_at), trace.coordinator, total_micro_seconds(trace.duration)])
     else:
         finished_at = trace.duration = "--"
 
-    rows.append(['Request complete', str(finished_at), trace.coordinator, trace.duration.microseconds])
-
     return rows
+
+
+def total_micro_seconds(td):
+    """
+    Convert a timedelta into total microseconds
+    """
+    return int((td.microseconds + (td.seconds + td.days * 24 * 3600) * 10 ** 6)) if td else "--"
 
 
 def datetime_from_utc_to_local(utc_datetime):

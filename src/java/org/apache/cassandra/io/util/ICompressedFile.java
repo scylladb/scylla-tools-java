@@ -21,5 +21,8 @@ import org.apache.cassandra.io.compress.CompressionMetadata;
 
 public interface ICompressedFile
 {
-    public CompressionMetadata getMetadata();
+    ChannelProxy channel();
+    CompressionMetadata getMetadata();
+    MmappedRegions regions();
+
 }

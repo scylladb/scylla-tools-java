@@ -25,7 +25,8 @@ import java.io.IOError;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
-import java.util.zip.Adler32;
+import java.util.zip.CRC32;
+import java.util.zip.CheckedInputStream;
 import java.util.zip.Checksum;
 
 import com.google.common.base.Charsets;
@@ -33,7 +34,7 @@ import com.google.common.base.Charsets;
 import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
-import org.apache.cassandra.utils.PureJavaCrc32;
+import org.apache.cassandra.utils.Throwables;
 
 public class DataIntegrityMetadata
 {
@@ -46,14 +47,21 @@ public class DataIntegrityMetadata
     {
         private final Checksum checksum;
         private final RandomAccessReader reader;
-        private final Descriptor descriptor;
         public final int chunkSize;
+        private final String dataFilename;
 
         public ChecksumValidator(Descriptor descriptor) throws IOException
         {
-            this.descriptor = descriptor;
-            checksum = descriptor.version.hasAllAdlerChecksums ? new Adler32() : new PureJavaCrc32();
-            reader = RandomAccessReader.open(new File(descriptor.filenameFor(Component.CRC)));
+            this(descriptor.version.uncompressedChecksumType().newInstance(),
+                 RandomAccessReader.open(new File(descriptor.filenameFor(Component.CRC))),
+                 descriptor.filenameFor(Component.DATA));
+        }
+
+        public ChecksumValidator(Checksum checksum, RandomAccessReader reader, String dataFilename) throws IOException
+        {
+            this.checksum = checksum;
+            this.reader = reader;
+            this.dataFilename = dataFilename;
             chunkSize = reader.readInt();
         }
 
@@ -76,7 +84,7 @@ public class DataIntegrityMetadata
             checksum.reset();
             int actual = reader.readInt();
             if (current != actual)
-                throw new IOException("Corrupted SSTable : " + descriptor.filenameFor(Component.DATA));
+                throw new IOException("Corrupted File : " + dataFilename);
         }
 
         public void close()
@@ -85,11 +93,63 @@ public class DataIntegrityMetadata
         }
     }
 
+    public static FileDigestValidator fileDigestValidator(Descriptor desc) throws IOException
+    {
+        return new FileDigestValidator(desc);
+    }
+
+    public static class FileDigestValidator implements Closeable
+    {
+        private final Checksum checksum;
+        private final RandomAccessReader digestReader;
+        private final RandomAccessReader dataReader;
+        private final Descriptor descriptor;
+        private long storedDigestValue;
+
+        public FileDigestValidator(Descriptor descriptor) throws IOException
+        {
+            this.descriptor = descriptor;
+            checksum = descriptor.version.uncompressedChecksumType().newInstance();
+            digestReader = RandomAccessReader.open(new File(descriptor.filenameFor(Component.digestFor(descriptor.version.uncompressedChecksumType()))));
+            dataReader = RandomAccessReader.open(new File(descriptor.filenameFor(Component.DATA)));
+            try
+            {
+                storedDigestValue = Long.parseLong(digestReader.readLine());
+            }
+            catch (Exception e)
+            {
+                close();
+                // Attempting to create a FileDigestValidator without a DIGEST file will fail
+                throw new IOException("Corrupted SSTable : " + descriptor.filenameFor(Component.DATA));
+            }
+        }
+
+        // Validate the entire file
+        public void validate() throws IOException
+        {
+            CheckedInputStream checkedInputStream = new CheckedInputStream(dataReader, checksum);
+            byte[] chunk = new byte[64 * 1024];
+
+            while( checkedInputStream.read(chunk) > 0 ) { }
+            long calculatedDigestValue = checkedInputStream.getChecksum().getValue();
+            if (storedDigestValue != calculatedDigestValue) {
+                throw new IOException("Corrupted SSTable : " + descriptor.filenameFor(Component.DATA));
+            }
+        }
+
+        public void close()
+        {
+            Throwables.perform(digestReader::close,
+                               dataReader::close);
+        }
+    }
+
+
     public static class ChecksumWriter
     {
-        private final Checksum incrementalChecksum = new Adler32();
+        private final CRC32 incrementalChecksum = new CRC32();
         private final DataOutput incrementalOut;
-        private final Checksum fullChecksum = new Adler32();
+        private final CRC32 fullChecksum = new CRC32();
 
         public ChecksumWriter(DataOutput incrementalOut)
         {
@@ -115,25 +175,28 @@ public class DataIntegrityMetadata
 
         // CompressedSequentialWriters serialize the partial checksums inline with the compressed data chunks they
         // corroborate, whereas ChecksummedSequentialWriters serialize them to a different file.
-        public void append(byte[] buffer, int start, int end, boolean checksumIncrementalResult)
+        public void appendDirect(ByteBuffer bb, boolean checksumIncrementalResult)
         {
             try
             {
-                int incrementalChecksumValue;
 
-                incrementalChecksum.update(buffer, start, end);
-                incrementalChecksumValue = (int) incrementalChecksum.getValue();
+                ByteBuffer toAppend = bb.duplicate();
+                toAppend.mark();
+                incrementalChecksum.update(toAppend);
+                toAppend.reset();
+
+                int incrementalChecksumValue = (int) incrementalChecksum.getValue();
                 incrementalOut.writeInt(incrementalChecksumValue);
-                incrementalChecksum.reset();
 
-                fullChecksum.update(buffer, start, end);
-
+                fullChecksum.update(toAppend);
                 if (checksumIncrementalResult)
                 {
                     ByteBuffer byteBuffer = ByteBuffer.allocate(4);
                     byteBuffer.putInt(incrementalChecksumValue);
                     fullChecksum.update(byteBuffer.array(), 0, byteBuffer.array().length);
                 }
+                incrementalChecksum.reset();
+
             }
             catch (IOException e)
             {
@@ -143,20 +206,16 @@ public class DataIntegrityMetadata
 
         public void writeFullChecksum(Descriptor descriptor)
         {
-            File outFile = new File(descriptor.filenameFor(Component.DIGEST));
-            BufferedWriter out = null;
-            try
+            if (descriptor.digestComponent == null)
+                throw new NullPointerException("Null digest component for " + descriptor.ksname + '.' + descriptor.cfname + " file " + descriptor.baseFilename());
+            File outFile = new File(descriptor.filenameFor(descriptor.digestComponent));
+            try (BufferedWriter out =Files.newBufferedWriter(outFile.toPath(), Charsets.UTF_8))
             {
-                out = Files.newBufferedWriter(outFile.toPath(), Charsets.UTF_8);
                 out.write(String.valueOf(fullChecksum.getValue()));
             }
             catch (IOException e)
             {
                 throw new FSWriteError(e, outFile);
-            }
-            finally
-            {
-                FileUtils.closeQuietly(out);
             }
         }
     }
