@@ -818,8 +818,8 @@ public class BulkLoader {
                 client.close();
             }
             System.exit(0);
-        } catch (Exception e) {
-            e.printStackTrace();
+        } catch (Throwable t) {
+            t.printStackTrace();
             System.exit(1);
         }
     }

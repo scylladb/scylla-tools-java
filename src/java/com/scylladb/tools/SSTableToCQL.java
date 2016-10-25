@@ -244,7 +244,7 @@ public class SSTableToCQL {
         DecoratedKey key;
         long timestamp;
         int ttl;
-        Map<ColumnDefinition, ColumnOp> values = new HashMap<>();
+        Multimap<ColumnDefinition, ColumnOp> values = MultimapBuilder.treeKeys().arrayListValues(1).build();
         Multimap<ColumnDefinition, Pair<Comp, Object>> where = MultimapBuilder.treeKeys().arrayListValues(2).build();
         
         enum Comp {
@@ -377,7 +377,7 @@ public class SSTableToCQL {
             }
 
             int i = 0;
-            for (Map.Entry<ColumnDefinition, ColumnOp> e : values.entrySet()) {
+            for (Map.Entry<ColumnDefinition, ColumnOp> e : values.entries()) {
                 ColumnDefinition c = e.getKey();
                 ColumnOp o = e.getValue();
                 String s = o != null ? o.apply(c, params) : null;
@@ -542,7 +542,7 @@ public class SSTableToCQL {
                     ComplexColumnData complexData = (ComplexColumnData) cd;
 
                     for (Cell cell : complexData){
-                        process(cell, liveInfo, complexData.complexDeletion());
+                        process(cell, liveInfo, null);
                     }
                 }                                
             }
@@ -570,12 +570,14 @@ public class SSTableToCQL {
             AbstractType<?> type = c.type;
             ColumnOp cop = null;
 
+            boolean live = !cell.isTombstone() && (d == null || d.isLive());
+            
             try {
                 if (cell.path() != null && cell.path().size() > 0) {
                     CollectionType<?> ctype = (CollectionType<?>) type;
                     
                     Object key = ctype.nameComparator().compose(cell.path().get(0));
-                    Object val = cell.isTombstone() || !d.isLive() ? null : cell.column().cellValueType().compose(cell.value());
+                    Object val = live ? cell.column().cellValueType().compose(cell.value()) : null;
 
                     switch (ctype.kind) {
                     case MAP:
@@ -588,7 +590,7 @@ public class SSTableToCQL {
                         cop = cell.isTombstone() ?  new DeleteSetEntry(key) : new SetSetEntry(key);
                         break;
                     }                    
-                } else if (!cell.isTombstone() && (d == null || d.isLive())) {
+                } else if (live) {
                     cop = new SetColumn(type.compose(cell.value()));
                 } else {
                     cop = SET_NULL;
@@ -676,8 +678,6 @@ public class SSTableToCQL {
         // flush. (Should never happen though, as long as CQL row detection is
         // valid)
         private void updateColumn(ColumnDefinition c, ColumnOp object, long timestamp, int ttl) {
-            assert !values.containsKey(c);
-            
             if (object != null && object.canDoInsert() && this.op != Op.UPDATE) {
                 setOp(Op.INSERT, timestamp, ttl);
             } else {
