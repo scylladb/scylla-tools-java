@@ -33,10 +33,11 @@ import java.io.FilenameFilter;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -57,6 +58,7 @@ import org.apache.cassandra.db.marshal.CollectionType;
 import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.db.rows.ColumnData;
 import org.apache.cassandra.db.rows.ComplexColumnData;
+import org.apache.cassandra.db.rows.RangeTombstoneBoundMarker;
 import org.apache.cassandra.db.rows.RangeTombstoneMarker;
 import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.db.rows.Row.Deletion;
@@ -296,6 +298,10 @@ public class SSTableToCQL {
                     assert start.isInclusive();
                     where.put(column, Pair.create(Comp.Equal, sval));                                                              
                 } else {
+                    if (column.isPrimaryKeyColumn()) {
+                        // cannot generate <> for pk columns
+                        throw new IllegalStateException("Cannot generate <> comparison for primary key columns");
+                    }
                     if (sval != null) {
                         where.put(column, 
                                 Pair.create( 
@@ -315,7 +321,6 @@ public class SSTableToCQL {
             this.callback = callback;
             this.key = key;
             this.cfMetaData = cfMetaData;
-            //sortedAtoms.clear();
             clear();
         }
 
@@ -546,16 +551,36 @@ public class SSTableToCQL {
                     }
                 }                                
             }
-            
-            if (!d.isLive() && row.size() == 0) {
+
+            boolean rowDelete = !d.isLive() && row.size() == 0;
+
+            if (rowDelete) {
                 setOp(Op.DELETE, d.time().markedForDeleteAt(), invalidTTL);
             }
 
             if (!row.isStatic()) {
                 Slice.Bound b = Slice.Bound.inclusiveStartOf(row.clustering().clustering());
-                setWhere(b, b);
-            }            
-            
+                Slice.Bound e = Slice.Bound.inclusiveEndOf(row.clustering().clustering());
+                setWhere(b, e);
+
+                if (rowDelete && !tombstoneMarkers.isEmpty()) {
+                    RangeTombstoneMarker last = tombstoneMarkers.getLast();
+                    Bound start = last.openBound(false);
+                    // If we're doing a cql row delete while processing a ranged
+                    // tombstone
+                    // chain, we're probably dealing with (old, horrble)
+                    // sstables with
+                    // overlapping tombstones. Since then this row delete was
+                    // also a link
+                    // in that tombstone chain, add a marker to the current list
+                    // being processed.
+                    if (start != null && this.cfMetaData.comparator.compare(start, b) < 0) {
+                        tombstoneMarkers.add(new RangeTombstoneBoundMarker(e, d.time()));
+                    }
+                }
+
+            }
+
             finish();
         }
         
@@ -637,28 +662,50 @@ public class SSTableToCQL {
             }
         }
 
-        RangeTombstoneMarker tombstoneMarker;
-                
-        private void process(RangeTombstoneMarker tombstone) {            
+        private Deque<RangeTombstoneMarker> tombstoneMarkers = new ArrayDeque<>();
+
+        private void process(RangeTombstoneMarker tombstone) {
             Bound end = tombstone.closeBound(false);
-            
-            if (end != null && tombstoneMarker == null) {
+
+            if (end != null && tombstoneMarkers.isEmpty()) {
                 throw new IllegalStateException("Unexpected tombstone: " + tombstone);
             }
 
-            if (end != null && tombstoneMarker != null) {
-                Bound start = tombstoneMarker.openBound(false);
+            if (end != null && !tombstoneMarkers.isEmpty()) {
+                Bound last = tombstoneMarkers.getLast().closeBound(false);
+
+                // This can happen if we're adding a tombstone marker but had a
+                // row delete in between. In that case (overlapping tombstones),
+                // we should (I hope) assume that he was really the high
+                // watermark for the chain, and should also be followed by a new 
+                // tombstone range.
+                if (last != null && this.cfMetaData.comparator.compare(end, last) < 0) {
+                    return;
+                }
+
+                Bound start = tombstoneMarkers.getFirst().openBound(false);
                 assert start != null;
-                deleteCqlRow(start, end, tombstoneMarker.openDeletionTime(false).markedForDeleteAt());
-                tombstoneMarker = null;                
+                deleteCqlRow(start, end, tombstoneMarkers.getFirst().openDeletionTime(false).markedForDeleteAt());
+                tombstoneMarkers.clear();
+                return;
             }
-            
+
             Bound start = tombstone.openBound(false);
-            if (start != null && tombstoneMarker != null) {
-                throw new IllegalStateException("Unexpected tombstone: " + tombstone);
+            if (start != null && !tombstoneMarkers.isEmpty()) {
+                RangeTombstoneMarker last = tombstoneMarkers.getLast();
+                Bound stop = last.closeBound(false);
+
+                if (stop == null) {
+                    throw new IllegalStateException("Unexpected tombstone: " + tombstone);
+                }
+                if (this.cfMetaData.comparator.compare(start, stop) != 0) {
+                    deleteCqlRow(tombstoneMarkers.getFirst().openBound(false), stop,
+                            tombstoneMarkers.getFirst().openDeletionTime(false).markedForDeleteAt());
+                    tombstoneMarkers.clear();
+                }
             }
             if (start != null) {
-                tombstoneMarker = tombstone;
+                tombstoneMarkers.add(tombstone);
             }
         }
 
