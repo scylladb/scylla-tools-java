@@ -62,7 +62,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -80,20 +80,22 @@ import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.config.YamlConfigurationLoader;
 import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.cql3.ColumnIdentifier;
+import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UTName;
+import org.apache.cassandra.cql3.statements.CFStatement;
+import org.apache.cassandra.cql3.statements.CreateTableStatement;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.schema.Functions;
 import org.apache.cassandra.schema.KeyspaceParams;
-import org.apache.cassandra.schema.Tables;
 import org.apache.cassandra.schema.Types;
-import org.apache.cassandra.schema.Views;
+import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.Pair;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.GnuParser;
@@ -239,13 +241,13 @@ public class BulkLoader {
             session = cluster.connect(keyspace);
             metadata = cluster.getMetadata();
             keyspaceMetadata = metadata.getKeyspace(keyspace);
-            Types types = loadUserTypes(keyspaceMetadata.getUserTypes(), keyspace, Types.builder());
             org.apache.cassandra.schema.KeyspaceMetadata ksMetaData = org.apache.cassandra.schema.KeyspaceMetadata
-                    .create(keyspaceMetadata.getName(),
-                            KeyspaceParams.create(keyspaceMetadata.isDurableWrites(),
-                                    keyspaceMetadata.getReplication()),
-                            Tables.none(), Views.none(), types, Functions.none());
+                    .create(keyspaceMetadata.getName(), KeyspaceParams.create(keyspaceMetadata.isDurableWrites(),
+                            keyspaceMetadata.getReplication()));
             Schema.instance.load(ksMetaData);
+
+            loadUserTypes(keyspaceMetadata.getUserTypes(), keyspace);
+
             partitioner = FBUtilities.newPartitioner(metadata.getPartitioner());
             if (options.throttle != 0) {
                 rateLimiter = RateLimiter.create(options.throttle * 1000 * 1000 / 8);
@@ -260,30 +262,39 @@ public class BulkLoader {
         // it references a UDT that has not yet been loaded. So we run a
         // fixed-point algorithm until we either load all UDTs or fail to make
         // forward progress.
-        private static Types loadUserTypes(Collection<UserType> udts, String ksname, Types.Builder types) {
-            if (udts.isEmpty()) {
-                return types.build();
-            }
-            LinkedList<UserType> notLoaded = new LinkedList<UserType>();
-            for (UserType ut : udts) {
-                try {
-                    ArrayList<ByteBuffer> fieldNames = new ArrayList<ByteBuffer>(ut.getFieldNames().size());
-                    ArrayList<AbstractType<?>> fieldTypes = new ArrayList<AbstractType<?>>();
-                    for (UserType.Field f : ut) {
-                        fieldNames.add(ByteBufferUtil.bytes(f.getName()));
-                        fieldTypes.add(getCql3Type(f.getType()).prepare(ksname).getType());
+        private void loadUserTypes(Collection<UserType> udts, String ksname) {
+            List<UserType> notLoaded = new ArrayList<>(udts);
+
+            while (!notLoaded.isEmpty()) {
+                Iterator<UserType> i = notLoaded.iterator();
+
+                int n = 0;
+                Types.Builder types = Types.builder();
+
+                while (i.hasNext()) {
+                    try {
+                        UserType ut = i.next();
+                        ArrayList<ByteBuffer> fieldNames = new ArrayList<ByteBuffer>(ut.getFieldNames().size());
+                        ArrayList<AbstractType<?>> fieldTypes = new ArrayList<AbstractType<?>>();
+                        for (UserType.Field f : ut) {
+                            fieldNames.add(ByteBufferUtil.bytes(f.getName()));
+                            fieldTypes.add(getCql3Type(f.getType()).prepare(ksname).getType());
+                        }
+                        types = types.add(new org.apache.cassandra.db.marshal.UserType(ksname,
+                                ByteBufferUtil.bytes(ut.getTypeName()), fieldNames, fieldTypes));
+                        i.remove();
+                        ++n;
+                    } catch (Exception e) {
+                        // try again.
                     }
-                    types = types.add(new org.apache.cassandra.db.marshal.UserType(ksname,
-                            ByteBufferUtil.bytes(ut.getTypeName()), fieldNames, fieldTypes));
-                } catch (Exception e) {
-                    System.out.println(e);
-                    notLoaded.addFirst(ut);
                 }
+
+                if (n == 0) {
+                    throw new RuntimeException("Unable to load user types " + notLoaded);
+                }
+
+                types.build().forEach(Schema.instance::addType);
             }
-            if (notLoaded.size() == udts.size()) {
-                throw new RuntimeException("Unable to load user types " + notLoaded);
-            }
-            return loadUserTypes(notLoaded, ksname, types);
         }
 
         private static CQL3Type.Raw getCql3Type(DataType dt) throws Exception {
@@ -400,11 +411,24 @@ public class BulkLoader {
             }
         }
 
+        private final Map<Pair<String, String>, CFMetaData> cfMetaDatas = new HashMap<>();
+
         @Override
         public CFMetaData getCFMetaData(String keyspace, String cfName) {
-            KeyspaceMetadata ks = metadata.getKeyspace(keyspace);
-            TableMetadata cf = ks.getTable(cfName);
-            return CFMetaData.compile(cf.asCQLQuery(), keyspace);
+            Pair<String, String> key = Pair.create(keyspace, cfName);
+            CFMetaData cfm = cfMetaDatas.get(key);
+            if (cfm == null) {
+                KeyspaceMetadata ks = metadata.getKeyspace(keyspace);
+                TableMetadata cf = ks.getTable(cfName);
+                CFStatement parsed = (CFStatement) QueryProcessor.parseStatement(cf.asCQLQuery());
+                org.apache.cassandra.schema.KeyspaceMetadata ksm = Schema.instance.getKSMetaData(keyspace);
+                CreateTableStatement statement = (CreateTableStatement) ((CreateTableStatement.RawStatement) parsed)
+                        .prepare(ksm != null ? ksm.types : Types.none()).statement;
+                statement.validate(ClientState.forInternalCalls());
+                cfm = statement.getCFMetaData();
+                cfMetaDatas.put(key, cfm);
+            }
+            return cfm;
         }
 
         @Override
@@ -711,14 +735,14 @@ public class BulkLoader {
                 if (cmd.hasOption(USE_PREPARED) && cmd.hasOption(USE_BATCH)) {
                     errorMsg("Cannot use batch and prepared statement at the same time", options);
                 }
-                
+
                 if (cmd.hasOption(USE_PREPARED)) {
                     opts.prepare = true;
                 }
                 if (cmd.hasOption(USE_BATCH)) {
                     opts.batch = true;
                 }
-                                
+
                 return opts;
             } catch (ParseException | ConfigurationException | MalformedURLException e) {
                 errorMsg(e.getMessage(), options);
