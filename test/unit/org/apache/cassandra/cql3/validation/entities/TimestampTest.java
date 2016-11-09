@@ -144,4 +144,12 @@ public class TimestampTest extends CQLTester
                       "UPDATE %1$s SET c = c + 1 WHERE k = 0; " +
                       "APPLY BATCH");
     }
+
+    @Test
+    public void testInsertTimestampWithUnset() throws Throwable
+    {
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, i int)");
+        execute("INSERT INTO %s (k, i) VALUES (1, 1) USING TIMESTAMP ?", unset()); // treat as 'now'
+    }
+
 }

@@ -21,6 +21,8 @@ import java.net.InetAddress;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.cql3.CQL3Type;
+import org.apache.cassandra.cql3.Constants;
+import org.apache.cassandra.cql3.Term;
 import org.apache.cassandra.serializers.TypeSerializer;
 import org.apache.cassandra.serializers.InetAddressSerializer;
 import org.apache.cassandra.serializers.MarshalException;
@@ -30,11 +32,11 @@ public class InetAddressType extends AbstractType<InetAddress>
 {
     public static final InetAddressType instance = new InetAddressType();
 
-    InetAddressType() {} // singleton
+    InetAddressType() {super(ComparisonType.BYTE_ORDER);} // singleton
 
-    public int compare(ByteBuffer o1, ByteBuffer o2)
+    public boolean isEmptyValueMeaningless()
     {
-        return ByteBufferUtil.compareUnsigned(o1, o2);
+        return true;
     }
 
     public ByteBuffer fromString(String source) throws MarshalException
@@ -51,10 +53,30 @@ public class InetAddressType extends AbstractType<InetAddress>
         }
         catch (Exception e)
         {
-            throw new MarshalException(String.format("unable to make inetaddress from '%s'", source), e);
+            throw new MarshalException(String.format("Unable to make inet address from '%s'", source), e);
         }
 
         return decompose(address);
+    }
+
+    @Override
+    public Term fromJSONObject(Object parsed) throws MarshalException
+    {
+        try
+        {
+            return new Constants.Value(InetAddressType.instance.fromString((String) parsed));
+        }
+        catch (ClassCastException exc)
+        {
+            throw new MarshalException(String.format(
+                    "Expected a string representation of an inet value, but got a %s: %s", parsed.getClass().getSimpleName(), parsed));
+        }
+    }
+
+    @Override
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
+    {
+        return '"' + getSerializer().deserialize(buffer).getHostAddress() + '"';
     }
 
     public CQL3Type asCQL3Type()
@@ -65,10 +87,5 @@ public class InetAddressType extends AbstractType<InetAddress>
     public TypeSerializer<InetAddress> getSerializer()
     {
         return InetAddressSerializer.instance;
-    }
-
-    public boolean isByteOrderComparable()
-    {
-        return true;
     }
 }

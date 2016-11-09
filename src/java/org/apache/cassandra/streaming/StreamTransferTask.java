@@ -22,11 +22,12 @@ import java.util.concurrent.*;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Throwables;
 import com.google.common.collect.Iterables;
 
 import org.apache.cassandra.concurrent.NamedThreadFactory;
-import org.apache.cassandra.io.sstable.SSTableReader;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.streaming.messages.OutgoingFileMessage;
 import org.apache.cassandra.utils.Pair;
 import org.apache.cassandra.utils.concurrent.Ref;
@@ -42,7 +43,8 @@ public class StreamTransferTask extends StreamTask
     private final AtomicInteger sequenceNumber = new AtomicInteger(0);
     private boolean aborted = false;
 
-    private final Map<Integer, OutgoingFileMessage> files = new HashMap<>();
+    @VisibleForTesting
+    protected final Map<Integer, OutgoingFileMessage> files = new HashMap<>();
     private final Map<Integer, ScheduledFuture> timeoutTasks = new HashMap<>();
 
     private long totalSize;
@@ -55,7 +57,7 @@ public class StreamTransferTask extends StreamTask
     public synchronized void addTransferFile(Ref<SSTableReader> ref, long estimatedKeys, List<Pair<Long, Long>> sections, long repairedAt)
     {
         assert ref.get() != null && cfId.equals(ref.get().metadata.cfId);
-        OutgoingFileMessage message = new OutgoingFileMessage(ref, sequenceNumber.getAndIncrement(), estimatedKeys, sections, repairedAt);
+        OutgoingFileMessage message = new OutgoingFileMessage(ref, sequenceNumber.getAndIncrement(), estimatedKeys, sections, repairedAt, session.keepSSTableLevel());
         files.put(message.header.sequenceNumber, message);
         totalSize += message.header.size();
     }

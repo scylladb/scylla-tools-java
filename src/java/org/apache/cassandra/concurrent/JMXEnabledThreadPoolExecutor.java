@@ -36,7 +36,7 @@ import org.apache.cassandra.metrics.ThreadPoolMetrics;
 public class JMXEnabledThreadPoolExecutor extends DebuggableThreadPoolExecutor implements JMXEnabledThreadPoolExecutorMBean
 {
     private final String mbeanName;
-    private final ThreadPoolMetrics metrics;
+    public final ThreadPoolMetrics metrics;
 
     public JMXEnabledThreadPoolExecutor(String threadPoolName)
     {
@@ -51,6 +51,11 @@ public class JMXEnabledThreadPoolExecutor extends DebuggableThreadPoolExecutor i
     public JMXEnabledThreadPoolExecutor(String threadPoolName, int priority)
     {
         this(1, Integer.MAX_VALUE, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(), new NamedThreadFactory(threadPoolName, priority), "internal");
+    }
+
+    public JMXEnabledThreadPoolExecutor(NamedThreadFactory threadFactory, String jmxPath)
+    {
+        this(1, Integer.MAX_VALUE, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(), threadFactory, jmxPath);
     }
 
     public JMXEnabledThreadPoolExecutor(int corePoolSize,
@@ -132,30 +137,17 @@ public class JMXEnabledThreadPoolExecutor extends DebuggableThreadPoolExecutor i
         return super.shutdownNow();
     }
 
-    /**
-     * Get the number of completed tasks
-     */
-    public long getCompletedTasks()
-    {
-        return getCompletedTaskCount();
-    }
 
-    /**
-     * Get the number of tasks waiting to be executed
-     */
-    public long getPendingTasks()
-    {
-        return getTaskCount() - getCompletedTaskCount();
-    }
+
 
     public int getTotalBlockedTasks()
     {
-        return (int) metrics.totalBlocked.count();
+        return (int) metrics.totalBlocked.getCount();
     }
 
     public int getCurrentlyBlockedTasks()
     {
-        return (int) metrics.currentBlocked.count();
+        return (int) metrics.currentBlocked.getCount();
     }
 
     public int getCoreThreads()

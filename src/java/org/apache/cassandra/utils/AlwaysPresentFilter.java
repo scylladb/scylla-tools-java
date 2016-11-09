@@ -17,16 +17,16 @@
  */
 package org.apache.cassandra.utils;
 
-import java.nio.ByteBuffer;
+import org.apache.cassandra.utils.concurrent.Ref;
 
 public class AlwaysPresentFilter implements IFilter
 {
-    public boolean isPresent(ByteBuffer key)
+    public boolean isPresent(FilterKey key)
     {
         return true;
     }
 
-    public void add(ByteBuffer key) { }
+    public void add(FilterKey key) { }
 
     public void clear() { }
 
@@ -35,6 +35,15 @@ public class AlwaysPresentFilter implements IFilter
     public IFilter sharedCopy()
     {
         return this;
+    }
+
+    public Throwable close(Throwable accumulate)
+    {
+        return accumulate;
+    }
+
+    public void addTo(Ref.IdentityCollection identities)
+    {
     }
 
     public long serializedSize() { return 0; }

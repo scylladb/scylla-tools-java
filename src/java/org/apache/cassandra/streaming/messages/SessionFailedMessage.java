@@ -17,22 +17,21 @@
  */
 package org.apache.cassandra.streaming.messages;
 
-import java.io.IOException;
 import java.nio.channels.ReadableByteChannel;
 
-import org.apache.cassandra.io.util.DataOutputStreamAndChannel;
+import org.apache.cassandra.io.util.DataOutputStreamPlus;
 import org.apache.cassandra.streaming.StreamSession;
 
 public class SessionFailedMessage extends StreamMessage
 {
     public static Serializer<SessionFailedMessage> serializer = new Serializer<SessionFailedMessage>()
     {
-        public SessionFailedMessage deserialize(ReadableByteChannel in, int version, StreamSession session) throws IOException
+        public SessionFailedMessage deserialize(ReadableByteChannel in, int version, StreamSession session)
         {
             return new SessionFailedMessage();
         }
 
-        public void serialize(SessionFailedMessage message, DataOutputStreamAndChannel out, int version, StreamSession session) throws IOException {}
+        public void serialize(SessionFailedMessage message, DataOutputStreamPlus out, int version, StreamSession session) {}
     };
 
     public SessionFailedMessage()

@@ -45,11 +45,15 @@ public class StreamCoordinator
     private Map<InetAddress, HostStreamingData> peerSessions = new HashMap<>();
     private final int connectionsPerHost;
     private StreamConnectionFactory factory;
+    private final boolean keepSSTableLevel;
+    private final boolean isIncremental;
 
-    public StreamCoordinator(int connectionsPerHost, StreamConnectionFactory factory)
+    public StreamCoordinator(int connectionsPerHost, boolean keepSSTableLevel, boolean isIncremental, StreamConnectionFactory factory)
     {
         this.connectionsPerHost = connectionsPerHost;
         this.factory = factory;
+        this.keepSSTableLevel = keepSSTableLevel;
+        this.isIncremental = isIncremental;
     }
 
     public void setConnectionFactory(StreamConnectionFactory factory)
@@ -179,7 +183,7 @@ public class StreamCoordinator
     {
         HostStreamingData data = peerSessions.get(peer);
         if (data == null)
-            throw new IllegalArgumentException("Unknown peer requested: " + peer.toString());
+            throw new IllegalArgumentException("Unknown peer requested: " + peer);
         return data;
     }
 
@@ -233,7 +237,7 @@ public class StreamCoordinator
             // create
             if (streamSessions.size() < connectionsPerHost)
             {
-                StreamSession session = new StreamSession(peer, connecting, factory, streamSessions.size());
+                StreamSession session = new StreamSession(peer, connecting, factory, streamSessions.size(), keepSSTableLevel, isIncremental);
                 streamSessions.put(++lastReturned, session);
                 return session;
             }
@@ -265,7 +269,7 @@ public class StreamCoordinator
             StreamSession session = streamSessions.get(id);
             if (session == null)
             {
-                session = new StreamSession(peer, connecting, factory, id);
+                session = new StreamSession(peer, connecting, factory, id, keepSSTableLevel, isIncremental);
                 streamSessions.put(id, session);
             }
             return session;

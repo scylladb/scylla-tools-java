@@ -22,29 +22,29 @@ import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import org.apache.cassandra.utils.ByteBufferUtil;
-
 public class SetSerializer<T> extends CollectionSerializer<Set<T>>
 {
     // interning instances
     private static final Map<TypeSerializer<?>, SetSerializer> instances = new HashMap<TypeSerializer<?>, SetSerializer>();
 
     public final TypeSerializer<T> elements;
+    private final Comparator<ByteBuffer> comparator;
 
-    public static synchronized <T> SetSerializer<T> getInstance(TypeSerializer<T> elements)
+    public static synchronized <T> SetSerializer<T> getInstance(TypeSerializer<T> elements, Comparator<ByteBuffer> elementComparator)
     {
         SetSerializer<T> t = instances.get(elements);
         if (t == null)
         {
-            t = new SetSerializer<T>(elements);
+            t = new SetSerializer<T>(elements, elementComparator);
             instances.put(elements, t);
         }
         return t;
     }
 
-    private SetSerializer(TypeSerializer<T> elements)
+    private SetSerializer(TypeSerializer<T> elements, Comparator<ByteBuffer> comparator)
     {
         this.elements = elements;
+        this.comparator = comparator;
     }
 
     public List<ByteBuffer> serializeValues(Set<T> values)
@@ -52,6 +52,7 @@ public class SetSerializer<T> extends CollectionSerializer<Set<T>>
         List<ByteBuffer> buffers = new ArrayList<>(values.size());
         for (T value : values)
             buffers.add(elements.serialize(value));
+        Collections.sort(buffers, comparator);
         return buffers;
     }
 
@@ -96,13 +97,14 @@ public class SetSerializer<T> extends CollectionSerializer<Set<T>>
         }
         catch (BufferUnderflowException e)
         {
-            throw new MarshalException("Not enough bytes to read a list");
+            throw new MarshalException("Not enough bytes to read a set");
         }
     }
 
     public String toString(Set<T> value)
     {
         StringBuilder sb = new StringBuilder();
+        sb.append('{');
         boolean isFirst = true;
         for (T element : value)
         {
@@ -112,10 +114,11 @@ public class SetSerializer<T> extends CollectionSerializer<Set<T>>
             }
             else
             {
-                sb.append("; ");
+                sb.append(", ");
             }
             sb.append(elements.toString(element));
         }
+        sb.append('}');
         return sb.toString();
     }
 

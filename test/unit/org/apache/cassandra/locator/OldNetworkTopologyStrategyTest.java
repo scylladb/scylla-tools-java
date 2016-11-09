@@ -1,49 +1,46 @@
 /*
-* Licensed to the Apache Software Foundation (ASF) under one
-* or more contributor license agreements.  See the NOTICE file
-* distributed with this work for additional information
-* regarding copyright ownership.  The ASF licenses this file
-* to you under the Apache License, Version 2.0 (the
-* "License"); you may not use this file except in compliance
-* with the License.  You may obtain a copy of the License at
-*
-*    http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing,
-* software distributed under the License is distributed on an
-* "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-* KIND, either express or implied.  See the License for the
-* specific language governing permissions and limitations
-* under the License.
-*/
-
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.apache.cassandra.locator;
-
-import static org.junit.Assert.assertEquals;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.cassandra.SchemaLoader;
-import org.apache.cassandra.config.KSMetaData;
-import org.apache.cassandra.dht.BigIntegerToken;
+import org.junit.Before;
+import org.junit.Test;
+
+import org.apache.cassandra.dht.RandomPartitioner.BigIntegerToken;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.Pair;
-import org.junit.Before;
-import org.junit.Test;
 
-public class OldNetworkTopologyStrategyTest extends SchemaLoader
+import static org.junit.Assert.assertEquals;
+
+public class OldNetworkTopologyStrategyTest
 {
-    private List<Token> endpointTokens;
     private List<Token> keyTokens;
     private TokenMetadata tmd;
     private Map<String, ArrayList<InetAddress>> expectedResults;
@@ -51,7 +48,6 @@ public class OldNetworkTopologyStrategyTest extends SchemaLoader
     @Before
     public void init()
     {
-        endpointTokens = new ArrayList<Token>();
         keyTokens = new ArrayList<Token>();
         tmd = new TokenMetadata();
         expectedResults = new HashMap<String, ArrayList<InetAddress>>();
@@ -60,14 +56,14 @@ public class OldNetworkTopologyStrategyTest extends SchemaLoader
     /**
      * 4 same rack endpoints
      *
-     * @throws UnknownHostException
+     * @throws java.net.UnknownHostException
      */
     @Test
     public void testBigIntegerEndpointsA() throws UnknownHostException
     {
         RackInferringSnitch endpointSnitch = new RackInferringSnitch();
 
-        AbstractReplicationStrategy strategy = new OldNetworkTopologyStrategy("Keyspace1", tmd, endpointSnitch, KSMetaData.optsWithRF(1));
+        AbstractReplicationStrategy strategy = new OldNetworkTopologyStrategy("Keyspace1", tmd, endpointSnitch, optsWithRF(1));
         addEndpoint("0", "5", "254.0.0.1");
         addEndpoint("10", "15", "254.0.0.2");
         addEndpoint("20", "25", "254.0.0.3");
@@ -85,14 +81,14 @@ public class OldNetworkTopologyStrategyTest extends SchemaLoader
      * 3 same rack endpoints
      * 1 external datacenter
      *
-     * @throws UnknownHostException
+     * @throws java.net.UnknownHostException
      */
     @Test
     public void testBigIntegerEndpointsB() throws UnknownHostException
     {
         RackInferringSnitch endpointSnitch = new RackInferringSnitch();
 
-        AbstractReplicationStrategy strategy = new OldNetworkTopologyStrategy("Keyspace1", tmd, endpointSnitch, KSMetaData.optsWithRF(1));
+        AbstractReplicationStrategy strategy = new OldNetworkTopologyStrategy("Keyspace1", tmd, endpointSnitch, optsWithRF(1));
         addEndpoint("0", "5", "254.0.0.1");
         addEndpoint("10", "15", "254.0.0.2");
         addEndpoint("20", "25", "254.1.0.3");
@@ -111,14 +107,14 @@ public class OldNetworkTopologyStrategyTest extends SchemaLoader
      * 1 same datacenter, different rack endpoints
      * 1 external datacenter
      *
-     * @throws UnknownHostException
+     * @throws java.net.UnknownHostException
      */
     @Test
     public void testBigIntegerEndpointsC() throws UnknownHostException
     {
         RackInferringSnitch endpointSnitch = new RackInferringSnitch();
 
-        AbstractReplicationStrategy strategy = new OldNetworkTopologyStrategy("Keyspace1", tmd, endpointSnitch, KSMetaData.optsWithRF(1));
+        AbstractReplicationStrategy strategy = new OldNetworkTopologyStrategy("Keyspace1", tmd, endpointSnitch, optsWithRF(1));
         addEndpoint("0", "5", "254.0.0.1");
         addEndpoint("10", "15", "254.0.0.2");
         addEndpoint("20", "25", "254.0.1.3");
@@ -145,7 +141,6 @@ public class OldNetworkTopologyStrategyTest extends SchemaLoader
     private void addEndpoint(String endpointTokenID, String keyTokenID, String endpointAddress) throws UnknownHostException
     {
         BigIntegerToken endpointToken = new BigIntegerToken(endpointTokenID);
-        endpointTokens.add(endpointToken);
 
         BigIntegerToken keyToken = new BigIntegerToken(keyTokenID);
         keyTokens.add(keyToken);
@@ -170,7 +165,7 @@ public class OldNetworkTopologyStrategyTest extends SchemaLoader
     /**
      * test basic methods to move a node. For sure, it's not the best place, but it's easy to test
      *
-     * @throws UnknownHostException
+     * @throws java.net.UnknownHostException
      */
     @Test
     public void testMoveLeft() throws UnknownHostException
@@ -206,6 +201,7 @@ public class OldNetworkTopologyStrategyTest extends SchemaLoader
 
     }
 
+    @SuppressWarnings("unchecked")
     @Test
     public void testMoveMiddleOfRing() throws UnknownHostException
     {
@@ -219,25 +215,26 @@ public class OldNetworkTopologyStrategyTest extends SchemaLoader
         Pair<Set<Range<Token>>, Set<Range<Token>>> ranges = calculateStreamAndFetchRanges(tokens, tokensAfterMove, movingNodeIdx);
 
         // sort the results, so they can be compared
-        Range[] toStream = ranges.left.toArray(new Range[0]);
-        Range[] toFetch = ranges.right.toArray(new Range[0]);
+        Range<Token>[] toStream = ranges.left.toArray(new Range[0]);
+        Range<Token>[] toFetch = ranges.right.toArray(new Range[0]);
         Arrays.sort(toStream);
         Arrays.sort(toFetch);
 
         // build expected ranges
-        Range[] toStreamExpected = new Range[2];
-        toStreamExpected[0] = new Range(getToken(movingNodeIdx - 2, tokens), getToken(movingNodeIdx - 1, tokens));
-        toStreamExpected[1] = new Range(getToken(movingNodeIdx - 1, tokens), getToken(movingNodeIdx, tokens));
+        Range<Token>[] toStreamExpected = new Range[2];
+        toStreamExpected[0] = new Range<Token>(getToken(movingNodeIdx - 2, tokens), getToken(movingNodeIdx - 1, tokens));
+        toStreamExpected[1] = new Range<Token>(getToken(movingNodeIdx - 1, tokens), getToken(movingNodeIdx, tokens));
         Arrays.sort(toStreamExpected);
-        Range[] toFetchExpected = new Range[2];
-        toFetchExpected[0] = new Range(getToken(movingNodeIdxAfterMove - 1, tokens), getToken(movingNodeIdxAfterMove, tokens));
-        toFetchExpected[1] = new Range(getToken(movingNodeIdxAfterMove, tokensAfterMove), getToken(movingNodeIdx, tokensAfterMove));
+        Range<Token>[] toFetchExpected = new Range[2];
+        toFetchExpected[0] = new Range<Token>(getToken(movingNodeIdxAfterMove - 1, tokens), getToken(movingNodeIdxAfterMove, tokens));
+        toFetchExpected[1] = new Range<Token>(getToken(movingNodeIdxAfterMove, tokensAfterMove), getToken(movingNodeIdx, tokensAfterMove));
         Arrays.sort(toFetchExpected);
 
         assertEquals(Arrays.equals(toStream, toStreamExpected), true);
         assertEquals(Arrays.equals(toFetch, toFetchExpected), true);
     }
 
+    @SuppressWarnings("unchecked")
     @Test
     public void testMoveAfterNextNeighbors() throws UnknownHostException
     {
@@ -252,24 +249,25 @@ public class OldNetworkTopologyStrategyTest extends SchemaLoader
 
 
         // sort the results, so they can be compared
-        Range[] toStream = ranges.left.toArray(new Range[0]);
-        Range[] toFetch = ranges.right.toArray(new Range[0]);
+        Range<Token>[] toStream = ranges.left.toArray(new Range[0]);
+        Range<Token>[] toFetch = ranges.right.toArray(new Range[0]);
         Arrays.sort(toStream);
         Arrays.sort(toFetch);
 
         // build expected ranges
-        Range[] toStreamExpected = new Range[1];
-        toStreamExpected[0] = new Range(getToken(movingNodeIdx - 2, tokens), getToken(movingNodeIdx - 1, tokens));
+        Range<Token>[] toStreamExpected = new Range[1];
+        toStreamExpected[0] = new Range<Token>(getToken(movingNodeIdx - 2, tokens), getToken(movingNodeIdx - 1, tokens));
         Arrays.sort(toStreamExpected);
-        Range[] toFetchExpected = new Range[2];
-        toFetchExpected[0] = new Range(getToken(movingNodeIdxAfterMove - 1, tokens), getToken(movingNodeIdxAfterMove, tokens));
-        toFetchExpected[1] = new Range(getToken(movingNodeIdxAfterMove, tokensAfterMove), getToken(movingNodeIdx, tokensAfterMove));
+        Range<Token>[] toFetchExpected = new Range[2];
+        toFetchExpected[0] = new Range<Token>(getToken(movingNodeIdxAfterMove - 1, tokens), getToken(movingNodeIdxAfterMove, tokens));
+        toFetchExpected[1] = new Range<Token>(getToken(movingNodeIdxAfterMove, tokensAfterMove), getToken(movingNodeIdx, tokensAfterMove));
         Arrays.sort(toFetchExpected);
 
         assertEquals(Arrays.equals(toStream, toStreamExpected), true);
         assertEquals(Arrays.equals(toFetch, toFetchExpected), true);
     }
 
+    @SuppressWarnings("unchecked")
     @Test
     public void testMoveBeforePreviousNeighbor() throws UnknownHostException
     {
@@ -282,17 +280,17 @@ public class OldNetworkTopologyStrategyTest extends SchemaLoader
         BigIntegerToken[] tokensAfterMove = initTokensAfterMove(tokens, movingNodeIdx, newToken);
         Pair<Set<Range<Token>>, Set<Range<Token>>> ranges = calculateStreamAndFetchRanges(tokens, tokensAfterMove, movingNodeIdx);
 
-        Range[] toStream = ranges.left.toArray(new Range[0]);
-        Range[] toFetch = ranges.right.toArray(new Range[0]);
+        Range<Token>[] toStream = ranges.left.toArray(new Range[0]);
+        Range<Token>[] toFetch = ranges.right.toArray(new Range[0]);
         Arrays.sort(toStream);
         Arrays.sort(toFetch);
 
-        Range[] toStreamExpected = new Range[2];
-        toStreamExpected[0] = new Range(getToken(movingNodeIdx, tokensAfterMove), getToken(movingNodeIdx - 1, tokensAfterMove));
-        toStreamExpected[1] = new Range(getToken(movingNodeIdx - 1, tokens), getToken(movingNodeIdx, tokens));
+        Range<Token>[] toStreamExpected = new Range[2];
+        toStreamExpected[0] = new Range<Token>(getToken(movingNodeIdx, tokensAfterMove), getToken(movingNodeIdx - 1, tokensAfterMove));
+        toStreamExpected[1] = new Range<Token>(getToken(movingNodeIdx - 1, tokens), getToken(movingNodeIdx, tokens));
         Arrays.sort(toStreamExpected);
-        Range[] toFetchExpected = new Range[1];
-        toFetchExpected[0] = new Range(getToken(movingNodeIdxAfterMove - 1, tokens), getToken(movingNodeIdxAfterMove, tokens));
+        Range<Token>[] toFetchExpected = new Range[1];
+        toFetchExpected[0] = new Range<Token>(getToken(movingNodeIdxAfterMove - 1, tokens), getToken(movingNodeIdxAfterMove, tokens));
         Arrays.sort(toFetchExpected);
 
         System.out.println("toStream : " + Arrays.toString(toStream));
@@ -359,7 +357,7 @@ public class OldNetworkTopologyStrategyTest extends SchemaLoader
 
         TokenMetadata tokenMetadataCurrent = initTokenMetadata(tokens);
         TokenMetadata tokenMetadataAfterMove = initTokenMetadata(tokensAfterMove);
-        AbstractReplicationStrategy strategy = new OldNetworkTopologyStrategy("Keyspace1", tokenMetadataCurrent, endpointSnitch, KSMetaData.optsWithRF(2));
+        AbstractReplicationStrategy strategy = new OldNetworkTopologyStrategy("Keyspace1", tokenMetadataCurrent, endpointSnitch, optsWithRF(2));
 
         Collection<Range<Token>> currentRanges = strategy.getAddressRanges().get(movingNode);
         Collection<Range<Token>> updatedRanges = strategy.getPendingAddressRanges(tokenMetadataAfterMove, tokensAfterMove[movingNodeIdx], movingNode);
@@ -369,5 +367,8 @@ public class OldNetworkTopologyStrategyTest extends SchemaLoader
         return ranges;
     }
 
-
+    private static Map<String, String> optsWithRF(int rf)
+    {
+        return Collections.singletonMap("replication_factor", Integer.toString(rf));
+    }
 }

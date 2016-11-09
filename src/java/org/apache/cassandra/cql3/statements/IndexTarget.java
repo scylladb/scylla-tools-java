@@ -17,53 +17,139 @@
  */
 package org.apache.cassandra.cql3.statements;
 
+import java.util.regex.Pattern;
+
 import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.ColumnIdentifier;
+import org.apache.cassandra.exceptions.InvalidRequestException;
 
 public class IndexTarget
 {
-    public final ColumnIdentifier column;
-    public final boolean isCollectionKeys;
-    public final boolean isFullCollection;
+    public static final String TARGET_OPTION_NAME = "target";
+    public static final String CUSTOM_INDEX_OPTION_NAME = "class_name";
 
-    private IndexTarget(ColumnIdentifier column, boolean isCollectionKeys, boolean isFullCollection)
+    /**
+     * The name of the option used to specify that the index is on the collection keys.
+     */
+    public static final String INDEX_KEYS_OPTION_NAME = "index_keys";
+
+    /**
+     * The name of the option used to specify that the index is on the collection (map) entries.
+     */
+    public static final String INDEX_ENTRIES_OPTION_NAME = "index_keys_and_values";
+
+    /**
+     * Regex for *unquoted* column names, anything which does not match this pattern must be a quoted name
+     */
+    private static final Pattern COLUMN_IDENTIFIER_PATTERN = Pattern.compile("[a-z_0-9]+");
+
+    public final ColumnIdentifier column;
+    public final boolean quoteName;
+    public final Type type;
+
+    public IndexTarget(ColumnIdentifier column, Type type)
     {
         this.column = column;
-        this.isCollectionKeys = isCollectionKeys;
-        this.isFullCollection = isFullCollection;
+        this.type = type;
+
+        // if the column name contains anything other than lower case alphanumerics
+        // or underscores, then it must be quoted when included in the target string
+        quoteName = !COLUMN_IDENTIFIER_PATTERN.matcher(column.toString()).matches();
+    }
+
+    public String asCqlString(CFMetaData cfm)
+    {
+        if (!cfm.getColumnDefinition(column).type.isCollection())
+            return column.toCQLString();
+
+        return String.format("%s(%s)", type.toString(), column.toCQLString());
     }
 
     public static class Raw
     {
         private final ColumnIdentifier.Raw column;
-        private final boolean isCollectionKeys;
-        private final boolean isFullCollection;
+        private final Type type;
 
-        private Raw(ColumnIdentifier.Raw column, boolean isCollectionKeys, boolean isFullCollection)
+        private Raw(ColumnIdentifier.Raw column, Type type)
         {
             this.column = column;
-            this.isCollectionKeys = isCollectionKeys;
-            this.isFullCollection = isFullCollection;
+            this.type = type;
+        }
+
+        public static Raw simpleIndexOn(ColumnIdentifier.Raw c)
+        {
+            return new Raw(c, Type.SIMPLE);
         }
 
         public static Raw valuesOf(ColumnIdentifier.Raw c)
         {
-            return new Raw(c, false, false);
+            return new Raw(c, Type.VALUES);
         }
 
         public static Raw keysOf(ColumnIdentifier.Raw c)
         {
-            return new Raw(c, true, false);
+            return new Raw(c, Type.KEYS);
+        }
+
+        public static Raw keysAndValuesOf(ColumnIdentifier.Raw c)
+        {
+            return new Raw(c, Type.KEYS_AND_VALUES);
         }
 
         public static Raw fullCollection(ColumnIdentifier.Raw c)
         {
-            return new Raw(c, false, true);
+            return new Raw(c, Type.FULL);
         }
 
         public IndexTarget prepare(CFMetaData cfm)
         {
-            return new IndexTarget(column.prepare(cfm), isCollectionKeys, isFullCollection);
+            // Until we've prepared the target column, we can't be certain about the target type
+            // because (for backwards compatibility) an index on a collection's values uses the
+            // same syntax as an index on a regular column (i.e. the 'values' in
+            // 'CREATE INDEX on table(values(collection));' is optional). So we correct the target type
+            // when the target column is a collection & the target type is SIMPLE.
+            ColumnIdentifier colId = column.prepare(cfm);
+            ColumnDefinition columnDef = cfm.getColumnDefinition(colId);
+            if (columnDef == null)
+                throw new InvalidRequestException("No column definition found for column " + colId);
+
+            Type actualType = (type == Type.SIMPLE && columnDef.type.isCollection()) ? Type.VALUES : type;
+            return new IndexTarget(colId, actualType);
+        }
+    }
+
+    public static enum Type
+    {
+        VALUES, KEYS, KEYS_AND_VALUES, FULL, SIMPLE;
+
+        public String toString()
+        {
+            switch (this)
+            {
+                case KEYS: return "keys";
+                case KEYS_AND_VALUES: return "entries";
+                case FULL: return "full";
+                case VALUES: return "values";
+                case SIMPLE: return "";
+                default: return "";
+            }
+        }
+
+        public static Type fromString(String s)
+        {
+            if ("".equals(s))
+                return SIMPLE;
+            else if ("values".equals(s))
+                return VALUES;
+            else if ("keys".equals(s))
+                return KEYS;
+            else if ("entries".equals(s))
+                return KEYS_AND_VALUES;
+            else if ("full".equals(s))
+                return FULL;
+
+            throw new AssertionError("Unrecognized index target type " + s);
         }
     }
 }

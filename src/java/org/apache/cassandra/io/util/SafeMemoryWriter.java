@@ -18,119 +18,96 @@
 */
 package org.apache.cassandra.io.util;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
-public class SafeMemoryWriter extends AbstractDataOutput implements DataOutputPlus
+public class SafeMemoryWriter extends DataOutputBuffer
 {
-    private ByteOrder order = ByteOrder.BIG_ENDIAN;
-    private SafeMemory buffer;
-    private long length;
+    private SafeMemory memory;
 
+    @SuppressWarnings("resource")
     public SafeMemoryWriter(long initialCapacity)
     {
-        buffer = new SafeMemory(initialCapacity);
+        this(new SafeMemory(initialCapacity));
     }
 
-    public void write(byte[] buffer, int offset, int count)
+    private SafeMemoryWriter(SafeMemory memory)
     {
-        long newLength = ensureCapacity(count);
-        this.buffer.setBytes(this.length, buffer, offset, count);
-        this.length = newLength;
-    }
-
-    public void write(int oneByte)
-    {
-        long newLength = ensureCapacity(1);
-        buffer.setByte(length++, (byte) oneByte);
-        length = newLength;
-    }
-
-    public void writeShort(int val) throws IOException
-    {
-        if (order != ByteOrder.nativeOrder())
-            val = Short.reverseBytes((short) val);
-        long newLength = ensureCapacity(2);
-        buffer.setShort(length, (short) val);
-        length = newLength;
-    }
-
-    public void writeInt(int val)
-    {
-        if (order != ByteOrder.nativeOrder())
-            val = Integer.reverseBytes(val);
-        long newLength = ensureCapacity(4);
-        buffer.setInt(length, val);
-        length = newLength;
-    }
-
-    public void writeLong(long val)
-    {
-        if (order != ByteOrder.nativeOrder())
-            val = Long.reverseBytes(val);
-        long newLength = ensureCapacity(8);
-        buffer.setLong(length, val);
-        length = newLength;
-    }
-
-    public void write(ByteBuffer buffer)
-    {
-        long newLength = ensureCapacity(buffer.remaining());
-        this.buffer.setBytes(length, buffer);
-        length = newLength;
-    }
-
-    public void write(Memory memory)
-    {
-        long newLength = ensureCapacity(memory.size());
-        buffer.put(length, memory, 0, memory.size());
-        length = newLength;
-    }
-
-    private long ensureCapacity(long size)
-    {
-        long newLength = this.length + size;
-        if (newLength > buffer.size())
-            setCapacity(Math.max(newLength, buffer.size() + (buffer.size() / 2)));
-        return newLength;
+        super(tailBuffer(memory).order(ByteOrder.BIG_ENDIAN));
+        this.memory = memory;
     }
 
     public SafeMemory currentBuffer()
     {
-        return buffer;
+        return memory;
     }
 
-    public void setCapacity(long newCapacity)
+    @Override
+    protected void reallocate(long count)
     {
+        long newCapacity = calculateNewSize(count);
         if (newCapacity != capacity())
         {
-            SafeMemory oldBuffer = buffer;
-            buffer = this.buffer.copy(newCapacity);
+            long position = length();
+            ByteOrder order = buffer.order();
+
+            SafeMemory oldBuffer = memory;
+            memory = this.memory.copy(newCapacity);
+            buffer = tailBuffer(memory);
+
+            int newPosition = (int) (position - tailOffset(memory));
+            buffer.position(newPosition);
+            buffer.order(order);
+
             oldBuffer.free();
         }
     }
 
+    public void setCapacity(long newCapacity)
+    {
+        reallocate(newCapacity);
+    }
+
     public void close()
     {
-        buffer.close();
+        memory.close();
+    }
+
+    public Throwable close(Throwable accumulate)
+    {
+        return memory.close(accumulate);
     }
 
     public long length()
     {
-        return length;
+        return tailOffset(memory) +  buffer.position();
     }
 
     public long capacity()
     {
-        return buffer.size();
+        return memory.size();
     }
 
-    // TODO: consider hoisting this into DataOutputPlus, since most implementations can copy with this gracefully
-    // this would simplify IndexSummary.IndexSummarySerializer.serialize()
-    public SafeMemoryWriter withByteOrder(ByteOrder order)
+    @Override
+    public SafeMemoryWriter order(ByteOrder order)
     {
-        this.order = order;
+        super.order(order);
         return this;
+    }
+
+    @Override
+    public long validateReallocation(long newSize)
+    {
+        return newSize;
+    }
+
+    private static long tailOffset(Memory memory)
+    {
+        return Math.max(0, memory.size - Integer.MAX_VALUE);
+    }
+
+    private static ByteBuffer tailBuffer(Memory memory)
+    {
+        return memory.asByteBuffer(tailOffset(memory), (int) Math.min(memory.size, Integer.MAX_VALUE));
     }
 }

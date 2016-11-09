@@ -17,41 +17,52 @@
  */
 package org.apache.cassandra.db;
 
-import java.nio.ByteBuffer;
 import java.util.Collection;
 
+import org.apache.cassandra.schema.KeyspaceParams;
+import org.apache.cassandra.utils.FBUtilities;
+import org.junit.BeforeClass;
 import org.junit.Test;
-
 import org.apache.cassandra.SchemaLoader;
-import org.apache.cassandra.io.sstable.SSTableReader;
+import org.apache.cassandra.Util;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 import static org.junit.Assert.assertEquals;
-import static org.apache.cassandra.Util.cellname;
 
-public class ColumnFamilyMetricTest extends SchemaLoader
+public class ColumnFamilyMetricTest
 {
+    @BeforeClass
+    public static void defineSchema() throws Exception
+    {
+        SchemaLoader.prepareServer();
+        SchemaLoader.createKeyspace("Keyspace1",
+                                    KeyspaceParams.simple(1),
+                                    SchemaLoader.standardCFMD("Keyspace1", "Standard2"));
+    }
+
     @Test
     public void testSizeMetric()
     {
         Keyspace keyspace = Keyspace.open("Keyspace1");
-        ColumnFamilyStore store = keyspace.getColumnFamilyStore("Standard1");
-        store.disableAutoCompaction();
+        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore("Standard2");
+        cfs.disableAutoCompaction();
 
-        store.truncateBlocking();
+        cfs.truncateBlocking();
 
-        assertEquals(0, store.metric.liveDiskSpaceUsed.count());
-        assertEquals(0, store.metric.totalDiskSpaceUsed.count());
+        assertEquals(0, cfs.metric.liveDiskSpaceUsed.getCount());
+        assertEquals(0, cfs.metric.totalDiskSpaceUsed.getCount());
 
         for (int j = 0; j < 10; j++)
         {
-            ByteBuffer key = ByteBufferUtil.bytes(String.valueOf(j));
-            Mutation rm = new Mutation("Keyspace1", key);
-            rm.add("Standard1", cellname("0"), ByteBufferUtil.EMPTY_BYTE_BUFFER, j);
-            rm.apply();
+            new RowUpdateBuilder(cfs.metadata, FBUtilities.timestampMicros(), String.valueOf(j))
+                    .clustering("0")
+                    .add("val", ByteBufferUtil.EMPTY_BYTE_BUFFER)
+                    .build()
+                    .applyUnsafe();
         }
-        store.forceBlockingFlush();
-        Collection<SSTableReader> sstables = store.getSSTables();
+        cfs.forceBlockingFlush();
+        Collection<SSTableReader> sstables = cfs.getLiveSSTables();
         long size = 0;
         for (SSTableReader reader : sstables)
         {
@@ -59,16 +70,15 @@ public class ColumnFamilyMetricTest extends SchemaLoader
         }
 
         // size metrics should show the sum of all SSTable sizes
-        assertEquals(size, store.metric.liveDiskSpaceUsed.count());
-        assertEquals(size, store.metric.totalDiskSpaceUsed.count());
+        assertEquals(size, cfs.metric.liveDiskSpaceUsed.getCount());
+        assertEquals(size, cfs.metric.totalDiskSpaceUsed.getCount());
 
-        store.truncateBlocking();
+        cfs.truncateBlocking();
 
         // after truncate, size metrics should be down to 0
-        assertEquals(0, store.metric.liveDiskSpaceUsed.count());
-        assertEquals(0, store.metric.totalDiskSpaceUsed.count());
+        Util.spinAssertEquals(0L, () -> cfs.metric.liveDiskSpaceUsed.getCount(), 30);
+        Util.spinAssertEquals(0L, () -> cfs.metric.totalDiskSpaceUsed.getCount(), 30);
 
-        store.enableAutoCompaction();
+        cfs.enableAutoCompaction();
     }
-
 }

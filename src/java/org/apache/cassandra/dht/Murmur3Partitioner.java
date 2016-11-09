@@ -20,34 +20,38 @@ package org.apache.cassandra.dht;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 
-import org.apache.cassandra.db.BufferDecoratedKey;
 import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.PreHashedDecoratedKey;
 import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.cassandra.db.marshal.PartitionerDefinedOrder;
 import org.apache.cassandra.db.marshal.LongType;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.MurmurHash;
 import org.apache.cassandra.utils.ObjectSizes;
 
+import com.google.common.primitives.Longs;
+
 /**
  * This class generates a BigIntegerToken using a Murmur3 hash.
  */
-public class Murmur3Partitioner extends AbstractPartitioner
+public class Murmur3Partitioner implements IPartitioner
 {
     public static final LongToken MINIMUM = new LongToken(Long.MIN_VALUE);
     public static final long MAXIMUM = Long.MAX_VALUE;
 
     private static final int HEAP_SIZE = (int) ObjectSizes.measureDeep(MINIMUM);
 
+    public static final Murmur3Partitioner instance = new Murmur3Partitioner();
+    public static final AbstractType<?> partitionOrdering = new PartitionerDefinedOrder(instance);
+
     public DecoratedKey decorateKey(ByteBuffer key)
     {
-        return new BufferDecoratedKey(getToken(key), key);
+        long[] hash = getHash(key);
+        return new PreHashedDecoratedKey(getToken(key, hash), key, hash[0], hash[1]);
     }
 
     public Token midpoint(Token lToken, Token rToken)
@@ -82,6 +86,76 @@ public class Murmur3Partitioner extends AbstractPartitioner
         return MINIMUM;
     }
 
+    public static class LongToken extends Token
+    {
+        static final long serialVersionUID = -5833580143318243006L;
+
+        final long token;
+
+        public LongToken(long token)
+        {
+            this.token = token;
+        }
+
+        public String toString()
+        {
+            return Long.toString(token);
+        }
+
+        public boolean equals(Object obj)
+        {
+            if (this == obj)
+                return true;
+            if (obj == null || this.getClass() != obj.getClass())
+                return false;
+
+            return token == (((LongToken)obj).token);
+        }
+
+        public int hashCode()
+        {
+            return Longs.hashCode(token);
+        }
+
+        public int compareTo(Token o)
+        {
+            return Long.compare(token, ((LongToken) o).token);
+        }
+
+        @Override
+        public IPartitioner getPartitioner()
+        {
+            return instance;
+        }
+
+        @Override
+        public long getHeapSize()
+        {
+            return HEAP_SIZE;
+        }
+
+        @Override
+        public Object getTokenValue()
+        {
+            return token;
+        }
+
+        @Override
+        public double size(Token next)
+        {
+            LongToken n = (LongToken) next;
+            long v = n.token - token;  // Overflow acceptable and desired.
+            double d = Math.scalb((double) v, -Long.SIZE); // Scale so that the full range is 1.
+            return d > 0.0 ? d : (d + 1.0); // Adjust for signed long, also making sure t.size(t) == 1.
+        }
+
+        @Override
+        public Token increaseSlightly()
+        {
+            return new LongToken(token + 1);
+        }
+    }
+
     /**
      * Generate the token of a key.
      * Note that we need to ensure all generated token are strictly bigger than MINIMUM.
@@ -90,22 +164,32 @@ public class Murmur3Partitioner extends AbstractPartitioner
      */
     public LongToken getToken(ByteBuffer key)
     {
+        return getToken(key, getHash(key));
+    }
+
+    private LongToken getToken(ByteBuffer key, long[] hash)
+    {
         if (key.remaining() == 0)
             return MINIMUM;
 
-        long[] hash = new long[2];
-        MurmurHash.hash3_x64_128(key, key.position(), key.remaining(), 0, hash);
         return new LongToken(normalize(hash[0]));
     }
 
-    public long getHeapSizeOf(Token token)
+    private long[] getHash(ByteBuffer key)
     {
-        return HEAP_SIZE;
+        long[] hash = new long[2];
+        MurmurHash.hash3_x64_128(key, key.position(), key.remaining(), 0, hash);
+        return hash;
     }
 
     public LongToken getRandomToken()
     {
-        return new LongToken(normalize(ThreadLocalRandom.current().nextLong()));
+        return getRandomToken(ThreadLocalRandom.current());
+    }
+
+    public LongToken getRandomToken(Random r)
+    {
+        return new LongToken(normalize(r.nextLong()));
     }
 
     private long normalize(long v)
@@ -129,7 +213,7 @@ public class Murmur3Partitioner extends AbstractPartitioner
             throw new RuntimeException("No nodes present in the cluster. Has this node finished starting up?");
         // 1-case
         if (sortedTokens.size() == 1)
-            ownerships.put((Token) i.next(), new Float(1.0));
+            ownerships.put(i.next(), new Float(1.0));
         // n-case
         else
         {
@@ -140,7 +224,7 @@ public class Murmur3Partitioner extends AbstractPartitioner
 
             while (i.hasNext())
             {
-                t = (Token) i.next(); ti = BigInteger.valueOf(((LongToken) t).token); // The next token and its value
+                t = i.next(); ti = BigInteger.valueOf(((LongToken) t).token); // The next token and its value
                 float age = new BigDecimal(ti.subtract(tim1).add(ri).mod(ri)).divide(r, 6, BigDecimal.ROUND_HALF_EVEN).floatValue(); // %age = ((T(i) - T(i-1) + R) % R) / R
                 ownerships.put(t, age);                           // save (T(i) -> %age)
                 tim1 = ti;                                        // -> advance loop
@@ -193,7 +277,7 @@ public class Murmur3Partitioner extends AbstractPartitioner
         {
             try
             {
-                return new LongToken(Long.valueOf(string));
+                return new LongToken(Long.parseLong(string));
             }
             catch (NumberFormatException e)
             {
@@ -205,5 +289,10 @@ public class Murmur3Partitioner extends AbstractPartitioner
     public AbstractType<?> getTokenValidator()
     {
         return LongType.instance;
+    }
+
+    public AbstractType<?> partitionOrdering()
+    {
+        return partitionOrdering;
     }
 }

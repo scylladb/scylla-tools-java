@@ -55,7 +55,7 @@ namespace rb CassandraThrift
 # An effort should be made not to break forward-client-compatibility either
 # (e.g. one should avoid removing obsolete fields from the IDL), but no
 # guarantees in this respect are made by the Cassandra project.
-const string VERSION = "19.39.0"
+const string VERSION = "20.1.0"
 
 
 #
@@ -116,6 +116,7 @@ struct ColumnOrSuperColumn {
     3: optional CounterColumn counter_column,
     4: optional CounterSuperColumn counter_super_column
 }
+
 
 #
 # Exceptions
@@ -570,7 +571,7 @@ struct CfSplit {
     3: required i64 row_count
 }
 
-/** The ColumnSlice is used to select a set of columns from inside a row.
+/** The ColumnSlice is used to select a set of columns from inside a row. 
  * If start or finish are unspecified they will default to the start-of
  * end-of value.
  * @param start. The start of the ColumnSlice inclusive
@@ -782,7 +783,6 @@ service Cassandra {
   */
   list<ColumnOrSuperColumn> get_multi_slice(1:required MultiSliceRequest request)
        throws (1:InvalidRequestException ire, 2:UnavailableException ue, 3:TimedOutException te),
-
     
   // Meta-APIs -- APIs to get information about the node or cluster,
   // rather than user data.  The nodeprobe program provides usage examples.
@@ -884,7 +884,7 @@ service Cassandra {
 
 
   /**
-   * @deprecated Will become a no-op in 2.2. Please use the CQL3 version instead.
+   * @deprecated Throws InvalidRequestException since 2.2. Please use the CQL3 version instead.
    */
   CqlResult execute_cql_query(1:required binary query, 2:required Compression compression)
     throws (1:InvalidRequestException ire,
@@ -904,7 +904,7 @@ service Cassandra {
 
 
   /**
-   * @deprecated Will become a no-op in 2.2. Please use the CQL3 version instead.
+   * @deprecated Throws InvalidRequestException since 2.2. Please use the CQL3 version instead.
    */
   CqlPreparedResult prepare_cql_query(1:required binary query, 2:required Compression compression)
     throws (1:InvalidRequestException ire)
@@ -920,7 +920,7 @@ service Cassandra {
 
 
   /**
-   * @deprecated Will become a no-op in 2.2. Please use the CQL3 version instead.
+   * @deprecated Throws InvalidRequestException since 2.2. Please use the CQL3 version instead.
    */
   CqlResult execute_prepared_cql_query(1:required i32 itemId, 2:required list<binary> values)
     throws (1:InvalidRequestException ire,

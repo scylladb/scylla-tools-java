@@ -20,6 +20,8 @@ package org.apache.cassandra.db.marshal;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.cql3.CQL3Type;
+import org.apache.cassandra.cql3.Constants;
+import org.apache.cassandra.cql3.Term;
 import org.apache.cassandra.serializers.TypeSerializer;
 import org.apache.cassandra.serializers.BooleanSerializer;
 import org.apache.cassandra.serializers.MarshalException;
@@ -33,9 +35,14 @@ public class BooleanType extends AbstractType<Boolean>
 
     public static final BooleanType instance = new BooleanType();
 
-    BooleanType() {} // singleton
+    BooleanType() {super(ComparisonType.CUSTOM);} // singleton
 
-    public int compare(ByteBuffer o1, ByteBuffer o2)
+    public boolean isEmptyValueMeaningless()
+    {
+        return true;
+    }
+
+    public int compareCustom(ByteBuffer o1, ByteBuffer o2)
     {
         if (!o1.hasRemaining() || !o2.hasRemaining())
             return o1.hasRemaining() ? 1 : o2.hasRemaining() ? -1 : 0;
@@ -57,7 +64,25 @@ public class BooleanType extends AbstractType<Boolean>
         if (source.equalsIgnoreCase(Boolean.TRUE.toString()))
             return decompose(true);
 
-        throw new MarshalException(String.format("unable to make boolean from '%s'", source));
+        throw new MarshalException(String.format("Unable to make boolean from '%s'", source));
+    }
+
+    @Override
+    public Term fromJSONObject(Object parsed) throws MarshalException
+    {
+        if (parsed instanceof String)
+            return new Constants.Value(fromString((String) parsed));
+        else if (!(parsed instanceof Boolean))
+            throw new MarshalException(String.format(
+                    "Expected a boolean value, but got a %s: %s", parsed.getClass().getSimpleName(), parsed));
+
+        return new Constants.Value(getSerializer().serialize((Boolean) parsed));
+    }
+
+    @Override
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
+    {
+        return getSerializer().deserialize(buffer).toString();
     }
 
     public CQL3Type asCQL3Type()
@@ -68,5 +93,11 @@ public class BooleanType extends AbstractType<Boolean>
     public TypeSerializer<Boolean> getSerializer()
     {
         return BooleanSerializer.instance;
+    }
+
+    @Override
+    protected int valueLengthIfFixed()
+    {
+        return 1;
     }
 }

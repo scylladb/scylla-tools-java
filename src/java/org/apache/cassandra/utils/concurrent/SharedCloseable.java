@@ -31,5 +31,7 @@ public interface SharedCloseable extends AutoCloseable
      * Throws an exception if the shared resource has already been closed.
      */
     public SharedCloseable sharedCopy();
+    public Throwable close(Throwable accumulate);
 
+    public void addTo(Ref.IdentityCollection identities);
 }

@@ -28,17 +28,13 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import org.apache.commons.cli.*;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.Keyspace;
-import org.apache.cassandra.db.compaction.AbstractCompactionStrategy;
-import org.apache.cassandra.db.compaction.CompactionManager;
-import org.apache.cassandra.db.compaction.LeveledCompactionStrategy;
-import org.apache.cassandra.db.compaction.LeveledManifest;
-import org.apache.cassandra.db.compaction.Scrubber;
-import org.apache.cassandra.db.compaction.WrappingCompactionStrategy;
+import org.apache.cassandra.db.compaction.*;
+import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.sstable.*;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.OutputHandler;
@@ -58,36 +54,51 @@ public class StandaloneScrubber
     public static void main(String args[])
     {
         Options options = Options.parseArgs(args);
+        Util.initDatabaseDescriptor();
+
         try
         {
             // load keyspace descriptions.
-            DatabaseDescriptor.loadSchemas(false);
+            Schema.instance.loadFromDisk(false);
 
-            if (Schema.instance.getCFMetaData(options.keyspaceName, options.cfName) == null)
-                throw new IllegalArgumentException(String.format("Unknown keyspace/columnFamily %s.%s",
-                                                                 options.keyspaceName,
-                                                                 options.cfName));
+            if (Schema.instance.getKSMetaData(options.keyspaceName) == null)
+                throw new IllegalArgumentException(String.format("Unknown keyspace %s", options.keyspaceName));
 
             // Do not load sstables since they might be broken
             Keyspace keyspace = Keyspace.openWithoutSSTables(options.keyspaceName);
-            ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(options.cfName);
+
+            ColumnFamilyStore cfs = null;
+            for (ColumnFamilyStore c : keyspace.getValidColumnFamilies(true, false, options.cfName))
+            {
+                if (c.name.equals(options.cfName))
+                {
+                    cfs = c;
+                    break;
+                }
+            }
+
+            if (cfs == null)
+                throw new IllegalArgumentException(String.format("Unknown table %s.%s",
+                                                                  options.keyspaceName,
+                                                                  options.cfName));
+
             String snapshotName = "pre-scrub-" + System.currentTimeMillis();
 
             OutputHandler handler = new OutputHandler.SystemOutput(options.verbose, options.debug);
-            Directories.SSTableLister lister = cfs.directories.sstableLister().skipTemporary(true);
+            Directories.SSTableLister lister = cfs.getDirectories().sstableLister(Directories.OnTxnErr.THROW).skipTemporary(true);
 
-            List<SSTableReader> sstables = new ArrayList<SSTableReader>();
+            List<SSTableReader> sstables = new ArrayList<>();
 
             // Scrub sstables
             for (Map.Entry<Descriptor, Set<Component>> entry : lister.list().entrySet())
             {
                 Set<Component> components = entry.getValue();
-                if (!components.contains(Component.DATA) || !components.contains(Component.PRIMARY_INDEX))
+                if (!components.contains(Component.DATA))
                     continue;
 
                 try
                 {
-                    SSTableReader sstable = SSTableReader.openNoValidation(entry.getKey(), components, cfs.metadata);
+                    SSTableReader sstable = SSTableReader.openNoValidation(entry.getKey(), components, cfs);
                     sstables.add(sstable);
 
                     File snapshotDirectory = Directories.getSnapshotDirectory(sstable.descriptor, snapshotName);
@@ -108,21 +119,21 @@ public class StandaloneScrubber
             {
                 for (SSTableReader sstable : sstables)
                 {
-                    try
+                    try (LifecycleTransaction txn = LifecycleTransaction.offline(OperationType.SCRUB, sstable))
                     {
-                        Scrubber scrubber = new Scrubber(cfs, sstable, options.skipCorrupted, handler, true, !options.noValidate);
-                        try
+                        txn.obsoleteOriginals(); // make sure originals are deleted and avoid NPE if index is missing, CASSANDRA-9591
+                        try (Scrubber scrubber = new Scrubber(cfs, txn, options.skipCorrupted, handler, !options.noValidate))
                         {
                             scrubber.scrub();
                         }
-                        finally
+                        catch (Throwable t)
                         {
-                            scrubber.close();
+                            if (!cfs.rebuildOnFailedScrub(t))
+                            {
+                                System.out.println(t.getMessage());
+                                throw t;
+                            }
                         }
-
-                        // Remove the sstable (it's been copied by scrub and snapshotted)
-                        sstable.markObsolete(null);
-                        sstable.selfRef().release();
                     }
                     catch (Exception e)
                     {
@@ -133,9 +144,9 @@ public class StandaloneScrubber
             }
 
             // Check (and repair) manifests
-            checkManifest(cfs.getCompactionStrategy(), cfs, sstables);
+            checkManifest(cfs.getCompactionStrategyManager(), cfs, sstables);
             CompactionManager.instance.finishCompactionsAndShutdown(5, TimeUnit.MINUTES);
-            SSTableDeletingTask.waitForDeletions();
+            LifecycleTransaction.waitForDeletions();
             System.exit(0); // We need that to stop non daemonized threads
         }
         catch (Exception e)
@@ -147,11 +158,10 @@ public class StandaloneScrubber
         }
     }
 
-    private static void checkManifest(AbstractCompactionStrategy strategy, ColumnFamilyStore cfs, Collection<SSTableReader> sstables)
+    private static void checkManifest(CompactionStrategyManager strategyManager, ColumnFamilyStore cfs, Collection<SSTableReader> sstables)
     {
-        WrappingCompactionStrategy wrappingStrategy = (WrappingCompactionStrategy)strategy;
-        int maxSizeInMB = (int)((cfs.getCompactionStrategy().getMaxSSTableBytes()) / (1024L * 1024L));
-        if (wrappingStrategy.getWrappedStrategies().size() == 2 && wrappingStrategy.getWrappedStrategies().iterator().next() instanceof LeveledCompactionStrategy)
+        int maxSizeInMB = (int)((cfs.getCompactionStrategyManager().getMaxSSTableBytes()) / (1024L * 1024L));
+        if (strategyManager.getStrategies().size() == 2 && strategyManager.getStrategies().get(0) instanceof LeveledCompactionStrategy)
         {
             System.out.println("Checking leveled manifest");
             Predicate<SSTableReader> repairedPredicate = new Predicate<SSTableReader>()
@@ -263,7 +273,7 @@ public class StandaloneScrubber
             String usage = String.format("%s [options] <keyspace> <column_family>", TOOL_NAME);
             StringBuilder header = new StringBuilder();
             header.append("--\n");
-            header.append("Scrub the sstable for the provided column family." );
+            header.append("Scrub the sstable for the provided table." );
             header.append("\n--\n");
             header.append("Options are:");
             new HelpFormatter().printHelp(usage, header.toString(), options, "");

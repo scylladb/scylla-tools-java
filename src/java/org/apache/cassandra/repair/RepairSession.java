@@ -21,118 +21,124 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.locks.Condition;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import com.google.common.util.concurrent.ListeningExecutorService;
-import com.google.common.util.concurrent.MoreExecutors;
+import com.google.common.collect.Lists;
+import com.google.common.util.concurrent.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.concurrent.NamedThreadFactory;
+import org.apache.cassandra.concurrent.DebuggableThreadPoolExecutor;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.exceptions.RepairException;
 import org.apache.cassandra.gms.*;
-import org.apache.cassandra.service.ActiveRepairService;
-import org.apache.cassandra.utils.*;
-import org.apache.cassandra.utils.concurrent.SimpleCondition;
+import org.apache.cassandra.tracing.Tracing;
+import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.MerkleTrees;
+import org.apache.cassandra.utils.Pair;
 
 /**
- * Coordinates the (active) repair of a token range.
+ * Coordinates the (active) repair of a list of non overlapping token ranges.
  *
- * A given RepairSession repairs a set of replicas for a given range on a list
+ * A given RepairSession repairs a set of replicas for a given set of ranges on a list
  * of column families. For each of the column family to repair, RepairSession
- * creates a RepairJob that handles the repair of that CF.
+ * creates a {@link RepairJob} that handles the repair of that CF.
  *
  * A given RepairJob has the 2 main phases:
- *   1. Validation phase: the job requests merkle trees from each of the replica involves
- *      (RepairJob.sendTreeRequests()) and waits until all trees are received (in
+ * <ol>
+ *   <li>Validation phase: the job requests merkle trees from each of the replica involves
+ *      ({@link org.apache.cassandra.repair.ValidationTask}) and waits until all trees are received (in
  *      validationComplete()).
- *   2. Synchonization phase: once all trees are received, the job compares each tree with
- *      all the other using a so-called Differencer (started by submitDifferencers()). If
- *      differences there is between 2 trees, the concerned Differencer will start a streaming
- *      of the difference between the 2 endpoint concerned (Differencer.performStreamingRepair).
- * The job is done once all its Differencer are done (i.e. have either computed no differences
+ *   </li>
+ *   <li>Synchronization phase: once all trees are received, the job compares each tree with
+ *      all the other using a so-called {@link SyncTask}. If there is difference between 2 trees, the
+ *      concerned SyncTask will start a streaming of the difference between the 2 endpoint concerned.
+ *   </li>
+ * </ol>
+ * The job is done once all its SyncTasks are done (i.e. have either computed no differences
  * or the streaming they started is done (syncComplete())).
  *
  * A given session will execute the first phase (validation phase) of each of it's job
  * sequentially. In other words, it will start the first job and only start the next one
  * once that first job validation phase is complete. This is done so that the replica only
- * create one merkle tree at a time, which is our way to ensure that such creation starts
+ * create one merkle tree per range at a time, which is our way to ensure that such creation starts
  * roughly at the same time on every node (see CASSANDRA-2816). However the synchronization
  * phases are allowed to run concurrently (with each other and with validation phases).
  *
- * A given RepairJob has 2 modes: either sequential or not (isSequential flag). If sequential,
+ * A given RepairJob has 2 modes: either sequential or not (RepairParallelism). If sequential,
  * it will requests merkle tree creation from each replica in sequence (though in that case
  * we still first send a message to each node to flush and snapshot data so each merkle tree
  * creation is still done on similar data, even if the actual creation is not
  * done simulatneously). If not sequential, all merkle tree are requested in parallel.
- * Similarly, if a job is sequential, it will handle one Differencer at a time, but will handle
+ * Similarly, if a job is sequential, it will handle one SyncTask at a time, but will handle
  * all of them in parallel otherwise.
  */
-public class RepairSession extends WrappedRunnable implements IEndpointStateChangeSubscriber,
-                                                              IFailureDetectionEventListener,
-                                                              IRepairJobEventListener
+public class RepairSession extends AbstractFuture<RepairSessionResult> implements IEndpointStateChangeSubscriber,
+                                                                                 IFailureDetectionEventListener
 {
     private static Logger logger = LoggerFactory.getLogger(RepairSession.class);
 
+    public final UUID parentRepairSession;
     /** Repair session ID */
     private final UUID id;
     public final String keyspace;
     private final String[] cfnames;
     public final RepairParallelism parallelismDegree;
     /** Range to repair */
-    public final Range<Token> range;
+    public final Collection<Range<Token>> ranges;
     public final Set<InetAddress> endpoints;
+    public final long repairedAt;
 
-    private volatile Exception exception;
+    // number of validations left to be performed
+    private final AtomicInteger validationRemaining;
+
     private final AtomicBoolean isFailed = new AtomicBoolean(false);
-    private final AtomicBoolean fdUnregistered = new AtomicBoolean(false);
 
-    // First, all RepairJobs are added to this queue,
-    final Queue<RepairJob> jobs = new ConcurrentLinkedQueue<>();
-
-    // and after receiving all validation, the job is moved to
-    // this map, keyed by CF name.
-    final Map<String, RepairJob> syncingJobs = new ConcurrentHashMap<>();
+    // Each validation task waits response from replica in validating ConcurrentMap (keyed by CF name and endpoint address)
+    private final ConcurrentMap<Pair<RepairJobDesc, InetAddress>, ValidationTask> validating = new ConcurrentHashMap<>();
+    // Remote syncing jobs wait response in syncingTasks map
+    private final ConcurrentMap<Pair<RepairJobDesc, NodePair>, RemoteSyncTask> syncingTasks = new ConcurrentHashMap<>();
 
     // Tasks(snapshot, validate request, differencing, ...) are run on taskExecutor
-    private final ListeningExecutorService taskExecutor = MoreExecutors.listeningDecorator(Executors.newCachedThreadPool(new NamedThreadFactory("RepairJobTask")));
-
-    private final SimpleCondition completed = new SimpleCondition();
-    public final Condition differencingDone = new SimpleCondition();
-    public final UUID parentRepairSession;
+    public final ListeningExecutorService taskExecutor = MoreExecutors.listeningDecorator(DebuggableThreadPoolExecutor.createCachedThreadpoolWithMaxSize("RepairJobTask"));
 
     private volatile boolean terminated = false;
 
     /**
      * Create new repair session.
      *
-     * @param range range to repair
+     * @param parentRepairSession the parent sessions id
+     * @param id this sessions id
+     * @param ranges ranges to repair
      * @param keyspace name of keyspace
      * @param parallelismDegree specifies the degree of parallelism when calculating the merkle trees
      * @param endpoints the data centers that should be part of the repair; null for all DCs
+     * @param repairedAt when the repair occurred (millis)
      * @param cfnames names of columnfamilies
      */
-    public RepairSession(UUID parentRepairSession, Range<Token> range, String keyspace, RepairParallelism parallelismDegree, Set<InetAddress> endpoints, String... cfnames)
+    public RepairSession(UUID parentRepairSession,
+                         UUID id,
+                         Collection<Range<Token>> ranges,
+                         String keyspace,
+                         RepairParallelism parallelismDegree,
+                         Set<InetAddress> endpoints,
+                         long repairedAt,
+                         String... cfnames)
     {
-        this(parentRepairSession, UUIDGen.getTimeUUID(), range, keyspace, parallelismDegree, endpoints, cfnames);
-    }
+        assert cfnames.length > 0 : "Repairing no column families seems pointless, doesn't it";
 
-    public RepairSession(UUID parentRepairSession, UUID id, Range<Token> range, String keyspace, RepairParallelism parallelismDegree, Set<InetAddress> endpoints, String[] cfnames)
-    {
         this.parentRepairSession = parentRepairSession;
         this.id = id;
         this.parallelismDegree = parallelismDegree;
         this.keyspace = keyspace;
         this.cfnames = cfnames;
-        assert cfnames.length > 0 : "Repairing no column families seems pointless, doesn't it";
-        this.range = range;
+        this.ranges = ranges;
         this.endpoints = endpoints;
+        this.repairedAt = repairedAt;
+        this.validationRemaining = new AtomicInteger(cfnames.length);
     }
 
     public UUID getId()
@@ -140,9 +146,19 @@ public class RepairSession extends WrappedRunnable implements IEndpointStateChan
         return id;
     }
 
-    public Range<Token> getRange()
+    public Collection<Range<Token>> getRanges()
     {
-        return range;
+        return ranges;
+    }
+
+    public void waitForValidation(Pair<RepairJobDesc, InetAddress> key, ValidationTask task)
+    {
+        validating.put(key, task);
+    }
+
+    public void waitForSync(Pair<RepairJobDesc, NodePair> key, RemoteSyncTask task)
+    {
+        syncingTasks.put(key, task);
     }
 
     /**
@@ -150,55 +166,28 @@ public class RepairSession extends WrappedRunnable implements IEndpointStateChan
      *
      * @param desc repair job description
      * @param endpoint endpoint that sent merkle tree
-     * @param tree calculated merkle tree, or null if validation failed
+     * @param trees calculated merkle trees, or null if validation failed
      */
-    public void validationComplete(RepairJobDesc desc, InetAddress endpoint, MerkleTree tree)
+    public void validationComplete(RepairJobDesc desc, InetAddress endpoint, MerkleTrees trees)
     {
-        RepairJob job = jobs.peek();
-        if (job == null)
+        ValidationTask task = validating.remove(Pair.create(desc, endpoint));
+        if (task == null)
         {
             assert terminated;
             return;
         }
 
-        if (tree == null)
+        String message = String.format("Received merkle tree for %s from %s", desc.columnFamily, endpoint);
+        logger.info("[repair #{}] {}", getId(), message);
+        Tracing.traceRepair(message);
+        task.treesReceived(trees);
+
+        // Unregister from FailureDetector once we've completed synchronizing Merkle trees.
+        // After this point, we rely on tcp_keepalive for individual sockets to notify us when a connection is down.
+        // See CASSANDRA-3569
+        if (validationRemaining.decrementAndGet() == 0)
         {
-            exception = new RepairException(desc, "Validation failed in " + endpoint);
-            forceShutdown();
-            return;
-        }
-
-        logger.info(String.format("[repair #%s] Received merkle tree for %s from %s", getId(), desc.columnFamily, endpoint));
-
-        assert job.desc.equals(desc);
-        if (job.addTree(endpoint, tree) == 0)
-        {
-            logger.debug("All responses received for {}/{}", getId(), desc.columnFamily);
-            if (!job.isFailed())
-            {
-                syncingJobs.put(job.desc.columnFamily, job);
-                job.submitDifferencers();
-            }
-
-            // This job is complete, switching to next in line (note that only one thread will ever do this)
-            jobs.poll();
-            RepairJob nextJob = jobs.peek();
-            if (nextJob == null)
-            {
-                // Unregister from FailureDetector once we've completed synchronizing Merkle trees.
-                // After this point, we rely on tcp_keepalive for individual sockets to notify us when a connection is down.
-                // See CASSANDRA-3569
-                if (fdUnregistered.compareAndSet(false, true))
-                    FailureDetector.instance.unregisterFailureDetectionEventListener(this);
-
-                // We are done with this repair session as far as differencing
-                // is considered. Just inform the session
-                differencingDone.signalAll();
-            }
-            else
-            {
-                nextJob.sendTreeRequests(endpoints);
-            }
+            FailureDetector.instance.unregisterFailureDetectionEventListener(this);
         }
     }
 
@@ -211,38 +200,15 @@ public class RepairSession extends WrappedRunnable implements IEndpointStateChan
      */
     public void syncComplete(RepairJobDesc desc, NodePair nodes, boolean success)
     {
-        RepairJob job = syncingJobs.get(desc.columnFamily);
-        if (job == null)
+        RemoteSyncTask task = syncingTasks.get(Pair.create(desc, nodes));
+        if (task == null)
         {
             assert terminated;
             return;
         }
 
-        if (!success)
-        {
-            exception = new RepairException(desc, String.format("Sync failed between %s and %s", nodes.endpoint1, nodes.endpoint2));
-            forceShutdown();
-            return;
-        }
-
         logger.debug(String.format("[repair #%s] Repair completed between %s and %s on %s", getId(), nodes.endpoint1, nodes.endpoint2, desc.columnFamily));
-
-        if (job.completedSynchronization())
-        {
-            RepairJob completedJob = syncingJobs.remove(job.desc.columnFamily);
-            String remaining = syncingJobs.size() == 0 ? "" : String.format(" (%d remaining column family to sync for this session)", syncingJobs.size());
-            if (completedJob != null && completedJob.isFailed())
-                logger.warn(String.format("[repair #%s] %s sync failed%s", getId(), desc.columnFamily, remaining));
-            else
-                logger.info(String.format("[repair #%s] %s is fully synced%s", getId(), desc.columnFamily, remaining));
-
-            if (jobs.isEmpty() && syncingJobs.isEmpty())
-            {
-                taskExecutor.shutdown();
-                // this repair session is completed
-                completed.signalAll();
-            }
-        }
+        task.syncComplete(success);
     }
 
     private String repairedNodes()
@@ -254,15 +220,30 @@ public class RepairSession extends WrappedRunnable implements IEndpointStateChan
         return sb.toString();
     }
 
-    // we don't care about the return value but care about it throwing exception
-    public void runMayThrow() throws Exception
+    /**
+     * Start RepairJob on given ColumnFamilies.
+     *
+     * This first validates if all replica are available, and if they are,
+     * creates RepairJobs and submit to run on given executor.
+     *
+     * @param executor Executor to run validation
+     */
+    public void start(ListeningExecutorService executor)
     {
-        logger.info(String.format("[repair #%s] new session: will sync %s on range %s for %s.%s", getId(), repairedNodes(), range, keyspace, Arrays.toString(cfnames)));
+        String message;
+        if (terminated)
+            return;
+
+        logger.info(String.format("[repair #%s] new session: will sync %s on range %s for %s.%s", getId(), repairedNodes(), ranges, keyspace, Arrays.toString(cfnames)));
+        Tracing.traceRepair("Syncing range {}", ranges);
+        SystemDistributedKeyspace.startRepairs(getId(), parentRepairSession, keyspace, cfnames, ranges, endpoints);
 
         if (endpoints.isEmpty())
         {
-            differencingDone.signalAll();
-            logger.info(String.format("[repair #%s] No neighbors to repair with on range %s: session completed", getId(), range));
+            logger.info("[repair #{}] {}", getId(), message = String.format("No neighbors to repair with on range %s: session completed", ranges));
+            Tracing.traceRepair(message);
+            set(new RepairSessionResult(id, keyspace, ranges, Lists.<RepairResult>newArrayList()));
+            SystemDistributedKeyspace.failRepairs(getId(), keyspace, cfnames, new RuntimeException(message));
             return;
         }
 
@@ -271,86 +252,65 @@ public class RepairSession extends WrappedRunnable implements IEndpointStateChan
         {
             if (!FailureDetector.instance.isAlive(endpoint))
             {
-                String message = String.format("Cannot proceed on repair because a neighbor (%s) is dead: session failed", endpoint);
-                differencingDone.signalAll();
+                message = String.format("Cannot proceed on repair because a neighbor (%s) is dead: session failed", endpoint);
                 logger.error("[repair #{}] {}", getId(), message);
-                throw new IOException(message);
+                Exception e = new IOException(message);
+                setException(e);
+                SystemDistributedKeyspace.failRepairs(getId(), keyspace, cfnames, e);
+                return;
             }
         }
 
-        ActiveRepairService.instance.addToActiveSessions(this);
-        try
+        // Create and submit RepairJob for each ColumnFamily
+        List<ListenableFuture<RepairResult>> jobs = new ArrayList<>(cfnames.length);
+        for (String cfname : cfnames)
         {
-            // Create and queue a RepairJob for each column family
-            for (String cfname : cfnames)
-            {
-                RepairJob job = new RepairJob(this, parentRepairSession, id, keyspace, cfname, range, parallelismDegree, taskExecutor);
-                jobs.offer(job);
-            }
-            logger.debug("Sending tree requests to endpoints {}", endpoints);
-            jobs.peek().sendTreeRequests(endpoints);
-
-            // block whatever thread started this session until all requests have been returned:
-            // if this thread dies, the session will still complete in the background
-            completed.await();
-
-            if (exception == null)
-            {
-                logger.info(String.format("[repair #%s] session completed successfully", getId()));
-            }
-            else
-            {
-                logger.error(String.format("[repair #%s] session completed with the following error", getId()), exception);
-                throw exception;
-            }
+            RepairJob job = new RepairJob(this, cfname);
+            executor.execute(job);
+            jobs.add(job);
         }
-        catch (InterruptedException e)
+
+        // When all RepairJobs are done without error, cleanup and set the final result
+        Futures.addCallback(Futures.allAsList(jobs), new FutureCallback<List<RepairResult>>()
         {
-            throw new RuntimeException("Interrupted while waiting for repair.");
-        }
-        finally
-        {
-            // mark this session as terminated
-            terminate();
+            public void onSuccess(List<RepairResult> results)
+            {
+                // this repair session is completed
+                logger.info("[repair #{}] {}", getId(), "Session completed successfully");
+                Tracing.traceRepair("Completed sync of range {}", ranges);
+                set(new RepairSessionResult(id, keyspace, ranges, results));
 
-            ActiveRepairService.instance.removeFromActiveSessions(this);
+                taskExecutor.shutdown();
+                // mark this session as terminated
+                terminate();
+            }
 
-            // If we've reached here in an exception state without completing Merkle Tree sync, we'll still be registered
-            // with the FailureDetector.
-            if (fdUnregistered.compareAndSet(false, true))
-                FailureDetector.instance.unregisterFailureDetectionEventListener(this);
-        }
+            public void onFailure(Throwable t)
+            {
+                logger.error(String.format("[repair #%s] Session completed with the following error", getId()), t);
+                Tracing.traceRepair("Session completed with the following error: {}", t);
+                forceShutdown(t);
+            }
+        });
     }
 
     public void terminate()
     {
         terminated = true;
-        jobs.clear();
-        syncingJobs.clear();
+        validating.clear();
+        syncingTasks.clear();
     }
 
     /**
      * clear all RepairJobs and terminate this session.
+     *
+     * @param reason Cause of error for shutdown
      */
-    public void forceShutdown()
+    public void forceShutdown(Throwable reason)
     {
+        setException(reason);
         taskExecutor.shutdownNow();
-        differencingDone.signalAll();
-        completed.signalAll();
-    }
-
-    public void failedSnapshot()
-    {
-        exception = new IOException("Failed during snapshot creation.");
-        forceShutdown();
-    }
-
-    void failedNode(InetAddress remote)
-    {
-        String errorMsg = String.format("Endpoint %s died", remote);
-        exception = new IOException(errorMsg);
-        // If a node failed during Merkle creation, we stop everything (though there could still be some activity in the background)
-        forceShutdown();
+        terminate();
     }
 
     public void onJoin(InetAddress endpoint, EndpointState epState) {}
@@ -383,6 +343,9 @@ public class RepairSession extends WrappedRunnable implements IEndpointStateChan
         if (!isFailed.compareAndSet(false, true))
             return;
 
-        failedNode(endpoint);
+        Exception exception = new IOException(String.format("Endpoint %s died", endpoint));
+        logger.error(String.format("[repair #%s] session completed with the following error", getId()), exception);
+        // If a node failed, we stop everything (though there could still be some activity in the background)
+        forceShutdown(exception);
     }
 }

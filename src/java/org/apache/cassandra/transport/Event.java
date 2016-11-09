@@ -19,13 +19,27 @@ package org.apache.cassandra.transport;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.util.Iterator;
+import java.util.List;
 
 import com.google.common.base.Objects;
 import io.netty.buffer.ByteBuf;
 
 public abstract class Event
 {
-    public enum Type { TOPOLOGY_CHANGE, STATUS_CHANGE, SCHEMA_CHANGE }
+    public enum Type {
+        TOPOLOGY_CHANGE(Server.VERSION_3),
+        STATUS_CHANGE(Server.VERSION_3),
+        SCHEMA_CHANGE(Server.VERSION_3),
+        TRACE_COMPLETE(Server.VERSION_4);
+
+        public final int minimumVersion;
+
+        Type(int minimumVersion)
+        {
+            this.minimumVersion = minimumVersion;
+        }
+    }
 
     public final Type type;
 
@@ -36,7 +50,10 @@ public abstract class Event
 
     public static Event deserialize(ByteBuf cb, int version)
     {
-        switch (CBUtil.readEnumValue(Type.class, cb))
+        Type eventType = CBUtil.readEnumValue(Type.class, cb);
+        if (eventType.minimumVersion > version)
+            throw new ProtocolException("Event " + eventType.name() + " not valid for protocol version " + version);
+        switch (eventType)
         {
             case TOPOLOGY_CHANGE:
                 return TopologyChange.deserializeEvent(cb, version);
@@ -50,6 +67,8 @@ public abstract class Event
 
     public void serialize(ByteBuf dest, int version)
     {
+        if (type.minimumVersion > version)
+            throw new ProtocolException("Event " + type.name() + " not valid for protocol version " + version);
         CBUtil.writeEnumValue(type, dest);
         serializeEvent(dest, version);
     }
@@ -62,18 +81,32 @@ public abstract class Event
     protected abstract void serializeEvent(ByteBuf dest, int version);
     protected abstract int eventSerializedSize(int version);
 
-    public static class TopologyChange extends Event
+    public static abstract class NodeEvent extends Event
+    {
+        public final InetSocketAddress node;
+
+        public InetAddress nodeAddress()
+        {
+            return node.getAddress();
+        }
+
+        private NodeEvent(Type type, InetSocketAddress node)
+        {
+            super(type);
+            this.node = node;
+        }
+    }
+
+    public static class TopologyChange extends NodeEvent
     {
         public enum Change { NEW_NODE, REMOVED_NODE, MOVED_NODE }
 
         public final Change change;
-        public final InetSocketAddress node;
 
         private TopologyChange(Change change, InetSocketAddress node)
         {
-            super(Type.TOPOLOGY_CHANGE);
+            super(Type.TOPOLOGY_CHANGE, node);
             this.change = change;
-            this.node = node;
         }
 
         public static TopologyChange newNode(InetAddress host, int port)
@@ -134,18 +167,17 @@ public abstract class Event
         }
     }
 
-    public static class StatusChange extends Event
+
+    public static class StatusChange extends NodeEvent
     {
         public enum Status { UP, DOWN }
 
         public final Status status;
-        public final InetSocketAddress node;
 
         private StatusChange(Status status, InetSocketAddress node)
         {
-            super(Type.STATUS_CHANGE);
+            super(Type.STATUS_CHANGE, node);
             this.status = status;
-            this.node = node;
         }
 
         public static StatusChange nodeUp(InetAddress host, int port)
@@ -204,22 +236,29 @@ public abstract class Event
     public static class SchemaChange extends Event
     {
         public enum Change { CREATED, UPDATED, DROPPED }
-        public enum Target { KEYSPACE, TABLE, TYPE }
+        public enum Target { KEYSPACE, TABLE, TYPE, FUNCTION, AGGREGATE }
 
         public final Change change;
         public final Target target;
         public final String keyspace;
-        public final String tableOrType;
+        public final String name;
+        public final List<String> argTypes;
 
-        public SchemaChange(Change change, Target target, String keyspace, String tableOrType)
+        public SchemaChange(Change change, Target target, String keyspace, String name, List<String> argTypes)
         {
             super(Type.SCHEMA_CHANGE);
             this.change = change;
             this.target = target;
             this.keyspace = keyspace;
-            this.tableOrType = tableOrType;
+            this.name = name;
             if (target != Target.KEYSPACE)
-                assert this.tableOrType != null : "Table or type should be set for non-keyspace schema change events";
+                assert this.name != null : "Table, type, function or aggregate name should be set for non-keyspace schema change events";
+            this.argTypes = argTypes;
+        }
+
+        public SchemaChange(Change change, Target target, String keyspace, String name)
+        {
+            this(change, target, keyspace, name, null);
         }
 
         public SchemaChange(Change change, String keyspace)
@@ -236,7 +275,11 @@ public abstract class Event
                 Target target = CBUtil.readEnumValue(Target.class, cb);
                 String keyspace = CBUtil.readString(cb);
                 String tableOrType = target == Target.KEYSPACE ? null : CBUtil.readString(cb);
-                return new SchemaChange(change, target, keyspace, tableOrType);
+                List<String> argTypes = null;
+                if (target == Target.FUNCTION || target == Target.AGGREGATE)
+                    argTypes = CBUtil.readStringList(cb);
+
+                return new SchemaChange(change, target, keyspace, tableOrType, argTypes);
             }
             else
             {
@@ -248,13 +291,36 @@ public abstract class Event
 
         public void serializeEvent(ByteBuf dest, int version)
         {
+            if (target == Target.FUNCTION || target == Target.AGGREGATE)
+            {
+                if (version >= 4)
+                {
+                    // available since protocol version 4
+                    CBUtil.writeEnumValue(change, dest);
+                    CBUtil.writeEnumValue(target, dest);
+                    CBUtil.writeString(keyspace, dest);
+                    CBUtil.writeString(name, dest);
+                    CBUtil.writeStringList(argTypes, dest);
+                }
+                else
+                {
+                    // not available in protocol versions < 4 - just say the keyspace was updated.
+                    CBUtil.writeEnumValue(Change.UPDATED, dest);
+                    if (version >= 3)
+                        CBUtil.writeEnumValue(Target.KEYSPACE, dest);
+                    CBUtil.writeString(keyspace, dest);
+                    CBUtil.writeString("", dest);
+                }
+                return;
+            }
+
             if (version >= 3)
             {
                 CBUtil.writeEnumValue(change, dest);
                 CBUtil.writeEnumValue(target, dest);
                 CBUtil.writeString(keyspace, dest);
                 if (target != Target.KEYSPACE)
-                    CBUtil.writeString(tableOrType, dest);
+                    CBUtil.writeString(name, dest);
             }
             else
             {
@@ -270,13 +336,30 @@ public abstract class Event
                 {
                     CBUtil.writeEnumValue(change, dest);
                     CBUtil.writeString(keyspace, dest);
-                    CBUtil.writeString(target == Target.KEYSPACE ? "" : tableOrType, dest);
+                    CBUtil.writeString(target == Target.KEYSPACE ? "" : name, dest);
                 }
             }
         }
 
         public int eventSerializedSize(int version)
         {
+            if (target == Target.FUNCTION || target == Target.AGGREGATE)
+            {
+                if (version >= 4)
+                    return CBUtil.sizeOfEnumValue(change)
+                               + CBUtil.sizeOfEnumValue(target)
+                               + CBUtil.sizeOfString(keyspace)
+                               + CBUtil.sizeOfString(name)
+                               + CBUtil.sizeOfStringList(argTypes);
+                if (version >= 3)
+                    return CBUtil.sizeOfEnumValue(Change.UPDATED)
+                           + CBUtil.sizeOfEnumValue(Target.KEYSPACE)
+                           + CBUtil.sizeOfString(keyspace);
+                return CBUtil.sizeOfEnumValue(Change.UPDATED)
+                       + CBUtil.sizeOfString(keyspace)
+                       + CBUtil.sizeOfString("");
+            }
+
             if (version >= 3)
             {
                 int size = CBUtil.sizeOfEnumValue(change)
@@ -284,7 +367,7 @@ public abstract class Event
                          + CBUtil.sizeOfString(keyspace);
 
                 if (target != Target.KEYSPACE)
-                    size += CBUtil.sizeOfString(tableOrType);
+                    size += CBUtil.sizeOfString(name);
 
                 return size;
             }
@@ -298,20 +381,36 @@ public abstract class Event
                 }
                 return CBUtil.sizeOfEnumValue(change)
                      + CBUtil.sizeOfString(keyspace)
-                     + CBUtil.sizeOfString(target == Target.KEYSPACE ? "" : tableOrType);
+                     + CBUtil.sizeOfString(target == Target.KEYSPACE ? "" : name);
             }
         }
 
         @Override
         public String toString()
         {
-            return change + " " + target + " " + keyspace + (tableOrType == null ? "" : "." + tableOrType);
+            StringBuilder sb = new StringBuilder().append(change)
+                                                  .append(' ').append(target)
+                                                  .append(' ').append(keyspace);
+            if (name != null)
+                sb.append('.').append(name);
+            if (argTypes != null)
+            {
+                sb.append(" (");
+                for (Iterator<String> iter = argTypes.iterator(); iter.hasNext(); )
+                {
+                    sb.append(iter.next());
+                    if (iter.hasNext())
+                        sb.append(',');
+                }
+                sb.append(')');
+            }
+            return sb.toString();
         }
 
         @Override
         public int hashCode()
         {
-            return Objects.hashCode(change, target, keyspace, tableOrType);
+            return Objects.hashCode(change, target, keyspace, name, argTypes);
         }
 
         @Override
@@ -324,7 +423,8 @@ public abstract class Event
             return Objects.equal(change, scc.change)
                 && Objects.equal(target, scc.target)
                 && Objects.equal(keyspace, scc.keyspace)
-                && Objects.equal(tableOrType, scc.tableOrType);
+                && Objects.equal(name, scc.name)
+                && Objects.equal(argTypes, scc.argTypes);
         }
     }
 }

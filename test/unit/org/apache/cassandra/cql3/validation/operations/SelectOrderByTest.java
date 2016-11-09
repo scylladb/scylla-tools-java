@@ -21,6 +21,7 @@ import org.junit.Test;
 
 import org.apache.cassandra.cql3.CQLTester;
 
+import static java.util.Arrays.asList;
 import static org.junit.Assert.assertTrue;
 
 public class SelectOrderByTest extends CQLTester
@@ -332,11 +333,147 @@ public class SelectOrderByTest extends CQLTester
         assertRows(execute("SELECT col1 FROM %s WHERE my_id in('key1', 'key2', 'key3') ORDER BY col1"),
                    row(1), row(2), row(3));
 
+        assertRows(execute("SELECT col1 FROM %s WHERE my_id in('key1', 'key2', 'key3') ORDER BY col1 LIMIT 2"),
+                   row(1), row(2));
+
+        assertRows(execute("SELECT col1 FROM %s WHERE my_id in('key1', 'key2', 'key3') ORDER BY col1 LIMIT 10"),
+                   row(1), row(2), row(3));
+
         assertRows(execute("SELECT col1, my_id FROM %s WHERE my_id in('key1', 'key2', 'key3') ORDER BY col1"),
                    row(1, "key1"), row(2, "key3"), row(3, "key2"));
 
         assertRows(execute("SELECT my_id, col1 FROM %s WHERE my_id in('key1', 'key2', 'key3') ORDER BY col1"),
                    row("key1", 1), row("key3", 2), row("key2", 3));
+
+        createTable("CREATE TABLE %s (pk1 int, pk2 int, c int, v text, PRIMARY KEY ((pk1, pk2), c) )");
+        execute("INSERT INTO %s (pk1, pk2, c, v) VALUES (?, ?, ?, ?)", 1, 1, 2, "A");
+        execute("INSERT INTO %s (pk1, pk2, c, v) VALUES (?, ?, ?, ?)", 1, 2, 1, "B");
+        execute("INSERT INTO %s (pk1, pk2, c, v) VALUES (?, ?, ?, ?)", 1, 3, 3, "C");
+        execute("INSERT INTO %s (pk1, pk2, c, v) VALUES (?, ?, ?, ?)", 1, 1, 4, "D");
+
+        assertRows(execute("SELECT v, ttl(v), c FROM %s where pk1 = ? AND pk2 IN (?, ?) ORDER BY c; ", 1, 1, 2),
+                   row("B", null, 1),
+                   row("A", null, 2),
+                   row("D", null, 4));
+
+        assertRows(execute("SELECT v, ttl(v), c as name_1 FROM %s where pk1 = ? AND pk2 IN (?, ?) ORDER BY c; ", 1, 1, 2),
+                   row("B", null, 1),
+                   row("A", null, 2),
+                   row("D", null, 4));
+
+        assertRows(execute("SELECT v FROM %s where pk1 = ? AND pk2 IN (?, ?) ORDER BY c; ", 1, 1, 2),
+                   row("B"),
+                   row("A"),
+                   row("D"));
+
+        assertRows(execute("SELECT v FROM %s where pk1 = ? AND pk2 IN (?, ?) ORDER BY c LIMIT 2; ", 1, 1, 2),
+                   row("B"),
+                   row("A"));
+
+        assertRows(execute("SELECT v FROM %s where pk1 = ? AND pk2 IN (?, ?) ORDER BY c LIMIT 10; ", 1, 1, 2),
+                   row("B"),
+                   row("A"),
+                   row("D"));
+
+        assertRows(execute("SELECT v as c FROM %s where pk1 = ? AND pk2 IN (?, ?) ORDER BY c; ", 1, 1, 2),
+                   row("B"),
+                   row("A"),
+                   row("D"));
+
+        createTable("CREATE TABLE %s (pk1 int, pk2 int, c1 int, c2 int, v text, PRIMARY KEY ((pk1, pk2), c1, c2) )");
+        execute("INSERT INTO %s (pk1, pk2, c1, c2, v) VALUES (?, ?, ?, ?, ?)", 1, 1, 4, 4, "A");
+        execute("INSERT INTO %s (pk1, pk2, c1, c2, v) VALUES (?, ?, ?, ?, ?)", 1, 2, 1, 2, "B");
+        execute("INSERT INTO %s (pk1, pk2, c1, c2, v) VALUES (?, ?, ?, ?, ?)", 1, 3, 3, 3, "C");
+        execute("INSERT INTO %s (pk1, pk2, c1, c2, v) VALUES (?, ?, ?, ?, ?)", 1, 1, 4, 1, "D");
+
+        assertRows(execute("SELECT v, ttl(v), c1, c2 FROM %s where pk1 = ? AND pk2 IN (?, ?) ORDER BY c1, c2; ", 1, 1, 2),
+                   row("B", null, 1, 2),
+                   row("D", null, 4, 1),
+                   row("A", null, 4, 4));
+
+        assertRows(execute("SELECT v, ttl(v), c1 as name_1, c2 as name_2 FROM %s where pk1 = ? AND pk2 IN (?, ?) ORDER BY c1, c2; ", 1, 1, 2),
+                   row("B", null, 1, 2),
+                   row("D", null, 4, 1),
+                   row("A", null, 4, 4));
+
+        assertRows(execute("SELECT v FROM %s where pk1 = ? AND pk2 IN (?, ?) ORDER BY c1, c2; ", 1, 1, 2),
+                   row("B"),
+                   row("D"),
+                   row("A"));
+
+        assertRows(execute("SELECT v as c2 FROM %s where pk1 = ? AND pk2 IN (?, ?) ORDER BY c1, c2; ", 1, 1, 2),
+                   row("B"),
+                   row("D"),
+                   row("A"));
+
+        assertRows(execute("SELECT v as c2 FROM %s where pk1 = ? AND pk2 IN (?, ?) ORDER BY c1, c2 LIMIT 2; ", 1, 1, 2),
+                   row("B"),
+                   row("D"));
+
+        assertRows(execute("SELECT v as c2 FROM %s where pk1 = ? AND pk2 IN (?, ?) ORDER BY c1, c2 LIMIT 10; ", 1, 1, 2),
+                   row("B"),
+                   row("D"),
+                   row("A"));
+
+        assertRows(execute("SELECT v as c2 FROM %s where pk1 = ? AND pk2 IN (?, ?) ORDER BY c1 DESC , c2 DESC; ", 1, 1, 2),
+                   row("A"),
+                   row("D"),
+                   row("B"));
+
+        assertRows(execute("SELECT v as c2 FROM %s where pk1 = ? AND pk2 IN (?, ?) ORDER BY c1 DESC , c2 DESC LIMIT 2; ", 1, 1, 2),
+                   row("A"),
+                   row("D"));
+
+        assertRows(execute("SELECT v as c2 FROM %s where pk1 = ? AND pk2 IN (?, ?) ORDER BY c1 DESC , c2 DESC LIMIT 10; ", 1, 1, 2),
+                   row("A"),
+                   row("D"),
+                   row("B"));
+
+        assertInvalidMessage("LIMIT must be strictly positive",
+                             "SELECT v as c2 FROM %s where pk1 = ? AND pk2 IN (?, ?) ORDER BY c1 DESC , c2 DESC LIMIT 0; ", 1, 1, 2);
+    }
+
+    @Test
+    public void testOrderByForInClauseWithNullValue() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int, b int, c int, s int static, d int, PRIMARY KEY (a, b, c))");
+
+        execute("INSERT INTO %s (a, b, c, d) VALUES (1, 1, 1, 1)");
+        execute("INSERT INTO %s (a, b, c, d) VALUES (1, 1, 2, 1)");
+        execute("INSERT INTO %s (a, b, c, d) VALUES (2, 2, 1, 1)");
+        execute("INSERT INTO %s (a, b, c, d) VALUES (2, 2, 2, 1)");
+
+        execute("UPDATE %s SET s = 1 WHERE a = 1");
+        execute("UPDATE %s SET s = 2 WHERE a = 2");
+        execute("UPDATE %s SET s = 3 WHERE a = 3");
+
+        assertRows(execute("SELECT a, b, c, d, s FROM %s WHERE a IN (1, 2, 3) ORDER BY b DESC"),
+                   row(2, 2, 2, 1, 2),
+                   row(2, 2, 1, 1, 2),
+                   row(1, 1, 2, 1, 1),
+                   row(1, 1, 1, 1, 1),
+                   row(3, null, null, null, 3));
+
+        assertRows(execute("SELECT a, b, c, d, s FROM %s WHERE a IN (1, 2, 3) ORDER BY b ASC"),
+                   row(3, null, null, null, 3),
+                   row(1, 1, 1, 1, 1),
+                   row(1, 1, 2, 1, 1),
+                   row(2, 2, 1, 1, 2),
+                   row(2, 2, 2, 1, 2));
+
+        assertRows(execute("SELECT a, b, c, d, s FROM %s WHERE a IN (1, 2, 3) ORDER BY b DESC , c DESC"),
+                   row(2, 2, 2, 1, 2),
+                   row(2, 2, 1, 1, 2),
+                   row(1, 1, 2, 1, 1),
+                   row(1, 1, 1, 1, 1),
+                   row(3, null, null, null, 3));
+
+        assertRows(execute("SELECT a, b, c, d, s FROM %s WHERE a IN (1, 2, 3) ORDER BY b ASC, c ASC"),
+                   row(3, null, null, null, 3),
+                   row(1, 1, 1, 1, 1),
+                   row(1, 1, 2, 1, 1),
+                   row(2, 2, 1, 1, 2),
+                   row(2, 2, 2, 1, 2));
     }
 
     /**
@@ -464,13 +601,14 @@ public class SelectOrderByTest extends CQLTester
         assertRows(execute("SELECT v FROM %s WHERE k=0 AND c1 = 0 AND c2 IN (2, 0) ORDER BY c1 DESC"),
                    row(2),
                    row(0));
+
         assertRows(execute("SELECT v FROM %s WHERE k IN (1, 0)"),
-                   row(3),
-                   row(4),
-                   row(5),
                    row(0),
                    row(1),
-                   row(2));
+                   row(2),
+                   row(3),
+                   row(4),
+                   row(5));
 
         assertRows(execute("SELECT v FROM %s WHERE k IN (1, 0) ORDER BY c1 ASC"),
                    row(0),
@@ -485,6 +623,48 @@ public class SelectOrderByTest extends CQLTester
 
         // since we don 't know the write times, just assert that the order matches the order we expect
         assertTrue(isFirstIntSorted(results));
+    }
+
+    @Test
+    public void testInOrderByWithTwoPartitionKeyColumns() throws Throwable
+    {
+        for (String option : asList("", "WITH CLUSTERING ORDER BY (col_3 DESC)"))
+        {
+            createTable("CREATE TABLE %s (col_1 int, col_2 int, col_3 int, PRIMARY KEY ((col_1, col_2), col_3)) " + option);
+            execute("INSERT INTO %s (col_1, col_2, col_3) VALUES(?, ?, ?)", 1, 1, 1);
+            execute("INSERT INTO %s (col_1, col_2, col_3) VALUES(?, ?, ?)", 1, 1, 2);
+            execute("INSERT INTO %s (col_1, col_2, col_3) VALUES(?, ?, ?)", 1, 1, 13);
+            execute("INSERT INTO %s (col_1, col_2, col_3) VALUES(?, ?, ?)", 1, 2, 10);
+            execute("INSERT INTO %s (col_1, col_2, col_3) VALUES(?, ?, ?)", 1, 2, 11);
+
+            assertRows(execute("select * from %s where col_1=? and col_2 IN (?, ?) order by col_3;", 1, 1, 2),
+                       row(1, 1, 1),
+                       row(1, 1, 2),
+                       row(1, 2, 10),
+                       row(1, 2, 11),
+                       row(1, 1, 13));
+
+            assertRows(execute("select * from %s where col_1=? and col_2 IN (?, ?) order by col_3 desc;", 1, 1, 2),
+                       row(1, 1, 13),
+                       row(1, 2, 11),
+                       row(1, 2, 10),
+                       row(1, 1, 2),
+                       row(1, 1, 1));
+
+            assertRows(execute("select * from %s where col_2 IN (?, ?) and col_1=? order by col_3;", 1, 2, 1),
+                       row(1, 1, 1),
+                       row(1, 1, 2),
+                       row(1, 2, 10),
+                       row(1, 2, 11),
+                       row(1, 1, 13));
+
+            assertRows(execute("select * from %s where col_2 IN (?, ?) and col_1=? order by col_3 desc;", 1, 2, 1),
+                       row(1, 1, 13),
+                       row(1, 2, 11),
+                       row(1, 2, 10),
+                       row(1, 1, 2),
+                       row(1, 1, 1));
+        }
     }
 
     private boolean isFirstIntSorted(Object[][] rows)

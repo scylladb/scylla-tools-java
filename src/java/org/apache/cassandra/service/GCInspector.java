@@ -20,31 +20,61 @@ package org.apache.cassandra.service;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryUsage;
+import java.lang.reflect.Field;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+
 import javax.management.MBeanServer;
 import javax.management.Notification;
 import javax.management.NotificationListener;
 import javax.management.ObjectName;
 import javax.management.openmbean.CompositeData;
 
+import com.sun.management.GarbageCollectionNotificationInfo;
+import com.sun.management.GcInfo;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.sun.management.GarbageCollectionNotificationInfo;
-import com.sun.management.GcInfo;
-import org.apache.cassandra.io.sstable.SSTableDeletingTask;
+import org.apache.cassandra.config.DatabaseDescriptor;
+
+import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.utils.StatusLogger;
 
 public class GCInspector implements NotificationListener, GCInspectorMXBean
 {
     public static final String MBEAN_NAME = "org.apache.cassandra.service:type=GCInspector";
     private static final Logger logger = LoggerFactory.getLogger(GCInspector.class);
-    final static long MIN_LOG_DURATION = 200;
-    final static long MIN_LOG_DURATION_TPSTATS = 1000;
+    final static long MIN_LOG_DURATION = DatabaseDescriptor.getGCLogThreshold();
+    final static long GC_WARN_THRESHOLD_IN_MS = DatabaseDescriptor.getGCWarnThreshold();
+    final static long STAT_THRESHOLD = GC_WARN_THRESHOLD_IN_MS != 0 ? GC_WARN_THRESHOLD_IN_MS : MIN_LOG_DURATION;
+
+    /*
+     * The field from java.nio.Bits that tracks the total number of allocated
+     * bytes of direct memory requires via ByteBuffer.allocateDirect that have not been GCed.
+     */
+    final static Field BITS_TOTAL_CAPACITY;
+
+    static
+    {
+        Field temp = null;
+        try
+        {
+            Class<?> bitsClass = Class.forName("java.nio.Bits");
+            Field f = bitsClass.getDeclaredField("totalCapacity");
+            f.setAccessible(true);
+            temp = f;
+        }
+        catch (Throwable t)
+        {
+            logger.debug("Error accessing field of java.nio.Bits", t);
+            //Don't care, will just return the dummy value -1 if we can't get at the field in this JVM
+        }
+        BITS_TOTAL_CAPACITY = temp;
+    }
 
     static final class State
     {
@@ -167,10 +197,10 @@ public class GCInspector implements NotificationListener, GCInspectorMXBean
     }
 
     /*
-     * Assume that a GC type is an old generation collection so SSTableDeletingTask.rescheduleFailedTasks()
+     * Assume that a GC type is an old generation collection so TransactionLogs.rescheduleFailedTasks()
      * should be invoked.
      *
-     * Defaults to not invoking SSTableDeletingTask.rescheduleFailedTasks() on unrecognized GC names
+     * Defaults to not invoking TransactionLogs.rescheduleFailedTasks() on unrecognized GC names
      */
     private static boolean assumeGCIsOldGen(GarbageCollectorMXBean gc)
     {
@@ -188,7 +218,7 @@ public class GCInspector implements NotificationListener, GCInspectorMXBean
                 return true;
             default:
                 //Assume not old gen otherwise, don't call
-                //SSTableDeletingTask.rescheduleFailedTasks()
+                //TransactionLogs.rescheduleFailedTasks()
                 return false;
         }
     }
@@ -248,17 +278,19 @@ public class GCInspector implements NotificationListener, GCInspectorMXBean
             }
 
             String st = sb.toString();
-            if (duration > MIN_LOG_DURATION)
+            if (GC_WARN_THRESHOLD_IN_MS != 0 && duration > GC_WARN_THRESHOLD_IN_MS)
+                logger.warn(st);
+            else if (duration > MIN_LOG_DURATION)
                 logger.info(st);
-            else if (logger.isDebugEnabled())
-                logger.debug(st);
+            else if (logger.isTraceEnabled())
+                logger.trace(st);
 
-            if (duration > MIN_LOG_DURATION_TPSTATS)
+            if (duration > STAT_THRESHOLD)
                 StatusLogger.log();
 
             // if we just finished an old gen collection and we're still using a lot of memory, try to reduce the pressure
             if (gcState.assumeGCIsOldGen)
-                SSTableDeletingTask.rescheduleFailedTasks();
+                LifecycleTransaction.rescheduleFailedDeletions();
         }
     }
 
@@ -270,13 +302,30 @@ public class GCInspector implements NotificationListener, GCInspectorMXBean
     public double[] getAndResetStats()
     {
         State state = getTotalSinceLastCheck();
-        double[] r = new double[6];
+        double[] r = new double[7];
         r[0] = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - state.startNanos);
         r[1] = state.maxRealTimeElapsed;
         r[2] = state.totalRealTimeElapsed;
         r[3] = state.sumSquaresRealTimeElapsed;
         r[4] = state.totalBytesReclaimed;
         r[5] = state.count;
+        r[6] = getAllocatedDirectMemory();
+
         return r;
+    }
+
+    private static long getAllocatedDirectMemory()
+    {
+        if (BITS_TOTAL_CAPACITY == null) return -1;
+        try
+        {
+            return BITS_TOTAL_CAPACITY.getLong(null);
+        }
+        catch (Throwable t)
+        {
+            logger.trace("Error accessing field of java.nio.Bits", t);
+            //Don't care how or why we failed to get the value in this JVM. Return -1 to indicate failure
+            return -1;
+        }
     }
 }

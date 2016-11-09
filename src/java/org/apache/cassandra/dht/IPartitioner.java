@@ -56,13 +56,6 @@ public interface IPartitioner
     public Token getToken(ByteBuffer key);
 
     /**
-     *
-     * @param token
-     * @return the on-heap memory used by the provided token
-     */
-    public long getHeapSizeOf(Token token);
-
-    /**
      * @return a randomly generated token
      */
     public Token getRandomToken();
@@ -86,5 +79,9 @@ public interface IPartitioner
 
     public AbstractType<?> getTokenValidator();
 
-    public <R extends RingPosition<R>> R minValue(Class<R> klass);
+    /**
+     * Abstract type that orders the same way as DecoratedKeys provided by this partitioner.
+     * Used by secondary indices.
+     */
+    public AbstractType<?> partitionOrdering();
 }

@@ -19,7 +19,6 @@ package org.apache.cassandra.net;
 
 import java.util.concurrent.TimeUnit;
 
-import org.apache.cassandra.db.IMutation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,7 +35,7 @@ public class ResponseVerbHandler implements IVerbHandler
         if (callbackInfo == null)
         {
             String msg = "Callback already removed for {} (from {})";
-            logger.debug(msg, id, message.from);
+            logger.trace(msg, id, message.from);
             Tracing.trace(msg, id, message.from);
             return;
         }

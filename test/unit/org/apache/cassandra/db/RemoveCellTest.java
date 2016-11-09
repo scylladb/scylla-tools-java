@@ -20,65 +20,19 @@ package org.apache.cassandra.db;
 
 import org.junit.Test;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
+import org.apache.cassandra.cql3.CQLTester;
 
-import org.apache.cassandra.SchemaLoader;
-import org.apache.cassandra.Util;
-import org.apache.cassandra.db.filter.QueryFilter;
-import org.apache.cassandra.utils.ByteBufferUtil;
-
-public class RemoveCellTest extends SchemaLoader
+public class RemoveCellTest extends CQLTester
 {
     @Test
-    public void testRemoveColumn()
+    public void testDeleteCell() throws Throwable
     {
-        Keyspace keyspace = Keyspace.open("Keyspace1");
-        ColumnFamilyStore store = keyspace.getColumnFamilyStore("Standard1");
-        Mutation rm;
-        DecoratedKey dk = Util.dk("key1");
-
-        // add data
-        rm = new Mutation("Keyspace1", dk.getKey());
-        rm.add("Standard1", Util.cellname("Column1"), ByteBufferUtil.bytes("asdf"), 0);
-        rm.apply();
-        store.forceBlockingFlush();
-
-        // remove
-        rm = new Mutation("Keyspace1", dk.getKey());
-        rm.delete("Standard1", Util.cellname("Column1"), 1);
-        rm.apply();
-
-        ColumnFamily retrieved = store.getColumnFamily(Util.namesQueryFilter(store, dk, "Column1"));
-        assertFalse(retrieved.getColumn(Util.cellname("Column1")).isLive());
-        assertNull(Util.cloneAndRemoveDeleted(retrieved, Integer.MAX_VALUE));
-        assertNull(Util.cloneAndRemoveDeleted(store.getColumnFamily(QueryFilter.getIdentityFilter(dk,
-                                                                                                  "Standard1",
-                                                                                                  System.currentTimeMillis())),
-                                              Integer.MAX_VALUE));
+        String tableName = createTable("CREATE TABLE %s (a int, b int, c int, PRIMARY KEY (a, b))");
+        ColumnFamilyStore cfs = Keyspace.open(KEYSPACE).getColumnFamilyStore(tableName);
+        execute("INSERT INTO %s (a, b, c) VALUES (?, ?, ?) USING TIMESTAMP ?", 0, 0, 0, 0L);
+        cfs.forceBlockingFlush();
+        execute("DELETE c FROM %s USING TIMESTAMP ? WHERE a = ? AND b = ?", 1L, 0, 0);
+        assertRows(execute("SELECT * FROM %s WHERE a = ? AND b = ?", 0, 0), row(0, 0, null));
+        assertRows(execute("SELECT c FROM %s WHERE a = ? AND b = ?", 0, 0), row(new Object[]{null}));
     }
-
-    private static BufferDeletedCell dc(String name, int ldt, long timestamp)
-    {
-        return new BufferDeletedCell(Util.cellname(name), ldt, timestamp);
-    }
-
-    @Test
-    public void deletedColumnShouldAlwaysBeMarkedForDelete()
-    {
-        // Check for bug in #4307
-        long timestamp = System.currentTimeMillis();
-        int localDeletionTime = (int) (timestamp / 1000);
-        Cell c = dc("dc1", localDeletionTime, timestamp);
-        assertFalse("DeletedCell was not marked for delete", c.isLive(timestamp));
-
-        // Simulate a node that is 30 seconds behind
-        c = dc("dc2", localDeletionTime + 30, timestamp + 30000);
-        assertFalse("DeletedCell was not marked for delete", c.isLive(timestamp));
-
-        // Simulate a node that is 30 ahead behind
-        c = dc("dc3", localDeletionTime - 30, timestamp - 30000);
-        assertFalse("DeletedCell was not marked for delete", c.isLive(timestamp));
-    }
-
 }

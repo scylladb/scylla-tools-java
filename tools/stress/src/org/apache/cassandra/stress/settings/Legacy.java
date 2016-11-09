@@ -60,7 +60,6 @@ public class Legacy implements Serializable
         availableOptions.addOption("i",  "progress-interval",    true,   "Progress Report Interval (seconds), default:10");
         availableOptions.addOption("g",  "keys-per-call",        true,   "Number of keys to get_range_slices or multiget per call, default:1000");
         availableOptions.addOption("l",  "replication-factor",   true,   "Replication Factor to use when creating needed column families, default:1");
-        availableOptions.addOption("L",  "enable-cql",           false,  "Perform queries using CQL2 (Cassandra Query Language v 2.0.0)");
         availableOptions.addOption("L3", "enable-cql3",          false,  "Perform queries using CQL3 (Cassandra Query Language v 3.0.0)");
         availableOptions.addOption("b",  "enable-native-protocol",  false,  "Use the binary native protocol (only work along with -L3)");
         availableOptions.addOption("P",  "use-prepared-statements", false, "Perform queries using prepared statements (only applicable to CQL).");
@@ -216,12 +215,12 @@ public class Legacy implements Serializable
             {
                 StringBuilder rep = new StringBuilder();
                 if (cmd.hasOption("R"))
-                    rep.append("strategy=" + cmd.getOptionValue("R"));
+                    rep.append("strategy=").append(cmd.getOptionValue("R"));
                 if (cmd.hasOption("l"))
                 {
                     if (rep.length() > 0)
                         rep.append(",");
-                    rep.append("factor=" + cmd.getOptionValue("l"));
+                    rep.append("factor=").append(cmd.getOptionValue("l"));
                 }
                 if (cmd.hasOption("O"))
                 {
@@ -232,9 +231,7 @@ public class Legacy implements Serializable
                 r.add("-schema", "replication(" + rep + ")");
             }
 
-            if (cmd.hasOption("L"))
-                r.add("-mode", cmd.hasOption("P") ? "prepared cql2" : "cql2");
-            else if (cmd.hasOption("L3"))
+            if (cmd.hasOption("L3"))
                 r.add("-mode", (cmd.hasOption("P") ? "prepared" : "") + (cmd.hasOption("b") ? "native" : "") +  "cql3");
             else
                 r.add("-mode", "thrift");

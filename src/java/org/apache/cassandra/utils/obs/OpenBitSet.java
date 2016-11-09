@@ -23,27 +23,33 @@ import java.io.DataOutput;
 import java.io.IOException;
 
 import org.apache.cassandra.db.TypeSizes;
+import org.apache.cassandra.utils.concurrent.Ref;
 
 /**
+ * <p>
  * An "open" BitSet implementation that allows direct access to the arrays of words
  * storing the bits.  Derived from Lucene's OpenBitSet, but with a paged backing array
  * (see bits delaration, below).
- * <p/>
+ * </p>
+ * <p>
  * Unlike java.util.bitset, the fact that bits are packed into an array of longs
  * is part of the interface.  This allows efficient implementation of other algorithms
  * by someone other than the author.  It also allows one to efficiently implement
  * alternate serialization or interchange formats.
- * <p/>
+ * </p>
+ * <p>
  * <code>OpenBitSet</code> is faster than <code>java.util.BitSet</code> in most operations
  * and *much* faster at calculating cardinality of sets and results of set operations.
  * It can also handle sets of larger cardinality (up to 64 * 2**32-1)
- * <p/>
+ * </p>
+ * <p>
  * The goals of <code>OpenBitSet</code> are the fastest implementation possible, and
  * maximum code reuse.  Extra safety and encapsulation
  * may always be built on top, but if that's built in, the cost can never be removed (and
  * hence people re-implement their own version in order to get better performance).
  * If you want a "safe", totally encapsulated (and slower and limited) BitSet
  * class, use <code>java.util.BitSet</code>.
+ * </p>
  */
 
 public class OpenBitSet implements IBitSet
@@ -110,7 +116,11 @@ public class OpenBitSet implements IBitSet
       return 0;
   }
 
- /**
+    public void addTo(Ref.IdentityCollection identities)
+    {
+    }
+
+    /**
   * Returns the current capacity of this set.  Included for
   * compatibility.  This is *not* equal to {@link #cardinality}
   */
@@ -411,16 +421,16 @@ public class OpenBitSet implements IBitSet
     }
 }
 
-  public long serializedSize(TypeSizes type) {
+  public long serializedSize() {
     int bitLength = getNumWords();
     int pageSize = getPageSize();
     int pageCount = getPageCount();
 
-    long size = type.sizeof(bitLength); // length
+    long size = TypeSizes.sizeof(bitLength); // length
     for (int p = 0; p < pageCount; p++) {
       long[] bits = getPage(p);
       for (int i = 0; i < pageSize && bitLength-- > 0; i++)
-        size += type.sizeof(bits[i]); // bucket
+        size += TypeSizes.sizeof(bits[i]); // bucket
     }
     return size;
   }

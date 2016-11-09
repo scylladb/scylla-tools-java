@@ -34,6 +34,7 @@ import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.stress.Operation;
 import org.apache.cassandra.stress.generate.*;
 import org.apache.cassandra.stress.generate.Row;
+import org.apache.cassandra.stress.operations.PartitionOperation;
 import org.apache.cassandra.stress.settings.StressSettings;
 import org.apache.cassandra.stress.util.JavaDriverClient;
 import org.apache.cassandra.stress.util.ThriftClient;
@@ -46,7 +47,7 @@ import org.apache.cassandra.transport.SimpleClient;
 import org.apache.cassandra.utils.Pair;
 import org.apache.thrift.TException;
 
-public class ValidatingSchemaQuery extends Operation
+public class ValidatingSchemaQuery extends PartitionOperation
 {
     final Random random = new Random();
     private Pair<Row, Row> bounds;
@@ -65,7 +66,7 @@ public class ValidatingSchemaQuery extends Operation
 
     private ValidatingSchemaQuery(Timer timer, StressSettings settings, PartitionGenerator generator, SeedManager seedManager, ValidatingStatement[] statements, ConsistencyLevel cl, int clusteringComponents)
     {
-        super(timer, settings, new DataSpec(generator, seedManager, new DistributionFixed(1), 1));
+        super(timer, settings, new DataSpec(generator, seedManager, new DistributionFixed(1), settings.insert.rowPopulationRatio.get(), 1));
         this.statements = statements;
         this.cl = cl;
         argumentIndex = new int[statements[0].statement.getVariables().size()];
@@ -131,8 +132,6 @@ public class ValidatingSchemaQuery extends Operation
                     valueIndex[i++] = spec.partitionGenerator.indexOf(definition.getName());
             }
 
-            List<Object[]> prev1 = new ArrayList<>();
-            List<Object[]> prev2 = new ArrayList<>();
             rowCount = 0;
             Iterator<com.datastax.driver.core.Row> results = rs.iterator();
             if (!statements[statementIndex].inclusiveStart && iter.hasNext())
@@ -148,24 +147,16 @@ public class ValidatingSchemaQuery extends Operation
 
                 rowCount++;
                 com.datastax.driver.core.Row actualRow = results.next();
-                Object[] vs1 = new Object[actualRow.getColumnDefinitions().size()];
-                Object[] vs2 = vs1.clone();
                 for (int i = 0 ; i < actualRow.getColumnDefinitions().size() ; i++)
                 {
                     Object expectedValue = expectedRow.get(valueIndex[i]);
                     Object actualValue = spec.partitionGenerator.convert(valueIndex[i], actualRow.getBytesUnsafe(i));
-                    vs1[i] = expectedValue;
-                    vs2[i] = actualValue;
                     if (!expectedValue.equals(actualValue))
                         return false;
                 }
-                prev1.add(vs1);
-                prev2.add(vs2);
             }
             partitionCount = Math.min(1, rowCount);
-            if (!rs.isExhausted())
-                return false;
-            return true;
+            return rs.isExhausted();
         }
     }
 

@@ -31,33 +31,47 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Random;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ThreadLocalRandom;
 
 import org.junit.Assert;
 import org.junit.Test;
 
+import org.apache.cassandra.io.compress.BufferType;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 public class DataOutputTest
 {
-
     @Test
-    public void testDataOutputStreamPlus() throws IOException
+    public void testWrappedDataOutputStreamPlus() throws IOException
     {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        DataOutputStreamPlus write = new DataOutputStreamPlus(bos);
+        DataOutputStreamPlus write = new WrappedDataOutputStreamPlus(bos);
         DataInput canon = testWrite(write);
         DataInput test = new DataInputStream(new ByteArrayInputStream(bos.toByteArray()));
         testRead(test, canon);
     }
 
     @Test
-    public void testDataOutputChannelAndChannel() throws IOException
+    public void testWrappedDataOutputChannelAndChannel() throws IOException
     {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        DataOutputStreamPlus write = new DataOutputStreamAndChannel(Channels.newChannel(bos));
+        DataOutputStreamPlus write = new WrappedDataOutputStreamPlus(bos);
         DataInput canon = testWrite(write);
+        DataInput test = new DataInputStream(new ByteArrayInputStream(bos.toByteArray()));
+        testRead(test, canon);
+    }
+
+    @Test
+    public void testBufferedDataOutputStreamPlusAndChannel() throws IOException
+    {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        DataOutputStreamPlus write = new BufferedDataOutputStreamPlus(Channels.newChannel(bos));
+        DataInput canon = testWrite(write);
+        write.close();
         DataInput test = new DataInputStream(new ByteArrayInputStream(bos.toByteArray()));
         testRead(test, canon);
     }
@@ -72,10 +86,22 @@ public class DataOutputTest
     }
 
     @Test
+    public void testDataOutputBufferZeroReallocate() throws IOException
+    {
+        try (DataOutputBufferSpy write = new DataOutputBufferSpy())
+        {
+            for (int ii = 0; ii < 1000000; ii++)
+            {
+                write.superReallocate(0);
+            }
+        }
+    }
+
+    @Test
     public void testDataOutputDirectByteBuffer() throws IOException
     {
         ByteBuffer buf = wrap(new byte[345], true);
-        DataOutputByteBuffer write = new DataOutputByteBuffer(buf.duplicate());
+        BufferedDataOutputStreamPlus write = new BufferedDataOutputStreamPlus(null, buf.duplicate());
         DataInput canon = testWrite(write);
         DataInput test = new DataInputStream(new ByteArrayInputStream(ByteBufferUtil.getArray(buf)));
         testRead(test, canon);
@@ -85,21 +111,229 @@ public class DataOutputTest
     public void testDataOutputHeapByteBuffer() throws IOException
     {
         ByteBuffer buf = wrap(new byte[345], false);
-        DataOutputByteBuffer write = new DataOutputByteBuffer(buf.duplicate());
+        BufferedDataOutputStreamPlus write = new BufferedDataOutputStreamPlus(null, buf.duplicate());
         DataInput canon = testWrite(write);
         DataInput test = new DataInputStream(new ByteArrayInputStream(ByteBufferUtil.getArray(buf)));
         testRead(test, canon);
     }
 
+    private static class DataOutputBufferSpy extends DataOutputBuffer
+    {
+        Deque<Long> sizes = new ArrayDeque<>();
+
+        DataOutputBufferSpy()
+        {
+            sizes.offer(128L);
+        }
+
+        void publicFlush() throws IOException
+        {
+            //Going to allow it to double instead of specifying a count
+            doFlush(1);
+        }
+
+        void superReallocate(int count) throws IOException
+        {
+            super.reallocate(count);
+        }
+
+        @Override
+        protected void reallocate(long count)
+        {
+            if (count <= 0)
+                return;
+            Long lastSize = sizes.peekLast();
+            long newSize = calculateNewSize(count);
+            sizes.offer(newSize);
+            if (newSize > DataOutputBuffer.MAX_ARRAY_SIZE)
+                throw new RuntimeException();
+            if (newSize < 0)
+                throw new AssertionError();
+            if (lastSize != null && newSize <= lastSize)
+                throw new AssertionError();
+        }
+
+        @Override
+        protected long capacity()
+        {
+            return sizes.peekLast().intValue();
+        }
+    }
+
+    //Check for overflow at the max size, without actually allocating all the memory
+    @Test
+    public void testDataOutputBufferMaxSizeFake() throws IOException
+    {
+        try (DataOutputBufferSpy write = new DataOutputBufferSpy())
+        {
+            boolean threw = false;
+            try
+            {
+                while (true)
+                    write.publicFlush();
+            }
+            catch (RuntimeException e) {
+                if (e.getClass() == RuntimeException.class)
+                    threw = true;
+            }
+            Assert.assertTrue(threw);
+            Assert.assertTrue(write.sizes.peekLast() >= DataOutputBuffer.MAX_ARRAY_SIZE);
+        }
+    }
+
+    @Test
+    public void testDataOutputBufferMaxSize() throws IOException
+    {
+        //Need a lot of heap to run this test for real.
+        //Tested everything else as much as possible since we can't do it all the time
+        if (Runtime.getRuntime().maxMemory() < 5033164800L)
+            return;
+
+        try (DataOutputBuffer write = new DataOutputBuffer())
+        {
+            //Doesn't throw up to DataOuptutBuffer.MAX_ARRAY_SIZE which is the array size limit in Java
+            for (int ii = 0; ii < DataOutputBuffer.MAX_ARRAY_SIZE / 8; ii++)
+                write.writeLong(0);
+            write.write(new byte[7]);
+
+            //Should fail due to validation
+            checkThrowsRuntimeException(validateReallocationCallable( write, DataOutputBuffer.MAX_ARRAY_SIZE + 1));
+            //Check that it does throw
+            checkThrowsRuntimeException(new Callable<Object>()
+            {
+                public Object call() throws Exception
+                {
+                    write.write(42);
+                    return null;
+                }
+            });
+        }
+    }
+
+    //Can't test it for real without tons of heap so test as much validation as possible
+    @Test
+    public void testDataOutputBufferBigReallocation() throws Exception
+    {
+        //Check saturating cast behavior
+        Assert.assertEquals(DataOutputBuffer.MAX_ARRAY_SIZE, DataOutputBuffer.saturatedArraySizeCast(DataOutputBuffer.MAX_ARRAY_SIZE + 1L));
+        Assert.assertEquals(DataOutputBuffer.MAX_ARRAY_SIZE, DataOutputBuffer.saturatedArraySizeCast(DataOutputBuffer.MAX_ARRAY_SIZE));
+        Assert.assertEquals(DataOutputBuffer.MAX_ARRAY_SIZE - 1, DataOutputBuffer.saturatedArraySizeCast(DataOutputBuffer.MAX_ARRAY_SIZE - 1));
+        Assert.assertEquals(0, DataOutputBuffer.saturatedArraySizeCast(0));
+        Assert.assertEquals(1, DataOutputBuffer.saturatedArraySizeCast(1));
+        checkThrowsIAE(saturatedArraySizeCastCallable(-1));
+
+        //Check checked cast behavior
+        checkThrowsIAE(checkedArraySizeCastCallable(DataOutputBuffer.MAX_ARRAY_SIZE + 1L));
+        Assert.assertEquals(DataOutputBuffer.MAX_ARRAY_SIZE, DataOutputBuffer.checkedArraySizeCast(DataOutputBuffer.MAX_ARRAY_SIZE));
+        Assert.assertEquals(DataOutputBuffer.MAX_ARRAY_SIZE - 1, DataOutputBuffer.checkedArraySizeCast(DataOutputBuffer.MAX_ARRAY_SIZE - 1));
+        Assert.assertEquals(0, DataOutputBuffer.checkedArraySizeCast(0));
+        Assert.assertEquals(1, DataOutputBuffer.checkedArraySizeCast(1));
+        checkThrowsIAE(checkedArraySizeCastCallable(-1));
+
+
+        try (DataOutputBuffer write = new DataOutputBuffer())
+        {
+            //Checked validation performed by DOB
+            Assert.assertEquals(DataOutputBuffer.MAX_ARRAY_SIZE, write.validateReallocation(DataOutputBuffer.MAX_ARRAY_SIZE + 1L));
+            Assert.assertEquals(DataOutputBuffer.MAX_ARRAY_SIZE, write.validateReallocation(DataOutputBuffer.MAX_ARRAY_SIZE));
+            Assert.assertEquals(DataOutputBuffer.MAX_ARRAY_SIZE - 1, write.validateReallocation(DataOutputBuffer.MAX_ARRAY_SIZE - 1));
+            checkThrowsRuntimeException(validateReallocationCallable( write, 0));
+            checkThrowsRuntimeException(validateReallocationCallable( write, 1));
+            checkThrowsIAE(validateReallocationCallable( write, -1));
+        }
+    }
+
+    Callable<Object> saturatedArraySizeCastCallable(final long value)
+    {
+        return new Callable<Object>()
+        {
+            @Override
+            public Object call() throws Exception
+            {
+                return DataOutputBuffer.saturatedArraySizeCast(value);
+            }
+        };
+    }
+
+    Callable<Object> checkedArraySizeCastCallable(final long value)
+    {
+        return new Callable<Object>()
+        {
+            @Override
+            public Object call() throws Exception
+            {
+                return DataOutputBuffer.checkedArraySizeCast(value);
+            }
+        };
+    }
+
+    Callable<Object> validateReallocationCallable(final DataOutputBuffer write, final long value)
+    {
+        return new Callable<Object>()
+        {
+            @Override
+            public Object call() throws Exception
+            {
+                return write.validateReallocation(value);
+            }
+        };
+    }
+
+    private static void checkThrowsIAE(Callable<Object> c)
+    {
+        checkThrowsException(c, IllegalArgumentException.class);
+    }
+
+    private static void checkThrowsRuntimeException(Callable<Object> c)
+    {
+        checkThrowsException(c, RuntimeException.class);
+    }
+
+    private static void checkThrowsException(Callable<Object> c, Class<?> exceptionClass)
+    {
+        boolean threw = false;
+        try
+        {
+            c.call();
+        }
+        catch (Throwable t)
+        {
+            if (t.getClass() == exceptionClass)
+                threw = true;
+        }
+        Assert.assertTrue(threw);
+    }
+
     @Test
     public void testSafeMemoryWriter() throws IOException
     {
-        SafeMemoryWriter write = new SafeMemoryWriter(10);
-        DataInput canon = testWrite(write);
-        byte[] bytes = new byte[345];
-        write.currentBuffer().getBytes(0, bytes, 0, 345);
-        DataInput test = new DataInputStream(new ByteArrayInputStream(bytes));
-        testRead(test, canon);
+        try (SafeMemoryWriter write = new SafeMemoryWriter(10))
+        {
+            DataInput canon = testWrite(write);
+            byte[] bytes = new byte[345];
+            write.currentBuffer().getBytes(0, bytes, 0, 345);
+            DataInput test = new DataInputStream(new ByteArrayInputStream(bytes));
+            testRead(test, canon);
+        }
+    }
+
+    @Test
+    public void testWrappedFileOutputStream() throws IOException
+    {
+        File file = FileUtils.createTempFile("dataoutput", "test");
+        try
+        {
+            DataOutputStreamPlus write = new WrappedDataOutputStreamPlus(new FileOutputStream(file));
+            DataInput canon = testWrite(write);
+            write.close();
+            DataInputStream test = new DataInputStream(new FileInputStream(file));
+            testRead(test, canon);
+            test.close();
+        }
+        finally
+        {
+            Assert.assertTrue(file.delete());
+        }
     }
 
     @Test
@@ -108,7 +342,7 @@ public class DataOutputTest
         File file = FileUtils.createTempFile("dataoutput", "test");
         try
         {
-            DataOutputStreamAndChannel write = new DataOutputStreamAndChannel(new FileOutputStream(file));
+            DataOutputStreamPlus write = new BufferedDataOutputStreamPlus(new FileOutputStream(file));
             DataInput canon = testWrite(write);
             write.close();
             DataInputStream test = new DataInputStream(new FileInputStream(file));
@@ -127,8 +361,9 @@ public class DataOutputTest
         File file = FileUtils.createTempFile("dataoutput", "test");
         try
         {
+            @SuppressWarnings("resource")
             final RandomAccessFile raf = new RandomAccessFile(file, "rw");
-            DataOutputStreamAndChannel write = new DataOutputStreamAndChannel(Channels.newOutputStream(raf.getChannel()), raf.getChannel());
+            DataOutputStreamPlus write = new BufferedDataOutputStreamPlus(raf.getChannel());
             DataInput canon = testWrite(write);
             write.close();
             DataInputStream test = new DataInputStream(new FileInputStream(file));
@@ -145,8 +380,8 @@ public class DataOutputTest
     public void testSequentialWriter() throws IOException
     {
         File file = FileUtils.createTempFile("dataoutput", "test");
-        final SequentialWriter writer = new SequentialWriter(file, 32);
-        DataOutputStreamAndChannel write = new DataOutputStreamAndChannel(writer, writer);
+        final SequentialWriter writer = new SequentialWriter(file, 32, BufferType.ON_HEAP);
+        DataOutputStreamPlus write = new WrappedDataOutputStreamPlus(writer.finishOnClose());
         DataInput canon = testWrite(write);
         write.flush();
         write.close();
@@ -162,32 +397,33 @@ public class DataOutputTest
         final DataOutput canon = new DataOutputStream(bos);
         Random rnd = ThreadLocalRandom.current();
 
-        byte[] bytes = new byte[50];
+        int size = 50;
+        byte[] bytes = new byte[size];
         rnd.nextBytes(bytes);
         ByteBufferUtil.writeWithLength(bytes, test);
         ByteBufferUtil.writeWithLength(bytes, canon);
 
-        bytes = new byte[50];
+        bytes = new byte[size];
         rnd.nextBytes(bytes);
         ByteBufferUtil.writeWithLength(wrap(bytes, false), test);
         ByteBufferUtil.writeWithLength(bytes, canon);
 
-        bytes = new byte[50];
+        bytes = new byte[size];
         rnd.nextBytes(bytes);
         ByteBufferUtil.writeWithLength(wrap(bytes, true), test);
         ByteBufferUtil.writeWithLength(bytes, canon);
 
-        bytes = new byte[50];
+        bytes = new byte[size];
         rnd.nextBytes(bytes);
         ByteBufferUtil.writeWithShortLength(bytes, test);
         ByteBufferUtil.writeWithShortLength(bytes, canon);
 
-        bytes = new byte[50];
+        bytes = new byte[size];
         rnd.nextBytes(bytes);
         ByteBufferUtil.writeWithShortLength(wrap(bytes, false), test);
         ByteBufferUtil.writeWithShortLength(bytes, canon);
 
-        bytes = new byte[50];
+        bytes = new byte[size];
         rnd.nextBytes(bytes);
         ByteBufferUtil.writeWithShortLength(wrap(bytes, true), test);
         ByteBufferUtil.writeWithShortLength(bytes, canon);
@@ -247,8 +483,9 @@ public class DataOutputTest
             test.readInt();
             assert false;
         }
-        catch (EOFException exc)
+        catch (EOFException ignore)
         {
+            // it worked
         }
     }
 

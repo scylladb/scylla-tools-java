@@ -17,16 +17,11 @@
  */
 package org.apache.cassandra.io.util;
 
-import java.io.File;
-
-import org.apache.cassandra.io.sstable.SSTableWriter;
-import org.apache.cassandra.utils.concurrent.SharedCloseable;
-
 public class BufferedSegmentedFile extends SegmentedFile
 {
-    public BufferedSegmentedFile(String path, long length)
+    public BufferedSegmentedFile(ChannelProxy channel, int bufferSize, long length)
     {
-        super(new Cleanup(path), path, length);
+        super(new Cleanup(channel), channel, bufferSize, length);
     }
 
     private BufferedSegmentedFile(BufferedSegmentedFile copy)
@@ -34,38 +29,13 @@ public class BufferedSegmentedFile extends SegmentedFile
         super(copy);
     }
 
-    private static class Cleanup extends SegmentedFile.Cleanup
-    {
-        protected Cleanup(String path)
-        {
-            super(path);
-        }
-        public void tidy() throws Exception
-        {
-
-        }
-    }
-
     public static class Builder extends SegmentedFile.Builder
     {
-        public void addPotentialBoundary(long boundary)
+        public SegmentedFile complete(ChannelProxy channel, int bufferSize, long overrideLength)
         {
-            // only one segment in a standard-io file
+            long length = overrideLength > 0 ? overrideLength : channel.size();
+            return new BufferedSegmentedFile(channel, bufferSize, length);
         }
-
-        public SegmentedFile complete(String path, long overrideLength, boolean isFinal)
-        {
-            assert !isFinal || overrideLength <= 0;
-            long length = overrideLength > 0 ? overrideLength : new File(path).length();
-            return new BufferedSegmentedFile(path, length);
-        }
-    }
-
-    public FileDataInput getSegment(long position)
-    {
-        RandomAccessReader reader = RandomAccessReader.open(new File(path));
-        reader.seek(position);
-        return reader;
     }
 
     public BufferedSegmentedFile sharedCopy()

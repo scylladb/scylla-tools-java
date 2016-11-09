@@ -19,9 +19,11 @@ package org.apache.cassandra.transport;
 
 import java.util.ArrayList;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -40,6 +42,7 @@ import com.google.common.collect.ImmutableSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.service.ClientWarn;
 import org.apache.cassandra.transport.messages.*;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.utils.JVMStabilityInspector;
@@ -146,6 +149,8 @@ public abstract class Message
     protected Connection connection;
     private int streamId;
     private Frame sourceFrame;
+    private Map<String, ByteBuffer> customPayload;
+    protected Integer forcedProtocolVersion = null;
 
     protected Message(Type type)
     {
@@ -183,6 +188,16 @@ public abstract class Message
         return sourceFrame;
     }
 
+    public Map<String, ByteBuffer> getCustomPayload()
+    {
+        return customPayload;
+    }
+
+    public void setCustomPayload(Map<String, ByteBuffer> customPayload)
+    {
+        this.customPayload = customPayload;
+    }
+
     public static abstract class Request extends Message
     {
         protected boolean tracingRequested;
@@ -211,6 +226,7 @@ public abstract class Message
     public static abstract class Response extends Message
     {
         protected UUID tracingId;
+        protected List<String> warnings;
 
         protected Response(Type type)
         {
@@ -230,6 +246,17 @@ public abstract class Message
         {
             return tracingId;
         }
+
+        public Message setWarnings(List<String> warnings)
+        {
+            this.warnings = warnings;
+            return this;
+        }
+
+        public List<String> getWarnings()
+        {
+            return warnings;
+        }
     }
 
     @ChannelHandler.Sharable
@@ -239,14 +266,22 @@ public abstract class Message
         {
             boolean isRequest = frame.header.type.direction == Direction.REQUEST;
             boolean isTracing = frame.header.flags.contains(Frame.Header.Flag.TRACING);
+            boolean isCustomPayload = frame.header.flags.contains(Frame.Header.Flag.CUSTOM_PAYLOAD);
+            boolean hasWarning = frame.header.flags.contains(Frame.Header.Flag.WARNING);
 
             UUID tracingId = isRequest || !isTracing ? null : CBUtil.readUUID(frame.body);
+            List<String> warnings = isRequest || !hasWarning ? null : CBUtil.readStringList(frame.body);
+            Map<String, ByteBuffer> customPayload = !isCustomPayload ? null : CBUtil.readBytesMap(frame.body);
 
             try
             {
+                if (isCustomPayload && frame.header.version < Server.VERSION_4)
+                    throw new ProtocolException("Received frame with CUSTOM_PAYLOAD flag for native protocol version < 4");
+
                 Message message = frame.header.type.codec.decode(frame.body, frame.header.version);
                 message.setStreamId(frame.header.streamId);
                 message.setSourceFrame(frame);
+                message.setCustomPayload(customPayload);
 
                 if (isRequest)
                 {
@@ -262,6 +297,8 @@ public abstract class Message
                     assert message instanceof Response;
                     if (isTracing)
                         ((Response)message).setTracingId(tracingId);
+                    if (hasWarning)
+                        ((Response)message).setWarnings(warnings);
                 }
 
                 results.add(message);
@@ -294,23 +331,53 @@ public abstract class Message
                 if (message instanceof Response)
                 {
                     UUID tracingId = ((Response)message).getTracingId();
+                    Map<String, ByteBuffer> customPayload = message.getCustomPayload();
+                    if (tracingId != null)
+                        messageSize += CBUtil.sizeOfUUID(tracingId);
+                    List<String> warnings = ((Response)message).getWarnings();
+                    if (warnings != null)
+                    {
+                        if (version < Server.VERSION_4)
+                            throw new ProtocolException("Must not send frame with WARNING flag for native protocol version < 4");
+                        messageSize += CBUtil.sizeOfStringList(warnings);
+                    }
+                    if (customPayload != null)
+                    {
+                        if (version < Server.VERSION_4)
+                            throw new ProtocolException("Must not send frame with CUSTOM_PAYLOAD flag for native protocol version < 4");
+                        messageSize += CBUtil.sizeOfBytesMap(customPayload);
+                    }
+                    body = CBUtil.allocator.buffer(messageSize);
                     if (tracingId != null)
                     {
-                        body = CBUtil.allocator.buffer(CBUtil.sizeOfUUID(tracingId) + messageSize);
                         CBUtil.writeUUID(tracingId, body);
                         flags.add(Frame.Header.Flag.TRACING);
                     }
-                    else
+                    if (warnings != null)
                     {
-                        body = CBUtil.allocator.buffer(messageSize);
+                        CBUtil.writeStringList(warnings, body);
+                        flags.add(Frame.Header.Flag.WARNING);
+                    }
+                    if (customPayload != null)
+                    {
+                        CBUtil.writeBytesMap(customPayload, body);
+                        flags.add(Frame.Header.Flag.CUSTOM_PAYLOAD);
                     }
                 }
                 else
                 {
                     assert message instanceof Request;
-                    body = CBUtil.allocator.buffer(messageSize);
                     if (((Request)message).isTracingRequested())
                         flags.add(Frame.Header.Flag.TRACING);
+                    Map<String, ByteBuffer> payload = message.getCustomPayload();
+                    if (payload != null)
+                        messageSize += CBUtil.sizeOfBytesMap(payload);
+                    body = CBUtil.allocator.buffer(messageSize);
+                    if (payload != null)
+                    {
+                        CBUtil.writeBytesMap(payload, body);
+                        flags.add(Frame.Header.Flag.CUSTOM_PAYLOAD);
+                    }
                 }
 
                 try
@@ -323,7 +390,12 @@ public abstract class Message
                     throw e;
                 }
 
-                results.add(Frame.create(message.type, message.getStreamId(), version, flags, body));
+                // if the driver attempted to connect with a protocol version lower than the minimum supported
+                // version, respond with a protocol error message with the correct frame header for that version
+                int responseVersion = message.forcedProtocolVersion == null
+                                    ? version
+                                    : message.forcedProtocolVersion;
+                results.add(Frame.create(message.type, message.getStreamId(), responseVersion, flags, body));
             }
             catch (Throwable e)
             {
@@ -348,7 +420,7 @@ public abstract class Message
             }
         }
 
-        private final class Flusher implements Runnable
+        private static final class Flusher implements Runnable
         {
             final EventLoop eventLoop;
             final ConcurrentLinkedQueue<FlushItem> queued = new ConcurrentLinkedQueue<>();
@@ -432,12 +504,15 @@ public abstract class Message
             {
                 assert request.connection() instanceof ServerConnection;
                 connection = (ServerConnection)request.connection();
+                if (connection.getVersion() >= Server.VERSION_4)
+                    ClientWarn.instance.captureWarnings();
+
                 QueryState qstate = connection.validateNewMessage(request.type, connection.getVersion(), request.getStreamId());
 
-                logger.debug("Received: {}, v={}", request, connection.getVersion());
-
+                logger.trace("Received: {}, v={}", request, connection.getVersion());
                 response = request.execute(qstate);
                 response.setStreamId(request.getStreamId());
+                response.setWarnings(ClientWarn.instance.getWarnings());
                 response.attach(connection);
                 connection.applyStateTransition(request.type, response.type);
             }
@@ -448,8 +523,12 @@ public abstract class Message
                 flush(new FlushItem(ctx, ErrorMessage.fromException(t, handler).setStreamId(request.getStreamId()), request.getSourceFrame()));
                 return;
             }
+            finally
+            {
+                ClientWarn.instance.resetWarnings();
+            }
 
-            logger.debug("Responding: {}, v={}", response, connection.getVersion());
+            logger.trace("Responding: {}, v={}", response, connection.getVersion());
             flush(new FlushItem(ctx, response, request.getSourceFrame()));
         }
 
@@ -524,7 +603,7 @@ public abstract class Message
                 if (ioExceptionsAtDebugLevel.contains(exception.getMessage()))
                 {
                     // Likely unclean client disconnects
-                    logger.debug(message, exception);
+                    logger.trace(message, exception);
                 }
                 else
                 {

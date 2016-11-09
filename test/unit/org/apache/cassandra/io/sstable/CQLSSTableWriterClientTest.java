@@ -20,18 +20,21 @@ package org.apache.cassandra.io.sstable;
 import java.io.File;
 import java.io.FilenameFilter;
 import java.io.IOException;
-import java.util.Arrays;
 
 import com.google.common.io.Files;
-
-import org.junit.*;
+import org.junit.After;
+import org.junit.AfterClass;
+import org.junit.Before;
+import org.junit.Test;
 
 import org.apache.cassandra.config.Config;
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.db.Directories;
+import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.io.util.FileUtils;
 
 import static org.junit.Assert.assertEquals;
-
 import static org.junit.Assert.assertTrue;
 
 public class CQLSSTableWriterClientTest
@@ -42,6 +45,7 @@ public class CQLSSTableWriterClientTest
     public void setUp()
     {
         this.testDirectory = Files.createTempDir();
+        Config.setClientMode(true);
     }
 
     @After
@@ -86,17 +90,6 @@ public class CQLSSTableWriterClientTest
         writer.close();
         writer2.close();
 
-        assertContainsDataFiles(this.testDirectory, "client_test-table1", "client_test-table2");
-    }
-
-    /**
-     * Checks that the specified directory contains the files with the specified prefixes.
-     *
-     * @param directory the directory containing the data files
-     * @param prefixes the file prefixes
-     */
-    private static void assertContainsDataFiles(File directory, String... prefixes)
-    {
         FilenameFilter filter = new FilenameFilter()
         {
             @Override
@@ -106,11 +99,7 @@ public class CQLSSTableWriterClientTest
             }
         };
 
-        File[] dataFiles = directory.listFiles(filter);
-        Arrays.sort(dataFiles);
-
-        assertEquals(dataFiles.length, prefixes.length);
-        for (int i = 0; i < dataFiles.length; i++)
-            assertTrue(dataFiles[i].toString().contains(prefixes[i]));
+        File[] dataFiles = this.testDirectory.listFiles(filter);
+        assertEquals(2, dataFiles.length);
     }
 }

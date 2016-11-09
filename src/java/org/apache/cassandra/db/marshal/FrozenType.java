@@ -20,6 +20,7 @@ package org.apache.cassandra.db.marshal;
 import java.nio.ByteBuffer;
 import java.util.List;
 
+import org.apache.cassandra.cql3.Term;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.serializers.TypeSerializer;
@@ -30,6 +31,11 @@ import org.apache.cassandra.serializers.MarshalException;
  */
 public class FrozenType extends AbstractType<Void>
 {
+    protected FrozenType()
+    {
+        super(ComparisonType.NOT_COMPARABLE);
+    }
+
     public static AbstractType<?> getInstance(TypeParser parser) throws ConfigurationException, SyntaxException
     {
         List<AbstractType<?>> innerTypes = parser.getTypeParameters();
@@ -40,17 +46,22 @@ public class FrozenType extends AbstractType<Void>
         return innerType.freeze();
     }
 
-    public int compare(ByteBuffer o1, ByteBuffer o2)
-    {
-        throw new UnsupportedOperationException();
-    }
-
     public String getString(ByteBuffer bytes)
     {
         throw new UnsupportedOperationException();
     }
 
     public ByteBuffer fromString(String source) throws MarshalException
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    public Term fromJSONObject(Object parsed) throws MarshalException
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
     {
         throw new UnsupportedOperationException();
     }

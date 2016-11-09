@@ -23,12 +23,7 @@ import org.apache.cassandra.utils.ObjectSizes;
 import java.util.Arrays;
 import java.util.Comparator;
 
-import static org.apache.cassandra.utils.btree.BTree.EMPTY_BRANCH;
-import static org.apache.cassandra.utils.btree.BTree.FAN_FACTOR;
-import static org.apache.cassandra.utils.btree.BTree.compare;
-import static org.apache.cassandra.utils.btree.BTree.find;
-import static org.apache.cassandra.utils.btree.BTree.getKeyEnd;
-import static org.apache.cassandra.utils.btree.BTree.isLeaf;
+import static org.apache.cassandra.utils.btree.BTree.*;
 
 /**
  * Represents a level / stack item of in progress modifications to a BTree.
@@ -133,7 +128,7 @@ final class NodeBuilder
 
         int i = copyFromKeyPosition;
         boolean found; // exact key match?
-        boolean owns = true; // true iff this node (or a child) should contain the key
+        boolean owns = true; // true if this node (or a child) should contain the key
         if (i == copyFromKeyEnd)
         {
             found = false;
@@ -151,7 +146,7 @@ final class NodeBuilder
             }
             else
             {
-                i = find(comparator, key, copyFrom, i + 1, copyFromKeyEnd);
+                i = Arrays.binarySearch(copyFrom, i + 1, copyFromKeyEnd, key, comparator);
                 found = i >= 0;
                 if (!found)
                     i = -i - 1;
@@ -167,7 +162,7 @@ final class NodeBuilder
                 return null;
             key = next;
         }
-        else if (i == copyFromKeyEnd && compare(comparator, key, upperBound) >= 0)
+        else if (i == copyFromKeyEnd && compareUpperBound(comparator, key, upperBound) >= 0)
             owns = false;
 
         if (isLeaf(copyFrom))
@@ -185,9 +180,8 @@ final class NodeBuilder
                 }
                 else
                 {
-                    // if not found, we need to apply updateFunction still
-                    key = updateFunction.apply(key);
-                    addNewKey(key); // handles splitting parent if necessary via ensureRoom
+                    // if not found, we need to apply updateFunction still, which is handled in addNewKey
+                    addNewKey(key);
                 }
 
                 // done, so return null
@@ -240,6 +234,10 @@ final class NodeBuilder
         return ascend();
     }
 
+    private static <V> int compareUpperBound(Comparator<V> comparator, Object value, Object upperBound)
+    {
+        return upperBound == POSITIVE_INFINITY ? -1 : comparator.compare((V)value, (V)upperBound);
+    }
 
     // UTILITY METHODS FOR IMPLEMENTATION OF UPDATE/BUILD/DELETE
 
@@ -264,7 +262,8 @@ final class NodeBuilder
     // builds a new root BTree node - must be called on root of operation
     Object[] toNode()
     {
-        assert buildKeyPosition <= FAN_FACTOR && (buildKeyPosition > 0 || copyFrom.length > 0) : buildKeyPosition;
+        // we permit building empty trees as some constructions do not know in advance how many items they will contain
+        assert buildKeyPosition <= FAN_FACTOR : buildKeyPosition;
         return buildFromRange(0, buildKeyPosition, isLeaf(copyFrom), false);
     }
 
@@ -315,7 +314,9 @@ final class NodeBuilder
         copyFromKeyPosition++;
     }
 
-    // puts the provided key in the builder, with no impact on treatment of data from copyf
+    // applies the updateFunction
+    // puts the resulting key into the builder
+    // splits the parent if necessary via ensureRoom
     void addNewKey(Object key)
     {
         ensureRoom(buildKeyPosition + 1);
@@ -384,14 +385,25 @@ final class NodeBuilder
         Object[] a;
         if (isLeaf)
         {
-            a = new Object[keyLength + (keyLength & 1)];
+            a = new Object[keyLength | 1];
             System.arraycopy(buildKeys, offset, a, 0, keyLength);
         }
         else
         {
-            a = new Object[1 + (keyLength * 2)];
+            a = new Object[2 + (keyLength * 2)];
             System.arraycopy(buildKeys, offset, a, 0, keyLength);
             System.arraycopy(buildChildren, offset, a, keyLength, keyLength + 1);
+
+            // calculate the indexOffsets of each key in this node, within the sub-tree rooted at this node
+            int[] indexOffsets = new int[keyLength + 1];
+            int size = BTree.size((Object[]) a[keyLength]);
+            for (int i = 0 ; i < keyLength ; i++)
+            {
+                indexOffsets[i] = size;
+                size += 1 + BTree.size((Object[]) a[keyLength + 1 + i]);
+            }
+            indexOffsets[keyLength] = size;
+            a[a.length - 1] = indexOffsets;
         }
         if (isExtra)
             updateFunction.allocated(ObjectSizes.sizeOfArray(a));

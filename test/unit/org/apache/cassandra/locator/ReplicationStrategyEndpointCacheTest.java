@@ -1,49 +1,60 @@
 /*
-* Licensed to the Apache Software Foundation (ASF) under one
-* or more contributor license agreements.  See the NOTICE file
-* distributed with this work for additional information
-* regarding copyright ownership.  The ASF licenses this file
-* to you under the Apache License, Version 2.0 (the
-* "License"); you may not use this file except in compliance
-* with the License.  You may obtain a copy of the License at
-*
-*    http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing,
-* software distributed under the License is distributed on an
-* "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-* KIND, either express or implied.  See the License for the
-* specific language governing permissions and limitations
-* under the License.
-*/
-
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.apache.cassandra.locator;
 
 import java.net.InetAddress;
-import java.util.*;
-
-import org.apache.cassandra.db.Keyspace;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.SchemaLoader;
-import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.dht.BigIntegerToken;
+import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.dht.RandomPartitioner.BigIntegerToken;
 import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.schema.KeyspaceParams;
 
-public class ReplicationStrategyEndpointCacheTest extends SchemaLoader
+public class ReplicationStrategyEndpointCacheTest
 {
     private TokenMetadata tmd;
     private Token searchToken;
     private AbstractReplicationStrategy strategy;
+    public static final String KEYSPACE = "ReplicationStrategyEndpointCacheTest";
+
+    @BeforeClass
+    public static void defineSchema() throws Exception
+    {
+        SchemaLoader.prepareServer();
+        SchemaLoader.createKeyspace(KEYSPACE,
+                                    KeyspaceParams.simple(5));
+    }
 
     public void setup(Class stratClass, Map<String, String> strategyOptions) throws Exception
     {
         tmd = new TokenMetadata();
         searchToken = new BigIntegerToken(String.valueOf(15));
 
-        strategy = getStrategyWithNewTokenMetadata(Keyspace.open("Keyspace3").getReplicationStrategy(), tmd);
+        strategy = getStrategyWithNewTokenMetadata(Keyspace.open(KEYSPACE).getReplicationStrategy(), tmd);
 
         tmd.updateNormalToken(new BigIntegerToken(String.valueOf(10)), InetAddress.getByName("127.0.0.1"));
         tmd.updateNormalToken(new BigIntegerToken(String.valueOf(20)), InetAddress.getByName("127.0.0.2"));
@@ -164,11 +175,11 @@ public class ReplicationStrategyEndpointCacheTest extends SchemaLoader
     private AbstractReplicationStrategy getStrategyWithNewTokenMetadata(AbstractReplicationStrategy strategy, TokenMetadata newTmd) throws ConfigurationException
     {
         return AbstractReplicationStrategy.createReplicationStrategy(
-                strategy.keyspaceName,
-                AbstractReplicationStrategy.getClass(strategy.getClass().getName()),
-                newTmd,
-                strategy.snitch,
-                strategy.configOptions);
+                                                                    strategy.keyspaceName,
+                                                                    AbstractReplicationStrategy.getClass(strategy.getClass().getName()),
+                                                                    newTmd,
+                                                                    strategy.snitch,
+                                                                    strategy.configOptions);
     }
 
 }
