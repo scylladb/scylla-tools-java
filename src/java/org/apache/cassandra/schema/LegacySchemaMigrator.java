@@ -71,8 +71,22 @@ public final class LegacySchemaMigrator
                          SystemKeyspace.LegacyFunctions,
                          SystemKeyspace.LegacyAggregates);
 
-    public static void migrate()
-    {
+    public static void migrate() {
+        migrate(false);
+    }
+    /**
+     * Note: This is a workaround fix at best, in the sense that we "load" old
+     * (and for scylla, that is currently all) schemas by first traversing the 
+     * data we parsed, generating cql to write it in the new 3.x format, insert 
+     * into memtables, and then re-parse it in Schema::load. 
+     * If the added overhead is truly noticable, we should write code to just build 
+     * the meta data proper.   
+     */
+    public static void load() {
+        migrate(true);
+    }
+
+    private static void migrate(boolean nonPersistent) {
         // read metadata from the legacy schema tables
         Collection<Keyspace> keyspaces = readSchema();
 
@@ -90,6 +104,9 @@ public final class LegacySchemaMigrator
         keyspaces.forEach(LegacySchemaMigrator::storeKeyspaceInNewSchemaTables);
         keyspaces.forEach(LegacySchemaMigrator::migrateBuiltIndexesForKeyspace);
 
+        if (nonPersistent) {
+            return;
+        }
         // flush the new tables before truncating the old ones
         SchemaKeyspace.flush();
 
