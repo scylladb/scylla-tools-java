@@ -48,7 +48,7 @@ public class StandaloneSSTableUtil
         try
         {
             // load keyspace descriptions.
-            Schema.instance.loadFromDisk(false);
+            Schema.instance.loadFromDiskForTool();
 
             CFMetaData metadata = Schema.instance.getCFMetaData(options.keyspaceName, options.cfName);
             if (metadata == null)

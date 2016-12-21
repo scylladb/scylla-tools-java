@@ -52,7 +52,7 @@ public class StandaloneVerifier
         try
         {
             // load keyspace descriptions.
-            Schema.instance.loadFromDisk(false);
+            Schema.instance.loadFromDiskForTool();
 
             boolean hasFailed = false;
 
