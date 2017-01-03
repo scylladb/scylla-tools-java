@@ -93,7 +93,7 @@ public class SSTableExport
      * @return Restored CFMetaData
      * @throws IOException when Stats.db cannot be read
      */
-    public static CFMetaData metadataFromSSTable(Descriptor desc) throws IOException
+    protected CFMetaData metadataFromSSTable(Descriptor desc) throws IOException
     {
         if (!desc.version.storeRows())
             throw new IOException("pre-3.0 SSTable is not supported.");
@@ -132,6 +132,13 @@ public class SSTableExport
         return StreamSupport.stream(splititer, false);
     }
 
+    protected void checkValidDescriptor(File file) {
+        if (Descriptor.isLegacyFile(file))
+        {
+            System.err.println("Unsupported legacy sstable");
+            System.exit(1);
+        }
+    }
     /**
      * Given arguments specifying an SSTable, and optionally an output file, export the contents of the SSTable to JSON.
      *
@@ -142,6 +149,10 @@ public class SSTableExport
      */
     public static void main(String[] args) throws ConfigurationException
     {
+        new SSTableExport().run(args);
+    }
+
+    protected void run(String[] args) throws ConfigurationException {
         CommandLineParser parser = new PosixParser();
         try
         {
@@ -168,11 +179,8 @@ public class SSTableExport
                         : cmd.getOptionValues(EXCLUDE_KEY_OPTION)));
         String ssTableFileName = new File(cmd.getArgs()[0]).getAbsolutePath();
 
-        if (Descriptor.isLegacyFile(new File(ssTableFileName)))
-        {
-            System.err.println("Unsupported legacy sstable");
-            System.exit(1);
-        }
+        checkValidDescriptor(new File(ssTableFileName));
+
         if (!new File(ssTableFileName).exists())
         {
             System.err.println("Cannot find file " + ssTableFileName);
