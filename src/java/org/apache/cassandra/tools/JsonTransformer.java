@@ -193,6 +193,9 @@ public final class JsonTransformer
             if (!partition.partitionLevelDeletion().isLive())
             {
                 serializeDeletion(partition.partitionLevelDeletion());
+                // wtf? This must be fixed in mainline 3.x cassandra, but
+                // until we sync again, this fixes json writer state.
+                json.writeEndObject();
             }
             else
             {
