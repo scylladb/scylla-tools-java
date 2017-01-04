@@ -184,6 +184,8 @@ public class NodeTool
         {
             badUse(e);
             status = 1;
+        } catch (CommandFailedButNeedNoMoreOutput e) {
+            status = 1;
         } catch (Throwable throwable)
         {
             err(Throwables.getRootCause(throwable));
@@ -226,6 +228,9 @@ public class NodeTool
         System.err.println(getStackTraceAsString(e));
     }
 
+    @SuppressWarnings("serial")
+    public static class CommandFailedButNeedNoMoreOutput extends Error {};
+    
     public static abstract class NodeToolCmd implements Runnable
     {
 
