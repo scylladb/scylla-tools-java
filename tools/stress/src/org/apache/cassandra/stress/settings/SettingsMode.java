@@ -56,7 +56,7 @@ public class SettingsMode implements Serializable
             cqlVersion = CqlVersion.CQL3;
             Cql3Options opts = (Cql3Options) options;
             protocolVersion = "NEWEST_SUPPORTED".equals(opts.protocolVersion.value())
-                    ? /*ProtocolVersion.NEWEST_SUPPORTED*/ProtocolVersion.V3
+                    ? ProtocolVersion.NEWEST_SUPPORTED
                     : ProtocolVersion.fromInt(Integer.parseInt(opts.protocolVersion.value()));
             api = opts.mode().displayPrefix.equals("native") ? ConnectionAPI.JAVA_DRIVER_NATIVE : ConnectionAPI.THRIFT;
             style = opts.useUnPrepared.setByUser() ? ConnectionStyle.CQL :  ConnectionStyle.CQL_PREPARED;
