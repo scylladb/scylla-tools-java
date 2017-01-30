@@ -3,6 +3,7 @@ conf/logback.xml etc/scylla/cassandra
 conf/logback-tools.xml etc/scylla/cassandra
 dist/common/cassandra.in.sh usr/share/scylla/cassandra
 bin/nodetool usr/bin
+bin/sstablekeys usr/bin
 bin/sstableloader usr/bin
 bin/cqlsh usr/bin
 bin/sstablescrub usr/bin
@@ -14,4 +15,9 @@ tools/bin/cassandra-stress usr/bin
 tools/bin/cassandra-stressd usr/bin
 tools/bin/cassandra_attributes.py usr/bin
 tools/bin/filter_cassandra_attributes.py usr/bin
+tools/bin/sstable2json usr/bin
+tools/bin/sstablelevelreset usr/bin
+tools/bin/sstablemetadata usr/bin
+tools/bin/sstablerepairedset usr/bin
+tools/bin/sstablesplit usr/bin
 tools/bin/token-generator usr/bin
