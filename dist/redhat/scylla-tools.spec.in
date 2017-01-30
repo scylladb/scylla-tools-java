@@ -47,7 +47,7 @@ install -m755 tools/bin/filter_cassandra_attributes.py $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/cassandra_attributes.py $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/cassandra-stress $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/cassandra-stressd $RPM_BUILD_ROOT%{_bindir}
-install -m755 tools/bin/sstable2json $RPM_BUILD_ROOT%{_bindir}
+install -m755 tools/bin/sstabledump $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/sstablelevelreset $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/sstablemetadata $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/sstablerepairedset $RPM_BUILD_ROOT%{_bindir}
@@ -82,7 +82,7 @@ ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.j
 %{_bindir}/filter_cassandra_attributes.py
 %{_bindir}/cassandra_attributes.py
 %{_bindir}/cassandra-stressd
-%{_bindir}/sstable2json
+%{_bindir}/sstabledump
 %{_bindir}/sstablelevelreset
 %{_bindir}/sstablemetadata
 %{_bindir}/sstablerepairedset
