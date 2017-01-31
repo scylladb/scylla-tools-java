@@ -62,7 +62,6 @@ install -m644 build/apache-cassandra-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_R
 install -m644 build/apache-cassandra-thrift-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra
 install -m644 build/scylla-tools-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra
 install -m644 build/tools/lib/stress.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra
-install -m644 tools/lib/*.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra
 
 cd $RPM_BUILD_ROOT
 ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/apache-cassandra.jar
