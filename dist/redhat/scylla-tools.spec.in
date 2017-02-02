@@ -94,6 +94,9 @@ ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.j
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/__init__.py
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/__init__.pyc
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/__init__.pyo
+%{_prefix}/lib/python2.7/site-packages/cqlshlib/copyutil.py
+%{_prefix}/lib/python2.7/site-packages/cqlshlib/copyutil.pyc
+%{_prefix}/lib/python2.7/site-packages/cqlshlib/copyutil.pyo
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/cql3handling.py
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/cql3handling.pyc
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/cql3handling.pyo
