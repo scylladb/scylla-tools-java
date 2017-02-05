@@ -19,4 +19,3 @@ tools/bin/sstablelevelreset usr/bin
 tools/bin/sstablemetadata usr/bin
 tools/bin/sstablerepairedset usr/bin
 tools/bin/sstablesplit usr/bin
-tools/bin/token-generator usr/bin
