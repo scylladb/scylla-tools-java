@@ -1,6 +1,6 @@
 #!/bin/bash -e
 
-if [ ! -e dist/ubuntu/build_deb.sh ]; then
+if [ ! -e dist/debian/build_deb.sh ]; then
     echo "run build_deb.sh in top of scylla dir"
     exit 1
 fi
@@ -36,10 +36,10 @@ fi
 echo $VERSION > version
 ./scripts/git-archive-all --extra version --force-submodules --prefix scylla-tools ../scylla-tools_$SCYLLA_VERSION-$SCYLLA_RELEASE.orig.tar.gz 
 
-cp -a dist/ubuntu/debian debian
+cp -a dist/debian/debian debian
 
-cp dist/ubuntu/changelog.in debian/changelog
-cp dist/ubuntu/control.in debian/control
+cp dist/debian/changelog.in debian/changelog
+cp dist/debian/control.in debian/control
 sed -i -e "s/@@VERSION@@/$SCYLLA_VERSION/g" debian/changelog
 sed -i -e "s/@@RELEASE@@/$SCYLLA_RELEASE/g" debian/changelog
 sed -i -e "s/@@CODENAME@@/$CODENAME/g" debian/changelog
