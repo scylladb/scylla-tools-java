@@ -53,8 +53,6 @@ install: build
 	# Copy stress jars
 	dh_install build/tools/lib/stress.jar \
 		usr/share/scylla/cassandra
-	dh_install tools/lib/*.jar \
-		usr/share/scylla/cassandra
 
 	dh_link usr/share/scylla/cassandra/apache-cassandra-$(VERSION).jar \
 		usr/share/scylla/cassandra/apache-cassandra.jar
