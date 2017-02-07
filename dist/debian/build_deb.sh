@@ -13,12 +13,6 @@ sudo apt-get -y update
 if [ ! -f /usr/bin/git ]; then
     sudo apt-get -y install git
 fi
-if [ ! -f /usr/bin/mk-build-deps ]; then
-    sudo apt-get -y install devscripts
-fi
-if [ ! -f /usr/bin/equivs-build ]; then
-    sudo apt-get -y install equivs
-fi
 if [ ! -f /usr/bin/lsb_release ]; then
     sudo apt-get -y install lsb-release
 fi
@@ -43,12 +37,22 @@ cp dist/debian/control.in debian/control
 sed -i -e "s/@@VERSION@@/$SCYLLA_VERSION/g" debian/changelog
 sed -i -e "s/@@RELEASE@@/$SCYLLA_RELEASE/g" debian/changelog
 sed -i -e "s/@@CODENAME@@/$CODENAME/g" debian/changelog
-if [ "$RELEASE" != "16.04" ]; then
+
+if [ "$CODENAME" = "trusty" ]; then
+    sudo apt-get -y install software-properties-common
+    sudo add-apt-repository -y ppa:openjdk-r/ppa
+    sudo apt-get -y update
+    sed -i -e "s/@@BUILD_DEPENDS@@/python-support (>= 0.90.0)/g" debian/control
+    sudo apt-get -y install python-support
+elif [ "$CODENAME" = "jessie" ]; then
+    sudo sh -c 'echo deb "http://httpredir.debian.org/debian jessie-backports main" > /etc/apt/sources.list.d/jessie-backports.list'
+    sudo apt-get -y update
+    sudo apt-get install -t jessie-backports -y ca-certificates-java openjdk-8-jre-headless
     sed -i -e "s/@@BUILD_DEPENDS@@/python-support (>= 0.90.0)/g" debian/control
     sudo apt-get -y install python-support
 else
     sed -i -e "s/@@BUILD_DEPENDS@@//g" debian/control
 fi
 
-echo Y | sudo mk-build-deps -i -r
+sudo apt-get install -y debhelper openjdk-8-jdk-headless ant ant-optional bash-completion python devscripts
 debuild -r fakeroot --no-tgz-check -us -uc
