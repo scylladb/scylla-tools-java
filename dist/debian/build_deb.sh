@@ -34,6 +34,11 @@ cp -a dist/debian/debian debian
 
 cp dist/debian/changelog.in debian/changelog
 cp dist/debian/control.in debian/control
+if [ "$DISTRIBUTION" = "Ubuntu" ]; then
+    sed -i -e "s/@@REVISION@@/0ubuntu1/g" debian/changelog
+else
+    sed -i -e "s/@@REVISION@@/1/g" debian/changelog
+fi
 sed -i -e "s/@@VERSION@@/$SCYLLA_VERSION/g" debian/changelog
 sed -i -e "s/@@RELEASE@@/$SCYLLA_RELEASE/g" debian/changelog
 sed -i -e "s/@@CODENAME@@/$CODENAME/g" debian/changelog
