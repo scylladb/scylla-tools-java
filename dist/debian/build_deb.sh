@@ -52,12 +52,13 @@ if [ "$CODENAME" = "trusty" ]; then
 elif [ "$CODENAME" = "jessie" ]; then
     sudo sh -c 'echo deb "http://httpredir.debian.org/debian jessie-backports main" > /etc/apt/sources.list.d/jessie-backports.list'
     sudo apt-get -y update
-    sudo apt-get install -t jessie-backports -y ca-certificates-java openjdk-8-jre-headless
+    sudo apt-get install -t jessie-backports -y ca-certificates-java
     sed -i -e "s/@@BUILD_DEPENDS@@/python-support (>= 0.90.0)/g" debian/control
     sudo apt-get -y install python-support
 else
     sed -i -e "s/@@BUILD_DEPENDS@@//g" debian/control
 fi
 
-sudo apt-get install -y debhelper openjdk-8-jdk-headless ant ant-optional bash-completion python devscripts
+sudo apt-get install -y debhelper openjdk-8-jre-headless openjdk-8-jdk-headless ant ant-optional bash-completion python devscripts
+sudo /usr/bin/update-alternatives --set java /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java
 debuild -r fakeroot --no-tgz-check -us -uc
