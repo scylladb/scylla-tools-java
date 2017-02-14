@@ -16,6 +16,9 @@ fi
 if [ ! -f /usr/bin/lsb_release ]; then
     sudo apt-get -y install lsb-release
 fi
+if [ ! -f /usr/bin/python ]; then
+    sudo apt-get -y install python
+fi
 
 DISTRIBUTION=`lsb_release -i|awk '{print $3}'`
 RELEASE=`lsb_release -r|awk '{print $2}'`
