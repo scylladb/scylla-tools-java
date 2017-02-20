@@ -27,6 +27,7 @@ import static java.util.concurrent.TimeUnit.MICROSECONDS;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.apache.cassandra.io.sstable.format.SSTableReader.openForBatch;
+import static org.apache.cassandra.utils.UUIDGen.getUUID;
 
 import java.io.File;
 import java.io.FilenameFilter;
@@ -42,6 +43,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
@@ -52,6 +54,7 @@ import org.apache.cassandra.db.DeletionTime;
 import org.apache.cassandra.db.LivenessInfo;
 import org.apache.cassandra.db.RangeTombstone.Bound;
 import org.apache.cassandra.db.Slice;
+import org.apache.cassandra.db.context.CounterContext;
 import org.apache.cassandra.db.marshal.AbstractCompositeType;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.CollectionType;
@@ -73,6 +76,7 @@ import org.apache.cassandra.io.sstable.ISSTableScanner;
 import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.utils.Pair;
+import org.apache.cassandra.utils.UUIDGen;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -232,6 +236,43 @@ public class SSTableToCQL {
             @Override
             public boolean canDoInsert() {
                 return false;
+            }
+        }
+
+        private static class SetCounterEntry implements ColumnOp {
+            private final AbstractType<?> type;
+            private final ByteBuffer value;
+
+            SetCounterEntry(AbstractType<?> type, ByteBuffer value) {
+                this.type = type;
+                this.value = value;
+            }
+
+            @Override
+            public boolean canDoInsert() {
+                return false;
+            }
+
+            @Override
+            public String apply(ColumnDefinition c, List<Object> params) {
+                CounterContext.ContextState state = CounterContext.ContextState.wrap(value);
+                StringBuilder buf = new StringBuilder();
+                while (state.hasRemaining()) {
+                    if (buf.length() != 0) {
+                        buf.append(", ");
+                    }
+                    int type = 'r';
+                    if (state.isGlobal()) {
+                        type = 'g';
+                    }
+                    if (state.isLocal()) {
+                        type = 'l';
+                    }
+                    buf.append('(').append(type).append(',').append(getUUID(state.getCounterId().bytes())).append(',')
+                            .append(state.getClock()).append(',').append(state.getCount()).append(')');
+                    state.moveToNext();
+                }
+                return " = SCYLLA_COUNTER_SHARD_LIST([" + buf.toString() + "])";
             }
         }
 
@@ -614,7 +655,9 @@ public class SSTableToCQL {
                     case SET:
                         cop = cell.isTombstone() ?  new DeleteSetEntry(key) : new SetSetEntry(key);
                         break;
-                    }                    
+                    }
+                } else if (live && type.isCounter()) {
+                    cop = new SetCounterEntry(type, cell.value());
                 } else if (live) {
                     cop = new SetColumn(type.compose(cell.value()));
                 } else {
