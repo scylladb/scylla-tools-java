@@ -5,6 +5,7 @@ dist/common/cassandra.in.sh usr/share/scylla/cassandra
 bin/nodetool usr/bin
 bin/sstableloader usr/bin
 bin/cqlsh usr/bin
+bin/cqlsh.py usr/bin
 bin/sstablescrub usr/bin
 bin/sstableupgrade usr/bin
 lib/*.jar usr/share/scylla/cassandra/lib
