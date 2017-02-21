@@ -2,6 +2,7 @@ conf/cassandra-env.sh etc/scylla/cassandra
 conf/logback.xml etc/scylla/cassandra
 conf/logback-tools.xml etc/scylla/cassandra
 dist/common/cassandra.in.sh usr/share/scylla/cassandra
+conf/jvm.options etc/scylla/cassandra
 bin/nodetool usr/bin
 bin/sstableloader usr/bin
 bin/cqlsh usr/bin
