@@ -176,7 +176,6 @@ DEFAULT_PORT = 9042
 #TODO merge-3: update scylla to handle 3.4.0
 # was 3.4.0
 DEFAULT_CQLVER = '3.3.1'
-DEFAULT_PROTOCOL_VERSION = 4
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 10
 
@@ -713,7 +712,6 @@ class Shell(cmd.Cmd):
                  ssl=False,
                  single_statement=None,
                  request_timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
-                 protocol_version=DEFAULT_PROTOCOL_VERSION,
                  connect_timeout=DEFAULT_CONNECT_TIMEOUT_SECONDS):
         cmd.Cmd.__init__(self, completekey=completekey)
         self.hostname = hostname
@@ -733,7 +731,6 @@ class Shell(cmd.Cmd):
             self.conn = use_conn
         else:
             self.conn = Cluster(contact_points=(self.hostname,), port=self.port, cql_version=cqlver,
-                                protocol_version=protocol_version,
                                 auth_provider=self.auth_provider,
                                 ssl_options=sslhandling.ssl_settings(hostname, CONFIG_FILE) if ssl else None,
                                 load_balancing_policy=WhiteListRoundRobinPolicy([self.hostname]),
@@ -1926,9 +1923,9 @@ class Shell(cmd.Cmd):
 
         direction = parsed.get_binding('dir').upper()
         if direction == 'FROM':
-            task = ImportTask(self, ks, table, columns, fname, opts, DEFAULT_PROTOCOL_VERSION, CONFIG_FILE)
+            task = ImportTask(self, ks, table, columns, fname, opts, self.conn.protocol_version, CONFIG_FILE)
         elif direction == 'TO':
-            task = ExportTask(self, ks, table, columns, fname, opts, DEFAULT_PROTOCOL_VERSION, CONFIG_FILE)
+            task = ExportTask(self, ks, table, columns, fname, opts, self.conn.protocol_version, CONFIG_FILE)
         else:
             raise SyntaxError("Unknown direction %s" % direction)
 
