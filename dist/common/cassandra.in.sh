@@ -6,21 +6,23 @@ SCYLLA_CONF=/etc/scylla
 # or place us there.
 if [ -f "$SCYLLA_CONF/scylla.yaml" ]; then
     if [ -f "$SCYLLA_CONF/cassandra.yaml" ]; then
-	CASSANDRA_CONF=$SCYLLA_CONF
+        CASSANDRA_CONF=$SCYLLA_CONF
     else
-	# Create a temp config dir for just this execution
-	TMPCONF=`mktemp -d`
-	trap "rm -rf $TMPCONF" EXIT
-	cp -a "$SCYLLA_CONF"/* "$TMPCONF"
-	# Filter out scylla specific options that make
-	# cassandra options parser go boom.
-	# Also add attributes not present in scylla.yaml
-	# but required by cassandra.
-	`dirname $0`/filter_cassandra_attributes.py \
-		    "$TMPCONF/scylla.yaml" \
-		    > "$TMPCONF/cassandra.yaml"
-	cp /etc/scylla/cassandra/* $TMPCONF/
-	CASSANDRA_CONF=$TMPCONF
+        # Create a temp config dir for just this execution
+        TMPCONF=`mktemp -d`
+        trap "rm -rf $TMPCONF" EXIT
+        cp -a "$SCYLLA_CONF"/* "$TMPCONF"
+        # extract config files under /etc/scylla/cassandra/ to $TMPCONF
+        mv $TMPCONF/cassandra/* $TMPCONF
+        rm -rf $TMPCONF/cassandra/
+        # Filter out scylla specific options that make
+        # cassandra options parser go boom.
+        # Also add attributes not present in scylla.yaml
+        # but required by cassandra.
+        `dirname $0`/filter_cassandra_attributes.py \
+                "$TMPCONF/scylla.yaml" \
+                > "$TMPCONF/cassandra.yaml"
+        CASSANDRA_CONF=$TMPCONF
     fi
 fi
 

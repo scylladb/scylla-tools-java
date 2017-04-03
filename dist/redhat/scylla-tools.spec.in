@@ -1,4 +1,4 @@
-%define     origin_version  2.1.8
+%define     origin_version  3.0.8
 
 Name:           scylla-tools
 Version:        @@VERSION@@
@@ -10,8 +10,8 @@ License:        Apache
 URL:            http://www.scylladb.com/
 Source0:        %{name}-@@VERSION@@-@@RELEASE@@.tar
 BuildArch:      noarch
-BuildRequires:  ant java-devel python
-Requires:       java-headless python python-yaml scylla-conf
+BuildRequires:  ant java-1.8.0-openjdk-devel python
+Requires:       java-1.8.0-openjdk-headless python python-yaml scylla-conf
 
 %description
 
@@ -36,19 +36,20 @@ install -d -m755 $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra
 install -m644 conf/cassandra-env.sh $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
 install -m644 conf/logback.xml $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
 install -m644 conf/logback-tools.xml $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
+install -m644 conf/jvm.options $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
 install -d -m755 $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
 install -m644 dist/common/cassandra.in.sh $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
 install -m755 bin/nodetool $RPM_BUILD_ROOT%{_bindir}
-install -m755 bin/sstablekeys $RPM_BUILD_ROOT%{_bindir}
 install -m755 bin/sstableloader $RPM_BUILD_ROOT%{_bindir}
 install -m755 bin/cqlsh $RPM_BUILD_ROOT%{_bindir}
+install -m755 bin/cqlsh.py $RPM_BUILD_ROOT%{_bindir}
 install -m755 bin/sstablescrub $RPM_BUILD_ROOT%{_bindir}
 install -m755 bin/sstableupgrade $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/filter_cassandra_attributes.py $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/cassandra_attributes.py $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/cassandra-stress $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/cassandra-stressd $RPM_BUILD_ROOT%{_bindir}
-install -m755 tools/bin/sstable2json $RPM_BUILD_ROOT%{_bindir}
+install -m755 tools/bin/sstabledump $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/sstablelevelreset $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/sstablemetadata $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/sstablerepairedset $RPM_BUILD_ROOT%{_bindir}
@@ -63,7 +64,6 @@ install -m644 build/apache-cassandra-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_R
 install -m644 build/apache-cassandra-thrift-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra
 install -m644 build/scylla-tools-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra
 install -m644 build/tools/lib/stress.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra
-install -m644 tools/lib/*.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra
 
 cd $RPM_BUILD_ROOT
 ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/apache-cassandra.jar
@@ -72,19 +72,20 @@ ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.j
 %{_sysconfdir}/scylla/cassandra/cassandra-env.sh
 %{_sysconfdir}/scylla/cassandra/logback.xml
 %{_sysconfdir}/scylla/cassandra/logback-tools.xml
+%{_sysconfdir}/scylla/cassandra/jvm.options
 %{_sysconfdir}/bash_completion.d/nodetool-completion
 %{_datadir}/scylla/cassandra/cassandra.in.sh
 %{_bindir}/nodetool
-%{_bindir}/sstablekeys
 %{_bindir}/sstableloader
 %{_bindir}/cqlsh
+%{_bindir}/cqlsh.py
 %{_bindir}/sstablescrub
 %{_bindir}/sstableupgrade
 %{_bindir}/cassandra-stress
 %{_bindir}/filter_cassandra_attributes.py
 %{_bindir}/cassandra_attributes.py
 %{_bindir}/cassandra-stressd
-%{_bindir}/sstable2json
+%{_bindir}/sstabledump
 %{_bindir}/sstablelevelreset
 %{_bindir}/sstablemetadata
 %{_bindir}/sstablerepairedset
@@ -97,6 +98,9 @@ ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.j
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/__init__.py
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/__init__.pyc
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/__init__.pyo
+%{_prefix}/lib/python2.7/site-packages/cqlshlib/copyutil.py
+%{_prefix}/lib/python2.7/site-packages/cqlshlib/copyutil.pyc
+%{_prefix}/lib/python2.7/site-packages/cqlshlib/copyutil.pyo
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/cql3handling.py
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/cql3handling.pyc
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/cql3handling.pyo
