@@ -302,7 +302,7 @@ public class SSTableToCQL {
                 } else {
                     if (column.isPrimaryKeyColumn()) {
                         // cannot generate <> for pk columns
-                        throw new IllegalStateException("Cannot generate <> gris comparison for primary key colum " + column);
+                        throw new IllegalStateException("Cannot generate <> comparison for primary key colum " + column);
                     }
                     if (sval != null) {
                         where.put(column, 
