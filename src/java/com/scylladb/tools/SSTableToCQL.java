@@ -285,6 +285,8 @@ public class SSTableToCQL {
         Object callback;
         CFMetaData cfMetaData;
         DecoratedKey key;
+        Row row;
+        boolean rowDelete;
         long timestamp;
         int ttl;
         Multimap<ColumnDefinition, ColumnOp> values = MultimapBuilder.treeKeys().arrayListValues(1).build();
@@ -341,7 +343,7 @@ public class SSTableToCQL {
                 } else {
                     if (column.isPrimaryKeyColumn()) {
                         // cannot generate <> for pk columns
-                        throw new IllegalStateException("Cannot generate <> comparison for primary key columns");
+                        throw new IllegalStateException("Cannot generate <> gris comparison for primary key colum " + column);
                     }
                     if (sval != null) {
                         where.put(column, 
@@ -365,8 +367,13 @@ public class SSTableToCQL {
             clear();
         }
 
-        private void beginRow() {
+        private void beginRow(Row row) {
             where.clear();
+            this.row = row;
+        }
+        private void endRow() {
+            this.row = null;
+            this.rowDelete = false;
         }
         
         private void clear() {
@@ -400,6 +407,9 @@ public class SSTableToCQL {
                 clear();
                 return;
             }
+
+
+            checkRowClustering();
 
             List<Object> params = new ArrayList<>();
             StringBuilder buf = new StringBuilder();
@@ -558,47 +568,48 @@ public class SSTableToCQL {
         }
 
         private void process(Row row) {
-            beginRow();
-            
-            LivenessInfo liveInfo = row.primaryKeyLivenessInfo();
-            Deletion d = row.deletion();
+            beginRow(row);
 
-            updateTimestamp(liveInfo.timestamp());
-            updateTTL(liveInfo.ttl());
+            try {
+                LivenessInfo liveInfo = row.primaryKeyLivenessInfo();
+                Deletion d = row.deletion();
 
-            if (row.size() == 0 && d.isLive()) {
-                List<ColumnDefinition> clusteringColumns = cfMetaData.clusteringColumns();
-                for (int i = 0; i < clusteringColumns.size(); i++) {
-                    if (i >= row.clustering().size()) {
-                        break;
+                updateTimestamp(liveInfo.timestamp());
+                updateTTL(liveInfo.ttl());
+
+                for (ColumnData cd : row) {
+                    if (cd.column().isSimple()) {
+                        process((Cell) cd, liveInfo, null);
+                    } else {
+                        ComplexColumnData complexData = (ComplexColumnData) cd;
+
+                        for (Cell cell : complexData) {
+                            process(cell, liveInfo, null);
+                        }
                     }
-                    ColumnDefinition c = clusteringColumns.get(i);
-                    Object val =  c.cellValueType().compose(row.clustering().get(i));
-                    
-                    updateColumn(c, new SetColumn(val), liveInfo.timestamp(), liveInfo.ttl());                    
                 }
+
+                if (!d.isLive() && d.deletes(liveInfo)) {
+                    rowDelete = true;
+                }
+
+                if (rowDelete) {
+                    setOp(Op.DELETE, d.time().markedForDeleteAt(), invalidTTL);
+                }
+                if (row.size() == 0 && !rowDelete && !row.isStatic()) {
+                    op = Op.INSERT;
+                }
+
                 finish();
-                return;                    
+            } finally {
+                endRow();
             }
-                                               
-            for (ColumnData cd : row) {
-                if (cd.column().isSimple()) {
-                    process((Cell) cd, liveInfo, null);
-                } else {
-                    ComplexColumnData complexData = (ComplexColumnData) cd;
+        }
 
-                    for (Cell cell : complexData){
-                        process(cell, liveInfo, null);
-                    }
-                }                                
+        private void checkRowClustering() {
+            if (row == null) {
+                return;
             }
-
-            boolean rowDelete = !d.isLive() && row.size() == 0;
-
-            if (rowDelete) {
-                setOp(Op.DELETE, d.time().markedForDeleteAt(), invalidTTL);
-            }
-
             if (!row.isStatic()) {
                 Slice.Bound b = Slice.Bound.inclusiveStartOf(row.clustering().clustering());
                 Slice.Bound e = Slice.Bound.inclusiveEndOf(row.clustering().clustering());
@@ -616,15 +627,12 @@ public class SSTableToCQL {
                     // in that tombstone chain, add a marker to the current list
                     // being processed.
                     if (start != null && this.cfMetaData.comparator.compare(start, b) < 0) {
-                        tombstoneMarkers.add(new RangeTombstoneBoundMarker(e, d.time()));
+                        tombstoneMarkers.add(new RangeTombstoneBoundMarker(e, row.deletion().time()));
                     }
                 }
 
             }
-
-            finish();
         }
-        
         // process an actual cell (data or tombstone)
         private void process(Cell cell, LivenessInfo liveInfo, DeletionTime d) {
             ColumnDefinition c = cell.column();
@@ -764,11 +772,21 @@ public class SSTableToCQL {
             this.op = op;
         }
 
+        private boolean canDoInsert() {
+            if (this.op == Op.UPDATE) {
+                return false;
+            }
+            if (this.row != null && this.row.primaryKeyLivenessInfo().timestamp() != timestamp) {
+                return false;
+            }
+            return true;
+        }
+
         // add a column value to update. If we already have one for this column,
         // flush. (Should never happen though, as long as CQL row detection is
         // valid)
         private void updateColumn(ColumnDefinition c, ColumnOp object, long timestamp, int ttl) {
-            if (object != null && object.canDoInsert() && this.op != Op.UPDATE) {
+            if (object != null && object.canDoInsert() && canDoInsert()) {
                 setOp(Op.INSERT, timestamp, ttl);
             } else {
                 setOp(Op.UPDATE, timestamp, ttl);
