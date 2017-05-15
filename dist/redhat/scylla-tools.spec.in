@@ -12,6 +12,7 @@ Source0:        %{name}-@@VERSION@@-@@RELEASE@@.tar
 BuildArch:      noarch
 BuildRequires:  ant java-1.8.0-openjdk-devel python
 Requires:       java-1.8.0-openjdk-headless python python-yaml scylla-conf
+Conflicts:      cassandra
 
 %description
 
