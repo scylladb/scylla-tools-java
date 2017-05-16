@@ -131,7 +131,7 @@ public class SSTableToCQL {
             @Override
             public String apply(ColumnDefinition c, List<Object> params) {
                 params.add(Collections.singleton(key));
-                return " = " + c.name.toString() + " - ?";
+                return " = " + c.name.toCQLString() + " - ?";
             }
 
             @Override
@@ -226,7 +226,7 @@ public class SSTableToCQL {
             @Override
             public String apply(ColumnDefinition c, List<Object> params) {
                 params.add(Collections.singleton(key));
-                return " = " + c.name.toString() + " + ?";
+                return " = " + c.name.toCQLString() + " + ?";
             }
 
             @Override
@@ -392,7 +392,7 @@ public class SSTableToCQL {
                         buf.append(", ");
                     }
                     ensureWhitespace(buf);
-                    buf.append(c.name.toString());
+                    buf.append(c.name.toCQLString());
                     if (s != null) {
                         buf.append(s);
                     }
@@ -435,13 +435,13 @@ public class SSTableToCQL {
                     if (i++ > 0) {
                         buf.append(',');
                     }
-                    buf.append(c.name.toString());
+                    buf.append(c.name.toCQLString());
                 }
                 for (ColumnDefinition c : where.keySet()) {
                     if (i++ > 0) {
                         buf.append(',');
                     }
-                    buf.append(c.name.toString());
+                    buf.append(c.name.toCQLString());
                 }
                 buf.append(") values (");
                 for (i = 0; i < values.size() + where.size(); ++i) {
@@ -458,7 +458,7 @@ public class SSTableToCQL {
                     if (i++ > 0) {
                         buf.append(" AND ");
                     }
-                    buf.append(e.getKey().name.toString());
+                    buf.append(e.getKey().name.toCQLString());
                     buf.append(' ');
                     buf.append(e.getValue().left.toString());
                     buf.append(" ?");
