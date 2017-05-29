@@ -410,7 +410,7 @@ public class SSTableToCQL {
 
 
             checkRowClustering();
-            
+
             List<Object> params = new ArrayList<>();
             StringBuilder buf = new StringBuilder();
 
@@ -576,7 +576,7 @@ public class SSTableToCQL {
 
                 updateTimestamp(liveInfo.timestamp());
                 updateTTL(liveInfo.ttl());
-                
+
                 for (ColumnData cd : row) {
                     if (cd.column().isSimple()) {
                         process((Cell) cd, liveInfo, null);
@@ -781,7 +781,7 @@ public class SSTableToCQL {
             }
             return true;
         }
-        
+
         // add a column value to update. If we already have one for this column,
         // flush. (Should never happen though, as long as CQL row detection is
         // valid)
