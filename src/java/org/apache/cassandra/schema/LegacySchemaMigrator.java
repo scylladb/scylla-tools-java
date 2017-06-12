@@ -36,6 +36,7 @@ import org.apache.cassandra.cql3.functions.UDFunction;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.compaction.AbstractCompactionStrategy;
 import org.apache.cassandra.db.marshal.*;
+import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.db.rows.RowIterator;
 import org.apache.cassandra.db.rows.UnfilteredRowIterators;
 import org.apache.cassandra.exceptions.InvalidRequestException;
@@ -86,7 +87,11 @@ public final class LegacySchemaMigrator
         migrate(true);
     }
 
+    private static boolean nonPersistent;
+    
     private static void migrate(boolean nonPersistent) {
+        LegacySchemaMigrator.nonPersistent = nonPersistent;
+        
         // read metadata from the legacy schema tables
         Collection<Keyspace> keyspaces = readSchema();
 
@@ -851,7 +856,22 @@ public final class LegacySchemaMigrator
         try (OpOrder.Group op = store.readOrdering.start();
              RowIterator partition = UnfilteredRowIterators.filter(command.queryMemtableAndDisk(store, op), nowInSec))
         {
-            return partition.next().primaryKeyLivenessInfo().timestamp();
+            long timestamp;
+            do {
+                Row row = partition.next();
+                timestamp = row.primaryKeyLivenessInfo().timestamp();
+                if (row.primaryKeyLivenessInfo().isEmpty() && nonPersistent) {
+                    // I don't think this is a scylla bug per se, but apparently we 
+                    // generate sstables slightly different from origin, thus though we get the 
+                    // data, the pk liveness/timestamp is not set. But returning NO_TIMESTAMP
+                    // here will lead to all mutations generated being empty (deletion deletes).
+                    // Work around this (only in tool/non-persistent mode) by saying "now" 
+                    timestamp = FBUtilities.timestampMicros();
+                    break;
+                }
+            } while (partition.hasNext());
+
+            return timestamp;
         }
     }
 
