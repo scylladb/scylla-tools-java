@@ -98,7 +98,9 @@ public final class LegacySchemaMigrator
         // if already upgraded, or starting a new 3.0 node, abort early
         if (keyspaces.isEmpty())
         {
-            unloadLegacySchemaTables();
+            if (!nonPersistent) {
+                unloadLegacySchemaTables();
+            }
             return;
         }
 
