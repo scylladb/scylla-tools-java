@@ -2,7 +2,7 @@ Source: scylla-tools
 Section: misc
 Priority: extra
 Maintainer: Takuya ASADA <syuu@scylladb.com>
-Build-Depends: debhelper (>= 5), openjdk-7-jdk, ant (>= 1.7), ant-optional (>= 1.7), bash-completion, python | python-all | python-dev | python-all-dev, @@BUILD_DEPENDS@@
+Build-Depends: debhelper (>= 5), ant (>= 1.7), ant-optional (>= 1.7), bash-completion, python | python-all | python-dev | python-all-dev, @@BUILD_DEPENDS@@
 Homepage: http://www.scylladb.com
 Standards-Version: 3.9.5
 

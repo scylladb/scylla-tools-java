@@ -40,14 +40,17 @@ cp -a dist/ubuntu/debian debian
 
 cp dist/ubuntu/changelog.in debian/changelog
 cp dist/ubuntu/control.in debian/control
+cp dist/ubuntu/rules.in debian/rules
 sed -i -e "s/@@VERSION@@/$SCYLLA_VERSION/g" debian/changelog
 sed -i -e "s/@@RELEASE@@/$SCYLLA_RELEASE/g" debian/changelog
 sed -i -e "s/@@CODENAME@@/$CODENAME/g" debian/changelog
 if [ "$RELEASE" != "16.04" ]; then
-    sed -i -e "s/@@BUILD_DEPENDS@@/python-support (>= 0.90.0)/g" debian/control
+    sed -i -e "s/@@BUILD_DEPENDS@@/python-support (>= 0.90.0), openjdk-7-jdk/g" debian/control
     sudo apt-get -y install python-support
+    sed -i -e "s#@@JAVA_HOME@@#/usr/lib/jvm/java-7-openjdk-amd64#g" debian/rules
 else
-    sed -i -e "s/@@BUILD_DEPENDS@@//g" debian/control
+    sed -i -e "s/@@BUILD_DEPENDS@@/openjdk-8-jdk-headless/g" debian/control
+    sed -i -e "s#@@JAVA_HOME@@#/usr/lib/jvm/java-8-openjdk-amd64#g" debian/rules
 fi
 
 echo Y | sudo mk-build-deps -i -r
