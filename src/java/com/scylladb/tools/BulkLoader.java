@@ -42,6 +42,7 @@
 package com.scylladb.tools;
 
 import static com.datastax.driver.core.Cluster.builder;
+import static org.apache.cassandra.schema.CQLTypeParser.parse;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -59,6 +60,7 @@ import java.security.SecureRandom;
 import java.security.UnrecoverableKeyException;
 import java.security.cert.CertificateException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -74,6 +76,7 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 
 import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.CFMetaData.DroppedColumn;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.EncryptionOptions;
 import org.apache.cassandra.config.Schema;
@@ -86,6 +89,8 @@ import org.apache.cassandra.cql3.statements.CFStatement;
 import org.apache.cassandra.cql3.statements.CreateTableStatement;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.cassandra.db.marshal.BytesType;
+import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
@@ -120,6 +125,7 @@ import com.datastax.driver.core.ProtocolOptions.Compression;
 import com.datastax.driver.core.ProtocolVersion;
 import com.datastax.driver.core.ResultSet;
 import com.datastax.driver.core.ResultSetFuture;
+import com.datastax.driver.core.Row;
 import com.datastax.driver.core.SSLOptions;
 import com.datastax.driver.core.Session;
 import com.datastax.driver.core.SimpleStatement;
@@ -128,6 +134,7 @@ import com.datastax.driver.core.TableMetadata;
 import com.datastax.driver.core.TokenRange;
 import com.datastax.driver.core.TupleType;
 import com.datastax.driver.core.UserType;
+import com.datastax.driver.core.exceptions.DriverException;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -190,6 +197,7 @@ public class BulkLoader {
 
         private final boolean batch;
         private final Map<String, ListenableFuture<PreparedStatement>> preparedStatements;
+        private final Set<String> ignoreColumns;
 
         public CQLClient(LoaderOptions options, String keyspace)
                 throws NoSuchAlgorithmException, FileNotFoundException, IOException, KeyStoreException,
@@ -255,6 +263,7 @@ public class BulkLoader {
 
             this.batch = options.batch;
             this.preparedStatements = options.prepare ? new ConcurrentHashMap<>() : null;
+            this.ignoreColumns = options.ignoreColumns;
         }
 
         // Load user defined types. Since loading a UDT entails validation
@@ -413,6 +422,9 @@ public class BulkLoader {
 
         private final Map<Pair<String, String>, CFMetaData> cfMetaDatas = new HashMap<>();
 
+        private static final String SELECT_DROPPED_COLUMNS = "SELECT * FROM system_schema.dropped_columns";
+
+        @SuppressWarnings("serial")
         @Override
         public CFMetaData getCFMetaData(String keyspace, String cfName) {
             Pair<String, String> key = Pair.create(keyspace, cfName);
@@ -426,6 +438,42 @@ public class BulkLoader {
                         .prepare(ksm != null ? ksm.types : Types.none()).statement;
                 statement.validate(ClientState.forInternalCalls());
                 cfm = statement.getCFMetaData();
+
+                final Map<ByteBuffer, DroppedColumn> map = new HashMap<>();
+                Map<ByteBuffer, DroppedColumn> droppedColumns = map;
+
+                try {
+                    ResultSet r = session.execute(SELECT_DROPPED_COLUMNS + " WHERE keyspace_name = '" + keyspace
+                            + "' AND table_name = '" + cfName + '\'');
+
+                    for (Row row : r) {
+                        String name = row.getString("column_name");
+                        long droppedTime = row.getTimestamp("dropped_time").getTime();
+                        AbstractType<?> type = parse(keyspace, row.getString("type"),
+                                org.apache.cassandra.schema.Types.none());
+                        droppedColumns.put(UTF8Type.instance.decompose(name),
+                                new CFMetaData.DroppedColumn(name, type, droppedTime * 1000));
+                    }
+                } catch (DriverException e) {
+                    // ignore. Assume we're asking a v2 schema source.
+                }
+                if (!ignoreColumns.isEmpty()) {
+                    droppedColumns = new HashMap<ByteBuffer, DroppedColumn>(droppedColumns) {
+                        @Override
+                        public DroppedColumn get(Object key) {
+                            DroppedColumn c = super.get(key);
+                            if (c == null) {
+                                String name = UTF8Type.instance.compose((ByteBuffer) key);
+                                if (ignoreColumns.contains(name)) {
+                                    c = new DroppedColumn(name, BytesType.instance, FBUtilities.timestampMicros());
+                                    put((ByteBuffer) key, c);
+                                }
+                            }
+                            return c;
+                        }
+                    };
+                }
+                cfm.droppedColumns(droppedColumns);
                 cfMetaDatas.put(key, cfm);
             }
             return cfm;
@@ -590,6 +638,8 @@ public class BulkLoader {
                     "cassandra.yaml file path for streaming throughput and client/server SSL.");
             options.addOption("b", USE_BATCH, "batch updates for same partition key.");
             options.addOption("x", USE_PREPARED, "prepared statements");
+            options.addOption("g", IGNORE_MISSING_COLUMNS, "COLUMN NAMES...", "ignore named missing columns in tables");
+
             return options;
         }
 
@@ -742,6 +792,9 @@ public class BulkLoader {
                 if (cmd.hasOption(USE_BATCH)) {
                     opts.batch = true;
                 }
+                if (cmd.hasOption(IGNORE_MISSING_COLUMNS)) {
+                    opts.ignoreColumns.addAll(Arrays.asList(cmd.getOptionValues(IGNORE_MISSING_COLUMNS)));
+                }
 
                 return opts;
             } catch (ParseException | ConfigurationException | MalformedURLException e) {
@@ -787,6 +840,8 @@ public class BulkLoader {
 
         public final Set<InetAddress> ignores = new HashSet<>();
 
+        public final Set<String> ignoreColumns = new HashSet<>();
+
         LoaderOptions(File directory) {
             this.directory = directory;
         }
@@ -794,6 +849,7 @@ public class BulkLoader {
 
     private static final String TOOL_NAME = "sstableloader";
     private static final String SIMULATE = "simulate";
+    private static final String IGNORE_MISSING_COLUMNS = "ignore-missing-columns";
     private static final String VERBOSE_OPTION = "verbose";
     private static final String HELP_OPTION = "help";
     private static final String NOPROGRESS_OPTION = "no-progress";
