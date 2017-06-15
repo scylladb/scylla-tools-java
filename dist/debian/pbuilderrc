@@ -1,0 +1,24 @@
+USENETWORK=yes
+BUILD_HOME=/tmp
+BASETGZ="/var/cache/pbuilder/$DIST-base.tgz"
+DISTRIBUTION="$DIST"
+BUILDRESULT="/var/cache/pbuilder/$DIST/result/"
+APTCACHE="/var/cache/pbuilder/$DIST/aptcache/"
+ALLOWUNTRUSTED=yes
+
+if [ "$DIST" = "trusty" ] || [ "$DIST" = "xenial" ]; then
+    MIRRORSITE="http://archive.ubuntu.com/ubuntu/"
+    COMPONENTS="main restricted universe multiverse"
+    DEBOOTSTRAPOPTS="--keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg"
+    if [ "$DIST" = "trusty" ]; then
+        OTHERMIRROR="deb http://ppa.launchpad.net/openjdk-r/ppa/ubuntu trusty main"
+    fi
+elif [ "$DIST" = "jessie" ]; then
+    MIRRORSITE="http://ftp.us.debian.org/debian/"
+    COMPONENTS="main contrib non-free"
+    DEBOOTSTRAPOPTS="--keyring=/usr/share/keyrings/debian-archive-keyring.gpg"
+    OTHERMIRROR="deb http://httpredir.debian.org/debian jessie-backports main"
+else
+    echo "Unknown distribution: $DIST"
+    exit 1
+fi
