@@ -57,7 +57,7 @@ fi
 # this hack is needed since some environment installs 'git-core' package, it's
 # subset of the git command and doesn't works for our git-archive-all script.
 if is_redhat_variant && [ ! -f /usr/libexec/git-core/git-submodule ]; then
-    yum install -y git
+    sudo yum install -y git
 fi
 if [ ! -f /usr/bin/git ]; then
     pkg_install git
