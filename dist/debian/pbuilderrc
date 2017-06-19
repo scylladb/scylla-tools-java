@@ -1,9 +1,9 @@
 USENETWORK=yes
 BUILD_HOME=/tmp
-BASETGZ="/var/cache/pbuilder/$DIST-base.tgz"
+BASETGZ="/var/cache/pbuilder/scylla-tools-$DIST.tgz"
 DISTRIBUTION="$DIST"
-BUILDRESULT="/var/cache/pbuilder/$DIST/result/"
-APTCACHE="/var/cache/pbuilder/$DIST/aptcache/"
+BUILDRESULT="/var/cache/pbuilder/scylla-tools-$DIST/result/"
+APTCACHE="/var/cache/pbuilder/scylla-tools-$DIST/aptcache/"
 ALLOWUNTRUSTED=yes
 
 if [ "$DIST" = "trusty" ] || [ "$DIST" = "xenial" ]; then
