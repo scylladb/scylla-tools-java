@@ -109,7 +109,7 @@ sed -i -e "s/@@RELEASE@@/$SCYLLA_RELEASE/g" debian/changelog
 sed -i -e "s/@@CODENAME@@/$TARGET/g" debian/changelog
 
 cp ./dist/debian/pbuilderrc ~/.pbuilderrc
-sudo rm -fv /var/cache/pbuilder/$TARGET-base.tgz
+sudo rm -fv /var/cache/pbuilder/scylla-tools-$TARGET.tgz
 sudo -E DIST=$TARGET /usr/sbin/pbuilder clean
 sudo -E DIST=$TARGET /usr/sbin/pbuilder create
 sudo -E DIST=$TARGET /usr/sbin/pbuilder update
