@@ -11,11 +11,22 @@ URL:            http://www.scylladb.com/
 Source0:        %{name}-@@VERSION@@-@@RELEASE@@.tar
 BuildArch:      noarch
 BuildRequires:  ant java-1.8.0-openjdk-devel python
-Requires:       java-1.8.0-openjdk-headless python python-yaml scylla-conf
+Requires:       java-1.8.0-openjdk-headless python python-yaml scylla-conf scyla-tools-core
 Conflicts:      cassandra
 
 %description
 
+%package core
+License:        Apache
+URL:            http://www.scylladb.com/
+BuildArch:      noarch
+Requires:       java-headless
+Summary:        Core files for Scylla tools
+Version:        @@VERSION@@
+Release:        @@RELEASE@@%{?dist}
+
+%description core
+Core files for scylla tools.
 
 %prep
 %setup -q
@@ -72,7 +83,6 @@ ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.j
 %{_sysconfdir}/scylla/cassandra/logback-tools.xml
 %{_sysconfdir}/scylla/cassandra/jvm.options
 %{_sysconfdir}/bash_completion.d/nodetool-completion
-%{_datadir}/scylla/cassandra/cassandra.in.sh
 %{_bindir}/nodetool
 %{_bindir}/sstableloader
 %{_bindir}/cqlsh
@@ -85,10 +95,6 @@ ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.j
 %{_bindir}/sstablelevelreset
 %{_bindir}/sstablemetadata
 %{_bindir}/sstablerepairedset
-%{_datadir}/scylla/cassandra/lib/*.jar
-%{_datadir}/scylla/cassandra/lib/*.zip
-%{_docdir}/scylla/cassandra/licenses
-%{_datadir}/scylla/cassandra/*.jar
 %{_prefix}/lib/python2.7/site-packages/cassandra_pylib-0.0.0-py2.7.egg-info
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/__init__.py
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/__init__.pyc
@@ -129,6 +135,14 @@ ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.j
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/wcwidth.py
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/wcwidth.pyc
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/wcwidth.pyo
+
+
+%files core
+%{_datadir}/scylla/cassandra/cassandra.in.sh
+%{_datadir}/scylla/cassandra/lib/*.jar
+%{_datadir}/scylla/cassandra/lib/*.zip
+%{_docdir}/scylla/cassandra/licenses
+%{_datadir}/scylla/cassandra/*.jar
 
 %changelog
 * Fri Aug  7 2015 Takuya ASADA Takuya ASADA <syuu@cloudius-systems.com>

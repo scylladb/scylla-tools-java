@@ -1,0 +1,4 @@
+dist/common/cassandra.in.sh usr/share/scylla/cassandra
+lib/*.jar usr/share/scylla/cassandra/lib
+lib/*.zip usr/share/scylla/cassandra/lib
+lib/licenses usr/share/doc/scylla/cassandra
