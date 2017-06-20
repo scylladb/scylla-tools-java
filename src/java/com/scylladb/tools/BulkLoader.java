@@ -208,10 +208,14 @@ public class BulkLoader {
 
             PoolingOptions poolingOptions = new PoolingOptions();
 
-            poolingOptions.setCoreConnectionsPerHost(HostDistance.LOCAL, 4);
-            poolingOptions.setCoreConnectionsPerHost(HostDistance.REMOTE, 2);
-            poolingOptions.setMaxConnectionsPerHost(HostDistance.LOCAL, 8);
-            poolingOptions.setMaxConnectionsPerHost(HostDistance.REMOTE, 4);
+            int connections = options.connectionsPerHost;
+            if (connections == 0) {
+                connections = 8;
+            }
+            poolingOptions.setCoreConnectionsPerHost(HostDistance.LOCAL, Math.max(1, connections / 2));
+            poolingOptions.setCoreConnectionsPerHost(HostDistance.REMOTE, Math.max(1, connections / 4));
+            poolingOptions.setMaxConnectionsPerHost(HostDistance.LOCAL, connections);
+            poolingOptions.setMaxConnectionsPerHost(HostDistance.REMOTE, Math.max(1, connections / 2));
             poolingOptions.setMaxRequestsPerConnection(HostDistance.LOCAL, 32768);
             poolingOptions.setMaxRequestsPerConnection(HostDistance.REMOTE, 2000);
 
