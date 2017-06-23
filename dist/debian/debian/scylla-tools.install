@@ -1,17 +1,12 @@
 conf/cassandra-env.sh etc/scylla/cassandra
 conf/logback.xml etc/scylla/cassandra
 conf/logback-tools.xml etc/scylla/cassandra
-dist/common/cassandra.in.sh usr/share/scylla/cassandra
 conf/jvm.options etc/scylla/cassandra
 bin/nodetool usr/bin
-bin/sstableloader usr/bin
 bin/cqlsh usr/bin
 bin/cqlsh.py usr/bin
 bin/sstablescrub usr/bin
 bin/sstableupgrade usr/bin
-lib/*.jar usr/share/scylla/cassandra/lib
-lib/*.zip usr/share/scylla/cassandra/lib
-lib/licenses usr/share/doc/scylla/cassandra
 tools/bin/cassandra-stress usr/bin
 tools/bin/cassandra-stressd usr/bin
 tools/bin/cassandra_attributes.py usr/bin

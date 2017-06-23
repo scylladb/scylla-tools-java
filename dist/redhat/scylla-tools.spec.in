@@ -11,11 +11,22 @@ URL:            http://www.scylladb.com/
 Source0:        %{name}-@@VERSION@@-@@RELEASE@@.tar
 BuildArch:      noarch
 BuildRequires:  ant java-1.8.0-openjdk-devel python
-Requires:       java-1.8.0-openjdk-headless python python-yaml scylla-conf
+Requires:       java-1.8.0-openjdk-headless python python-yaml scylla-conf scyla-tools-core
 Conflicts:      cassandra
 
 %description
 
+%package core
+License:        Apache
+URL:            http://www.scylladb.com/
+BuildArch:      noarch
+Requires:       java-headless
+Summary:        Core files for Scylla tools
+Version:        @@VERSION@@
+Release:        @@RELEASE@@%{?dist}
+
+%description core
+Core files for scylla tools.
 
 %prep
 %setup -q
@@ -41,7 +52,7 @@ install -m644 conf/jvm.options $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
 install -d -m755 $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
 install -m644 dist/common/cassandra.in.sh $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
 install -m755 bin/nodetool $RPM_BUILD_ROOT%{_bindir}
-install -m755 bin/sstableloader $RPM_BUILD_ROOT%{_bindir}
+install -m755 bin/scylla-sstableloader $RPM_BUILD_ROOT%{_bindir}
 install -m755 bin/cqlsh $RPM_BUILD_ROOT%{_bindir}
 install -m755 bin/cqlsh.py $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/filter_cassandra_attributes.py $RPM_BUILD_ROOT%{_bindir}
@@ -65,6 +76,7 @@ install -m644 build/tools/lib/stress.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassa
 
 cd $RPM_BUILD_ROOT
 ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/apache-cassandra.jar
+ln -s %{_bindir}/scylla-sstableloader $RPM_BUILD_ROOT%{_bindir}/sstableloader
 
 %files
 %{_sysconfdir}/scylla/cassandra/cassandra-env.sh
@@ -72,7 +84,6 @@ ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.j
 %{_sysconfdir}/scylla/cassandra/logback-tools.xml
 %{_sysconfdir}/scylla/cassandra/jvm.options
 %{_sysconfdir}/bash_completion.d/nodetool-completion
-%{_datadir}/scylla/cassandra/cassandra.in.sh
 %{_bindir}/nodetool
 %{_bindir}/sstableloader
 %{_bindir}/cqlsh
@@ -85,10 +96,6 @@ ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.j
 %{_bindir}/sstablelevelreset
 %{_bindir}/sstablemetadata
 %{_bindir}/sstablerepairedset
-%{_datadir}/scylla/cassandra/lib/*.jar
-%{_datadir}/scylla/cassandra/lib/*.zip
-%{_docdir}/scylla/cassandra/licenses
-%{_datadir}/scylla/cassandra/*.jar
 %{_prefix}/lib/python2.7/site-packages/cassandra_pylib-0.0.0-py2.7.egg-info
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/__init__.py
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/__init__.pyc
@@ -129,6 +136,15 @@ ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.j
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/wcwidth.py
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/wcwidth.pyc
 %{_prefix}/lib/python2.7/site-packages/cqlshlib/wcwidth.pyo
+
+
+%files core
+%{_datadir}/scylla/cassandra/cassandra.in.sh
+%{_datadir}/scylla/cassandra/lib/*.jar
+%{_datadir}/scylla/cassandra/lib/*.zip
+%{_docdir}/scylla/cassandra/licenses
+%{_datadir}/scylla/cassandra/*.jar
+%{_bindir}/scylla-sstableloader
 
 %changelog
 * Fri Aug  7 2015 Takuya ASADA Takuya ASADA <syuu@cloudius-systems.com>
