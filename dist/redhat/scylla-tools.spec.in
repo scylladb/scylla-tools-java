@@ -11,7 +11,7 @@ URL:            http://www.scylladb.com/
 Source0:        %{name}-@@VERSION@@-@@RELEASE@@.tar
 BuildArch:      noarch
 BuildRequires:  ant java-1.8.0-openjdk-devel python
-Requires:       java-1.8.0-openjdk-headless python python-yaml scylla-conf scyla-tools-core
+Requires:       java-1.8.0-openjdk-headless python python-yaml scylla-conf scylla-tools-core
 Conflicts:      cassandra
 
 %description
@@ -53,6 +53,7 @@ install -d -m755 $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
 install -m644 dist/common/cassandra.in.sh $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
 install -m755 bin/nodetool $RPM_BUILD_ROOT%{_bindir}
 install -m755 bin/sstableloader $RPM_BUILD_ROOT%{_bindir}
+install -m755 bin/scylla-sstableloader $RPM_BUILD_ROOT%{_bindir}
 install -m755 bin/cqlsh $RPM_BUILD_ROOT%{_bindir}
 install -m755 bin/cqlsh.py $RPM_BUILD_ROOT%{_bindir}
 install -m755 tools/bin/filter_cassandra_attributes.py $RPM_BUILD_ROOT%{_bindir}
@@ -143,6 +144,7 @@ ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.j
 %{_datadir}/scylla/cassandra/lib/*.zip
 %{_docdir}/scylla/cassandra/licenses
 %{_datadir}/scylla/cassandra/*.jar
+%{_bindir}/scylla-sstableloader
 
 %changelog
 * Fri Aug  7 2015 Takuya ASADA Takuya ASADA <syuu@cloudius-systems.com>
