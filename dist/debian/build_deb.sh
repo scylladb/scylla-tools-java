@@ -1,7 +1,49 @@
 #!/bin/bash -e
 
+. /etc/os-release
+print_usage() {
+    echo "build_deb.sh -target <codename>"
+    echo "  --target target distribution codename"
+    exit 1
+}
+TARGET=
+while [ $# -gt 0 ]; do
+    case "$1" in
+        "--target")
+            TARGET=$2
+            shift 2
+            ;;
+        *)
+            print_usage
+            ;;
+    esac
+done
+
+is_redhat_variant() {
+    [ -f /etc/redhat-release ]
+}
+is_debian_variant() {
+    [ -f /etc/debian_version ]
+}
+
+
+pkg_install() {
+    if is_redhat_variant; then
+        sudo yum install -y $1
+    elif is_debian_variant; then
+        sudo apt-get install -y $1
+    else
+        echo "Requires to install following command: $1"
+        exit 1
+    fi
+}
+
 if [ ! -e dist/debian/build_deb.sh ]; then
     echo "run build_deb.sh in top of scylla dir"
+    exit 1
+fi
+if [ "$(arch)" != "x86_64" ]; then
+    echo "Unsupported architecture: $(arch)"
     exit 1
 fi
 
@@ -9,27 +51,46 @@ if [ -e debian ] || [ -e build/release ]; then
     rm -rf debian build conf/hotspot_compiler
     mkdir build
 fi
-sudo apt-get -y update
-if [ ! -f /usr/bin/git ]; then
-    sudo apt-get -y install git
+if is_debian_variant; then
+    sudo apt-get -y update
 fi
-if [ ! -f /usr/bin/lsb_release ]; then
-    sudo apt-get -y install lsb-release
+# this hack is needed since some environment installs 'git-core' package, it's
+# subset of the git command and doesn't works for our git-archive-all script.
+if is_redhat_variant && [ ! -f /usr/libexec/git-core/git-submodule ]; then
+    sudo yum install -y git
+fi
+if [ ! -f /usr/bin/git ]; then
+    pkg_install git
 fi
 if [ ! -f /usr/bin/python ]; then
-    sudo apt-get -y install python
+    pkg_install python
+fi
+if [ ! -f /usr/sbin/pbuilder ]; then
+    pkg_install pbuilder
+fi
+if [ ! -f /usr/bin/ant ]; then
+    pkg_install ant
+fi
+if [ ! -f /usr/bin/dh_testdir ]; then
+    pkg_install debhelper
 fi
 
-DISTRIBUTION=`lsb_release -i|awk '{print $3}'`
-RELEASE=`lsb_release -r|awk '{print $2}'`
-CODENAME=`lsb_release -c|awk '{print $2}'`
+
+if [ -z "$TARGET" ]; then
+    if is_debian_variant; then
+        if [ ! -f /usr/bin/lsb_release ]; then
+            pkg_install lsb-release
+        fi
+        TARGET=`lsb_release -c|awk '{print $2}'`
+    else
+        echo "Please specify target"
+        exit 1
+    fi
+fi
 
 VERSION=$(./SCYLLA-VERSION-GEN)
 SCYLLA_VERSION=$(cat build/SCYLLA-VERSION-FILE | sed 's/\.rc/~rc/')
 SCYLLA_RELEASE=$(cat build/SCYLLA-RELEASE-FILE)
-if [ "$SCYLLA_VERSION" = "development" ]; then
-	SCYLLA_VERSION=0development
-fi
 echo $VERSION > version
 ./scripts/git-archive-all --extra version --force-submodules --prefix scylla-tools ../scylla-tools_$SCYLLA_VERSION-$SCYLLA_RELEASE.orig.tar.gz 
 
@@ -37,31 +98,29 @@ cp -a dist/debian/debian debian
 
 cp dist/debian/changelog.in debian/changelog
 cp dist/debian/control.in debian/control
-if [ "$DISTRIBUTION" = "Ubuntu" ]; then
+if [ "$TARGET" = "trusty" ] || [ "$TARGET" = "xenial" ]; then
     sed -i -e "s/@@REVISION@@/0ubuntu1/g" debian/changelog
 else
     sed -i -e "s/@@REVISION@@/1/g" debian/changelog
+    
 fi
 sed -i -e "s/@@VERSION@@/$SCYLLA_VERSION/g" debian/changelog
 sed -i -e "s/@@RELEASE@@/$SCYLLA_RELEASE/g" debian/changelog
-sed -i -e "s/@@CODENAME@@/$CODENAME/g" debian/changelog
+sed -i -e "s/@@CODENAME@@/$TARGET/g" debian/changelog
 
-if [ "$CODENAME" = "trusty" ]; then
-    sudo apt-get -y install software-properties-common
-    sudo add-apt-repository -y ppa:openjdk-r/ppa
-    sudo apt-get -y update
+cp ./dist/debian/pbuilderrc ~/.pbuilderrc
+sudo rm -fv /var/cache/pbuilder/$TARGET-base.tgz
+sudo -E DIST=$TARGET /usr/sbin/pbuilder clean
+sudo -E DIST=$TARGET /usr/sbin/pbuilder create
+sudo -E DIST=$TARGET /usr/sbin/pbuilder update
+if [ "$TARGET" = "trusty" ]; then
     sed -i -e "s/@@BUILD_DEPENDS@@/python-support (>= 0.90.0)/g" debian/control
-    sudo apt-get -y install python-support
-elif [ "$CODENAME" = "jessie" ]; then
-    sudo sh -c 'echo deb "http://httpredir.debian.org/debian jessie-backports main" > /etc/apt/sources.list.d/jessie-backports.list'
-    sudo apt-get -y update
-    sudo apt-get install -t jessie-backports -y ca-certificates-java
-    sed -i -e "s/@@BUILD_DEPENDS@@/python-support (>= 0.90.0)/g" debian/control
-    sudo apt-get -y install python-support
-else
+elif [ "$TARGET" = "xenial" ]; then
     sed -i -e "s/@@BUILD_DEPENDS@@//g" debian/control
+elif [ "$TARGET" = "jessie" ]; then
+    sed -i -e "s/@@BUILD_DEPENDS@@/python-support (>= 0.90.0)/g" debian/control
+    echo "apt-get install -y -t jessie-backports ca-certificates-java" > build/jessie-pkginst.sh
+    chmod a+rx build/jessie-pkginst.sh
+    sudo -E DIST=$TARGET /usr/sbin/pbuilder execute build/jessie-pkginst.sh
 fi
-
-sudo apt-get install -y debhelper openjdk-8-jre-headless openjdk-8-jdk-headless ant ant-optional bash-completion python devscripts
-sudo /usr/bin/update-alternatives --set java /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java
-debuild -r fakeroot --no-tgz-check -us -uc
+sudo -E DIST=$TARGET pdebuild --buildresult build/debs
