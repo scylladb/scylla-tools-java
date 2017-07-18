@@ -25,7 +25,14 @@ public class SSTableExport extends org.apache.cassandra.tools.SSTableExport {
         // load keyspace descriptions.
         Schema.instance.loadFromDiskForTool();
 
-        return Schema.instance.getCFMetaData(desc);
+        CFMetaData metaData = Schema.instance.getCFMetaData(desc);
+        if (metaData == null) {
+            throw new IllegalArgumentException(String.format(
+                    "Could not locate schema info for %s/(%s:%s). "
+                            + "Make sure your 'data_file_directories' is pointed correctly.",
+                    desc, desc.ksname, desc.cfname));
+        }
+        return metaData;
     }
 
     @Override
