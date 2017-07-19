@@ -6,18 +6,20 @@ BUILDRESULT="/var/cache/pbuilder/scylla-tools-$DIST/result/"
 APTCACHE="/var/cache/pbuilder/scylla-tools-$DIST/aptcache/"
 ALLOWUNTRUSTED=yes
 
-if [ "$DIST" = "trusty" ] || [ "$DIST" = "xenial" ]; then
+if [ "$DIST" = "trusty" ] || [ "$DIST" = "xenial" ] || [ "$DIST" = "yakkety" ] || [ "$DIST" = "zesty" ] || [ "$DIST" = "artful" ]; then
     MIRRORSITE="http://archive.ubuntu.com/ubuntu/"
     COMPONENTS="main restricted universe multiverse"
     DEBOOTSTRAPOPTS="--keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg"
     if [ "$DIST" = "trusty" ]; then
         OTHERMIRROR="deb http://ppa.launchpad.net/openjdk-r/ppa/ubuntu trusty main"
     fi
-elif [ "$DIST" = "jessie" ]; then
-    MIRRORSITE="http://ftp.us.debian.org/debian/"
+elif [ "$DIST" = "jessie" ] || [ "$DIST" = "stretch" ] || [ "$DIST" = "buster" ] || [ "$DIST" = "sid" ]; then
+    MIRRORSITE="http://deb.debian.org/debian/"
     COMPONENTS="main contrib non-free"
     DEBOOTSTRAPOPTS="--keyring=/usr/share/keyrings/debian-archive-keyring.gpg"
-    OTHERMIRROR="deb http://httpredir.debian.org/debian jessie-backports main"
+    if [ "$DIST" = "jessie" ]; then
+        OTHERMIRROR="deb http://httpredir.debian.org/debian jessie-backports main"
+    fi
 else
     echo "Unknown distribution: $DIST"
     exit 1
