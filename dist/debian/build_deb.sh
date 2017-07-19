@@ -98,7 +98,7 @@ cp -a dist/debian/debian debian
 
 cp dist/debian/changelog.in debian/changelog
 cp dist/debian/control.in debian/control
-if [ "$TARGET" = "trusty" ] || [ "$TARGET" = "xenial" ]; then
+if [ "$DIST" = "trusty" ] || [ "$DIST" = "xenial" ] || [ "$DIST" = "yakkety" ] || [ "$DIST" = "zesty" ] || [ "$DIST" = "artful" ]; then
     sed -i -e "s/@@REVISION@@/0ubuntu1/g" debian/changelog
 else
     sed -i -e "s/@@REVISION@@/1/g" debian/changelog
@@ -115,12 +115,12 @@ sudo -E DIST=$TARGET /usr/sbin/pbuilder create
 sudo -E DIST=$TARGET /usr/sbin/pbuilder update
 if [ "$TARGET" = "trusty" ]; then
     sed -i -e "s/@@BUILD_DEPENDS@@/python-support (>= 0.90.0)/g" debian/control
-elif [ "$TARGET" = "xenial" ]; then
-    sed -i -e "s/@@BUILD_DEPENDS@@//g" debian/control
 elif [ "$TARGET" = "jessie" ]; then
     sed -i -e "s/@@BUILD_DEPENDS@@/python-support (>= 0.90.0)/g" debian/control
     echo "apt-get install -y -t jessie-backports ca-certificates-java" > build/jessie-pkginst.sh
     chmod a+rx build/jessie-pkginst.sh
     sudo -E DIST=$TARGET /usr/sbin/pbuilder execute build/jessie-pkginst.sh
+else
+    sed -i -e "s/@@BUILD_DEPENDS@@//g" debian/control
 fi
 sudo -E DIST=$TARGET pdebuild --buildresult build/debs
