@@ -98,7 +98,7 @@ cp -a dist/debian/debian debian
 
 cp dist/debian/changelog.in debian/changelog
 cp dist/debian/control.in debian/control
-if [ "$DIST" = "trusty" ] || [ "$DIST" = "xenial" ] || [ "$DIST" = "yakkety" ] || [ "$DIST" = "zesty" ] || [ "$DIST" = "artful" ]; then
+if [ "$TARGET" = "trusty" ] || [ "$TARGET" = "xenial" ] || [ "$TARGET" = "yakkety" ] || [ "$TARGET" = "zesty" ] || [ "$TARGET" = "artful" ]; then
     sed -i -e "s/@@REVISION@@/0ubuntu1/g" debian/changelog
 else
     sed -i -e "s/@@REVISION@@/1/g" debian/changelog
