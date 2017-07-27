@@ -43,7 +43,7 @@ if [ "$(arch)" != "x86_64" ]; then
 fi
 if [ -z "$TARGET" ]; then
     if [ "$ID" = "centos" -o "$ID" = "rhel" ] && [ "$VERSION_ID" = "7" ]; then
-        TARGET=epel-7-x86_64
+        TARGET=./dist/redhat/mock/scylla-tools-epel-7-x86_64.cfg
     elif [ "$ID" = "fedora" ]; then
         TARGET=$ID-$VERSION_ID-x86_64
     else
