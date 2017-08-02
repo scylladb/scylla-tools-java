@@ -46,25 +46,13 @@ fi
 if [ "x$SCYLLA_CONF" = "x" ]; then
     SCYLLA_CONF="$SCYLLA_HOME/conf"
 fi
+if [ -f "$SCYLLA_CONF/cassandra.yaml" ]; then
+CASSANDRA_CONF=$SCYLLA_CONF
+fi
 if [ -f "$SCYLLA_CONF/scylla.yaml" ]; then
-    if [ -f "$SCYLLA_CONF/cassandra.yaml" ]; then
-    CASSANDRA_CONF=$SCYLLA_CONF
-    else
-    # Create a temp config dir for just this execution
-    TMPCONF=`mktemp -d`
-    trap "rm -rf $TMPCONF" EXIT
-    cp -a "$CASSANDRA_CONF"/* "$TMPCONF"
-    cp -a "$SCYLLA_CONF"/* "$TMPCONF"
-    # Filter out scylla specific options that make
-    # cassandra options parser go boom.
-    # Also add attributes not present in scylla.yaml
-    # but required by cassandra.
-    `dirname $0`/filter_cassandra_attributes.py \
-            "$CASSANDRA_CONF/cassandra.yaml" \
-            "$TMPCONF/scylla.yaml" \
-            > "$TMPCONF/cassandra.yaml"
-    CASSANDRA_CONF=$TMPCONF
-    fi
+SCYLLA_CONFIG_FILE="scylla.yaml"
+CONFIGURATION_FILE_OPT="-Dcassandra.config=file://$SCYLLA_CONF/$SCYLLA_CONFIG_FILE"
+CASSANDRA_CONF=$SCYLLA_CONF
 fi
 
 # The java classpath (required)
