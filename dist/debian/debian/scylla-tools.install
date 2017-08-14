@@ -1,7 +1,3 @@
-conf/cassandra-env.sh etc/scylla/cassandra
-conf/logback.xml etc/scylla/cassandra
-conf/logback-tools.xml etc/scylla/cassandra
-conf/jvm.options etc/scylla/cassandra
 bin/nodetool usr/bin
 bin/sstableloader usr/bin
 bin/cqlsh usr/bin
@@ -10,8 +6,6 @@ bin/sstablescrub usr/bin
 bin/sstableupgrade usr/bin
 tools/bin/cassandra-stress usr/bin
 tools/bin/cassandra-stressd usr/bin
-tools/bin/cassandra_attributes.py usr/bin
-tools/bin/filter_cassandra_attributes.py usr/bin
 tools/bin/sstabledump usr/bin
 tools/bin/sstablelevelreset usr/bin
 tools/bin/sstablemetadata usr/bin

@@ -43,18 +43,18 @@ install: build
 	dh_python2
 
 	# Copy in the jar and symlink to something stable
-	dh_install build/apache-cassandra-$(VERSION).jar \
+	dh_install -p scylla-tools-core build/apache-cassandra-$(VERSION).jar \
 		usr/share/scylla/cassandra
 	dh_install build/apache-cassandra-thrift-$(VERSION).jar \
 		usr/share/scylla/cassandra
-	dh_install build/scylla-tools-$(VERSION).jar \
+	dh_install -p scylla-tools-core build/scylla-tools-$(VERSION).jar \
 		usr/share/scylla/cassandra
 
 	# Copy stress jars
 	dh_install build/tools/lib/stress.jar \
 		usr/share/scylla/cassandra
 
-	dh_link usr/share/scylla/cassandra/apache-cassandra-$(VERSION).jar \
+	dh_link -p scylla-tools-core usr/share/scylla/cassandra/apache-cassandra-$(VERSION).jar \
 		usr/share/scylla/cassandra/apache-cassandra.jar
 
 # Build architecture-independent files here.
