@@ -11,7 +11,7 @@ URL:            http://www.scylladb.com/
 Source0:        %{name}-@@VERSION@@-@@RELEASE@@.tar
 BuildArch:      noarch
 BuildRequires:  ant java-1.8.0-openjdk-devel python
-Requires:       java-1.8.0-openjdk-headless python python-yaml scylla-conf scylla-tools-core
+Requires:       scylla-conf scylla-tools-core
 Conflicts:      cassandra
 
 %description
@@ -24,6 +24,7 @@ Requires:       java-headless
 Summary:        Core files for Scylla tools
 Version:        @@VERSION@@
 Release:        @@RELEASE@@%{?dist}
+Requires:       java-1.8.0-openjdk-headless python python-yaml
 
 %description core
 Core files for scylla tools.
@@ -79,18 +80,12 @@ cd $RPM_BUILD_ROOT
 ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/apache-cassandra.jar
 
 %files
-%{_sysconfdir}/scylla/cassandra/cassandra-env.sh
-%{_sysconfdir}/scylla/cassandra/logback.xml
-%{_sysconfdir}/scylla/cassandra/logback-tools.xml
-%{_sysconfdir}/scylla/cassandra/jvm.options
 %{_sysconfdir}/bash_completion.d/nodetool-completion
 %{_bindir}/nodetool
 %{_bindir}/sstableloader
 %{_bindir}/cqlsh
 %{_bindir}/cqlsh.py
 %{_bindir}/cassandra-stress
-%{_bindir}/filter_cassandra_attributes.py
-%{_bindir}/cassandra_attributes.py
 %{_bindir}/cassandra-stressd
 %{_bindir}/sstabledump
 %{_bindir}/sstablelevelreset
@@ -139,6 +134,12 @@ ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.j
 
 
 %files core
+%{_sysconfdir}/scylla/cassandra/cassandra-env.sh
+%{_sysconfdir}/scylla/cassandra/logback.xml
+%{_sysconfdir}/scylla/cassandra/logback-tools.xml
+%{_sysconfdir}/scylla/cassandra/jvm.options
+%{_bindir}/filter_cassandra_attributes.py
+%{_bindir}/cassandra_attributes.py
 %{_datadir}/scylla/cassandra/cassandra.in.sh
 %{_datadir}/scylla/cassandra/lib/*.jar
 %{_datadir}/scylla/cassandra/lib/*.zip
