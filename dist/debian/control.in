@@ -8,7 +8,7 @@ Standards-Version: 3.9.5
 
 Package: scylla-tools
 Architecture: all
-Depends: scylla-conf, scylla-tools-core, ${misc:Depends}, @@BUILD_DEPENDS@@
+Depends: scylla-conf, scylla-tools-core (>= 2.0~rc0), ${misc:Depends}, @@BUILD_DEPENDS@@
 Recommends: ntp | time-daemon
 Conflicts: cassandra
 Description: Scylla database tools
@@ -20,3 +20,5 @@ Architecture: all
 Depends: default-jre-headless | openjdk-8-jre | oracle-java8-set-default, python (>= 2.7), python-yaml
 Description: Scylla database tools core files
  Core files for scylla database tools
+Replaces: scylla-tools (<< 2.0~rc0)
+Breaks: scylla-tools (<< 2.0~rc0)
