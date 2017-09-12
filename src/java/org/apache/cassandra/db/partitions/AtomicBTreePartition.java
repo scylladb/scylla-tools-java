@@ -35,7 +35,6 @@ import org.apache.cassandra.utils.ObjectSizes;
 import org.apache.cassandra.utils.SearchIterator;
 import org.apache.cassandra.utils.btree.BTree;
 import org.apache.cassandra.utils.btree.UpdateFunction;
-import org.apache.cassandra.utils.concurrent.Locks;
 import org.apache.cassandra.utils.concurrent.OpOrder;
 import org.apache.cassandra.utils.memory.HeapAllocator;
 import org.apache.cassandra.utils.memory.MemtableAllocator;
@@ -48,7 +47,7 @@ import org.apache.cassandra.utils.memory.MemtableAllocator;
  * other thread can see the state where only parts but not all rows have
  * been added.
  */
-public class AtomicBTreePartition extends AbstractBTreePartition
+public final class AtomicBTreePartition extends AtomicBTreePartitionBase
 {
     public static final long EMPTY_SIZE = ObjectSizes.measure(new AtomicBTreePartition(CFMetaData.createFake("keyspace", "table"),
                                                                                        DatabaseDescriptor.getPartitioner().decorateKey(ByteBuffer.allocate(1)),
@@ -116,7 +115,7 @@ public class AtomicBTreePartition extends AbstractBTreePartition
         {
             if (usePessimisticLocking())
             {
-                Locks.monitorEnterUnsafe(this);
+                acquireLock();
                 monitorOwned = true;
             }
 
@@ -170,7 +169,7 @@ public class AtomicBTreePartition extends AbstractBTreePartition
                     }
                     if (shouldLock)
                     {
-                        Locks.monitorEnterUnsafe(this);
+                        acquireLock();
                         monitorOwned = true;
                     }
                 }
@@ -180,7 +179,7 @@ public class AtomicBTreePartition extends AbstractBTreePartition
         {
             indexer.commit();
             if (monitorOwned)
-                Locks.monitorExitUnsafe(this);
+                releaseLock();
         }
     }
 
