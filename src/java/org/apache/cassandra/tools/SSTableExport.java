@@ -50,6 +50,10 @@ import org.apache.cassandra.utils.FBUtilities;
  */
 public class SSTableExport
 {
+    static
+    {
+        FBUtilities.preventIllegalAccessWarnings();
+    }
 
     private static final String KEY_OPTION = "k";
     private static final String DEBUG_OUTPUT_OPTION = "d";
@@ -141,6 +145,7 @@ public class SSTableExport
      * @throws ConfigurationException
      *             on configuration failure (wrong params given)
      */
+    @SuppressWarnings("resource")
     public static void main(String[] args) throws ConfigurationException
     {
         new SSTableExport().run(args);

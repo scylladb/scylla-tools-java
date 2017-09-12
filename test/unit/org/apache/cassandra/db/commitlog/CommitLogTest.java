@@ -39,6 +39,7 @@ import org.junit.runners.Parameterized.Parameters;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.ParameterizedClass;
 import org.apache.cassandra.config.Config.DiskFailurePolicy;
@@ -519,9 +520,9 @@ public class CommitLogTest
         return Collections.singletonMap(EncryptionContext.ENCRYPTION_IV, Hex.bytesToHex(buf));
     }
 
-    protected File tmpFile(int version) throws IOException
+    protected File tmpFile(int version)
     {
-        File logFile = File.createTempFile("CommitLog-" + version + "-", ".log");
+        File logFile = FileUtils.createTempFile("CommitLog-" + version + "-", ".log");
         assert logFile.length() == 0;
         return logFile;
     }

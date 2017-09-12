@@ -1,1 +1,1 @@
-scylla-sstableloader
+`dirname $0`/scylla-sstableloader
