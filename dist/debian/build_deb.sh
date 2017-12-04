@@ -48,7 +48,7 @@ if [ "$(arch)" != "x86_64" ]; then
 fi
 
 if [ -e debian ] || [ -e build/release ]; then
-    rm -rf debian build conf/hotspot_compiler
+    sudo rm -rf debian build conf/hotspot_compiler
     mkdir build
 fi
 if is_debian_variant; then
