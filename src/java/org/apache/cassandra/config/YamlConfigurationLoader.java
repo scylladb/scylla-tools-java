@@ -116,7 +116,6 @@ public class YamlConfigurationLoader implements ConfigurationLoader
             constructor.setPropertyUtils(propertiesChecker);
             Yaml yaml = new Yaml(constructor);
             Config result = yaml.loadAs(new ByteArrayInputStream(configBytes), Config.class);
-            propertiesChecker.check();
             return result;
         }
         catch (YAMLException e)
@@ -179,14 +178,6 @@ public class YamlConfigurationLoader implements ConfigurationLoader
                 missingProperties.add(result.getName());
             }
             return result;
-        }
-
-        public void check() throws ConfigurationException
-        {
-            if (!missingProperties.isEmpty())
-            {
-                throw new ConfigurationException("Invalid yaml. Please remove properties " + missingProperties + " from your cassandra.yaml");
-            }
         }
     }
 }
