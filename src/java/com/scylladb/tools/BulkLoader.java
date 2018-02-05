@@ -349,13 +349,15 @@ public class BulkLoader {
         private static final int maxStatements = 256;
         private static final int maxBatchStatements = 256;
         private final Semaphore semaphore = new Semaphore(maxStatements);
+        private final Semaphore preparations = new Semaphore(maxStatements);
 
         public void close() {
-            if (semaphore != null) {
-                try {
-                    semaphore.acquire(maxStatements);
-                    return;
-                } catch (InterruptedException e) {
+            for (Semaphore s : Arrays.asList(preparations, semaphore)) {
+                if (s != null) {
+                    try {
+                        s.acquire(maxStatements);
+                    } catch (InterruptedException e) {
+                    }
                 }
             }
         }
@@ -585,20 +587,27 @@ public class BulkLoader {
                 preparedStatements.put(what, f);
             }
 
-            Futures.addCallback(f, new FutureCallback<PreparedStatement>() {
-                @Override
-                public void onSuccess(PreparedStatement p) {
-                    BoundStatement s = p.bind(objects.toArray(new Object[objects.size()]));
-                    s.setRoutingKey(key.getKey());
-                    s.setDefaultTimestamp(timestamp);
-                    send(callback, key, s);
-                }
+            try {
+                preparations.acquire();
 
-                @Override
-                public void onFailure(Throwable t) {
-                    System.err.println(t);
-                }
-            }, MoreExecutors.directExecutor());
+                Futures.addCallback(f, new FutureCallback<PreparedStatement>() {
+                    @Override
+                    public void onSuccess(PreparedStatement p) {
+                    	BoundStatement s = p.bind(objects.toArray(new Object[objects.size()]));
+                        s.setRoutingKey(key.getKey());
+                        s.setDefaultTimestamp(timestamp);
+                        send(callback, key, s);
+                        preparations.release();
+                    }
+
+                    @Override
+                    public void onFailure(Throwable t) {
+                        preparations.release();
+                        System.err.println(t);
+                    }
+                }, MoreExecutors.directExecutor());
+            } catch (InterruptedException e) {
+            }
         }
     }
 
