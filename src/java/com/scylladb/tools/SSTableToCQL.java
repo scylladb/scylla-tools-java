@@ -336,7 +336,12 @@ public class SSTableToCQL {
                 Object eval = spfx != epfx ? (i < epfx.size() ? column.cellValueType().compose(epfx.get(i)) : null) : sval;
                 
                 if (sval == null && eval == null) {
-                    // nothing. 
+                    // nothing. But if we got here because "compose" actually returned null and we're _not_ at the 
+                    // end of clustering values, we need to actually restrict on null. And hope it is legal for the type. 
+                    // Fixes #57
+                    if (i < spfx.size() || i < epfx.size()) {
+                        where.put(column, Pair.create(Comp.Equal, sval));
+                    }
                 } else if (sval != null && (sval == eval || sval.equals(eval))) {
                     assert start.isInclusive();
                     where.put(column, Pair.create(Comp.Equal, sval));                                                              
