@@ -133,8 +133,11 @@ import com.datastax.driver.core.Statement;
 import com.datastax.driver.core.TableMetadata;
 import com.datastax.driver.core.TokenRange;
 import com.datastax.driver.core.TupleType;
+import com.datastax.driver.core.TypeCodec;
 import com.datastax.driver.core.UserType;
+import com.datastax.driver.core.exceptions.CodecNotFoundException;
 import com.datastax.driver.core.exceptions.DriverException;
+import com.datastax.driver.core.exceptions.InvalidTypeException;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -198,6 +201,8 @@ public class BulkLoader {
         private final boolean batch;
         private final Map<String, ListenableFuture<PreparedStatement>> preparedStatements;
         private final Set<String> ignoreColumns;
+        private final CodecRegistry codecRegistry = new CodecRegistry();
+        private final TypeCodec<ByteBuffer> blob = codecRegistry.codecFor(ByteBuffer.allocate(1));
 
         public CQLClient(LoaderOptions options, String keyspace)
                 throws NoSuchAlgorithmException, FileNotFoundException, IOException, KeyStoreException,
@@ -222,7 +227,9 @@ public class BulkLoader {
             this.simulate = options.simulate;
             this.verbose = options.verbose;
             Cluster.Builder builder = builder().addContactPoints(options.hosts).withProtocolVersion(ProtocolVersion.V3)
-                    .withCompression(Compression.LZ4).withPoolingOptions(poolingOptions);
+                    .withCompression(Compression.LZ4).withPoolingOptions(poolingOptions)
+                    .withCodecRegistry(codecRegistry);
+
             if (options.user != null && options.passwd != null) {
                 builder = builder.withCredentials(options.user, options.passwd);
             }
@@ -308,6 +315,50 @@ public class BulkLoader {
 
                 types.build().forEach(Schema.instance::addType);
             }
+            
+            udts.forEach(this::bindUserTypeCodec);
+        }
+        
+        private void bindUserTypeCodec(UserType t) {
+            // Cassandra drivers assume incoming bound data for UDT is 
+            // an actual object looking like the type. In our case, we will 
+            // not have neither time to unmarchal/marshal, or even the classes
+            // in classpath to do so. 
+            // We instead get UDT data as its frozen representation in sstable. Which 
+            // is how the wire should look as well. 
+            // When using non-prepared statements, this works perfectly, because 
+            // there the actual CQL column type is ignored, and only the java type
+            // is user for serialization. For prepared statements however, it gets
+            // stricter, and bytebuffer data will not fly. 
+            // To get around this, we simply register a codec for every user type
+            // that treats the type as blobs. 
+            // 
+            // BUT that does not solve everything. Just to make things super fun, 
+            // the types we get from the cluster query and use in loadUserTypes
+            // are not always 100% equal to those that prepared statements will 
+            // infer for columns. So we might need to register additional types 
+            // on the fly as we generate statements. See sendPrepared
+            codecRegistry.register(new TypeCodec<ByteBuffer>(t, ByteBuffer.class) {
+                @Override
+                public ByteBuffer serialize(ByteBuffer value, ProtocolVersion protocolVersion)
+                        throws InvalidTypeException {
+                    return blob.serialize(value, protocolVersion);
+                }
+                @Override
+                public ByteBuffer deserialize(ByteBuffer bytes, ProtocolVersion protocolVersion)
+                        throws InvalidTypeException {
+                    return blob.deserialize(bytes,  protocolVersion);
+                }
+                @Override
+                public ByteBuffer parse(String value) throws InvalidTypeException {
+                    return blob.parse(value);
+                }
+
+                @Override
+                public String format(ByteBuffer value) throws InvalidTypeException {
+                    return blob.format(value);
+                }
+            });                
         }
 
         private static CQL3Type.Raw getCql3Type(DataType dt) throws Exception {
@@ -593,7 +644,29 @@ public class BulkLoader {
                 Futures.addCallback(f, new FutureCallback<PreparedStatement>() {
                     @Override
                     public void onSuccess(PreparedStatement p) {
-                    	BoundStatement s = p.bind(objects.toArray(new Object[objects.size()]));
+                        BoundStatement s;
+                        
+                        for (;;) {
+                            try {
+                                s = p.bind(objects.toArray(new Object[objects.size()]));  
+                                break;
+                            } catch (CodecNotFoundException e) {
+                                // If we get here with a user type, it means we have
+                                // a subtle difference in the types we got from the cluster, and
+                                // what the statement parser created. (text instead of varchar etc).
+                                // Register a UDT codec for the "new" type and try again. 
+                                // Eventually we will run out of UDT:s...
+                                //
+                                // We do this to avoid missing something by trying to recurse 
+                                // types in the column data...
+                                DataType t = e.getCqlType();
+                                if (t instanceof UserType) {
+                                    bindUserTypeCodec((UserType)t);
+                                    continue;
+                                }
+                            }
+                        }
+                                                
                         s.setRoutingKey(key.getKey());
                         s.setDefaultTimestamp(timestamp);
                         send(callback, key, s);
