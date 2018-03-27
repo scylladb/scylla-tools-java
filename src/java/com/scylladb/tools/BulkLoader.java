@@ -42,12 +42,14 @@
 package com.scylladb.tools;
 
 import static com.datastax.driver.core.Cluster.builder;
+import static java.lang.Thread.currentThread;
 import static org.apache.cassandra.schema.CQLTypeParser.parse;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.net.InetAddress;
 import java.net.MalformedURLException;
 import java.net.UnknownHostException;
@@ -114,6 +116,7 @@ import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.Cluster;
 import com.datastax.driver.core.CodecRegistry;
 import com.datastax.driver.core.DataType;
+import com.datastax.driver.core.DataType.CustomType;
 import com.datastax.driver.core.Host;
 import com.datastax.driver.core.HostDistance;
 import com.datastax.driver.core.JdkSSLOptions;
@@ -358,7 +361,36 @@ public class BulkLoader {
                 public String format(ByteBuffer value) throws InvalidTypeException {
                     return blob.format(value);
                 }
-            });                
+            });
+        }
+
+        /**
+         * Creates a codec for a Cassandra {@link AbstractType} instance
+         * We get these for certain types (date) via a {@link CustomType}
+         * through the drivers statement prepare. Annoying, but easy to bind... 
+         */
+        private <T> void bindCustomType(DataType.CustomType ct, final AbstractType<T> atype) {
+            codecRegistry.register(new TypeCodec<T>(ct, atype.getSerializer().getType()) {
+                @Override
+                public ByteBuffer serialize(T value, ProtocolVersion protocolVersion) throws InvalidTypeException {
+                    return atype.decompose(value);
+                }
+
+                @Override
+                public T deserialize(ByteBuffer bytes, ProtocolVersion protocolVersion) throws InvalidTypeException {
+                    return atype.compose(bytes);
+                }
+
+                @Override
+                public T parse(String value) throws InvalidTypeException {
+                    return atype.compose(atype.fromString(value));
+                }
+
+                @Override
+                public String format(T value) throws InvalidTypeException {
+                    return atype.getString(atype.decompose(value));
+                }
+            });
         }
 
         private static CQL3Type.Raw getCql3Type(DataType dt) throws Exception {
@@ -663,6 +695,27 @@ public class BulkLoader {
                                 if (t instanceof UserType) {
                                     bindUserTypeCodec((UserType)t);
                                     continue;
+                                } else if (t instanceof DataType.CustomType) {
+                                    /**
+                                     * #59. Some types, like SimpleDate, show up as "custom" type
+                                     * in prepared statement types. These cannot bind their data (booh!)
+                                     * but we can handle this by trying to find the type 
+                                     * referenced (in classname) and binding it into a codec, then retry this 
+                                     * whole thing. 
+                                     */
+                                    DataType.CustomType ct = (DataType.CustomType) t;
+                                    String name = ct.getCustomTypeClassName();
+                                    try {
+                                        Class<?> c = Class.forName(name, true, currentThread().getContextClassLoader());
+                                        @SuppressWarnings("rawtypes")
+                                        Class<? extends AbstractType> ac = c.asSubclass(AbstractType.class);
+                                        Field f = ac.getField("instance");
+                                        AbstractType<?> atype = (AbstractType<?>) f.get(null);
+                                        bindCustomType(ct, atype);
+                                    } catch (ClassNotFoundException | IllegalAccessException | NoSuchFieldException
+                                            | SecurityException ce) {
+                                        throw e;
+                                    }
                                 }
                             }
                         }
