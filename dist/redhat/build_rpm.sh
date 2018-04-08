@@ -52,6 +52,10 @@ if [ -z "$TARGET" ]; then
     fi
 fi
 
+if [[ "$TARGET" = epel-7-x86_64 ]]; then
+    TARGET=./dist/redhat/mock/scylla-jmx-epel-7-x86_64.cfg
+fi
+
 if [ ! -f /usr/bin/mock ]; then
     pkg_install mock
 fi
