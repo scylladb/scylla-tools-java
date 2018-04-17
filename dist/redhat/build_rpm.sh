@@ -53,7 +53,7 @@ if [ -z "$TARGET" ]; then
 fi
 
 if [[ "$TARGET" = epel-7-x86_64 ]]; then
-    TARGET=./dist/redhat/mock/scylla-jmx-epel-7-x86_64.cfg
+    TARGET=./dist/redhat/mock/scylla-tools-epel-7-x86_64.cfg
 fi
 
 if [ ! -f /usr/bin/mock ]; then
