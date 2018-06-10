@@ -90,7 +90,7 @@ public class NodeTool
                 // Remove until proven otherwise: GetTraceProbability.class,
                 // Remove until proven otherwise: GetInterDCStreamThroughput.class,
                 GetEndpoints.class,
-                // Remove for GA: GetSSTables.class,
+                GetSSTables.class,
                 GossipInfo.class,
                 // Remove for GA: InvalidateKeyCache.class,
                 // Remove for GA: InvalidateRowCache.class,
