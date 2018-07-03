@@ -1,14 +1,14 @@
 %define     origin_version  3.0.8
 
 Name:           scylla-tools
-Version:        @@VERSION@@
-Release:        @@RELEASE@@%{?dist}
+Version:        {{version}}
+Release:        {{release}}%{?dist}
 Summary:        Scylla Tools
 Group:          Applications/Databases
 
 License:        Apache
 URL:            http://www.scylladb.com/
-Source0:        %{name}-@@VERSION@@-@@RELEASE@@.tar
+Source0:        %{name}-{{version}}-{{release}}.tar
 BuildArch:      noarch
 BuildRequires:  ant java-1.8.0-openjdk-devel python
 Requires:       scylla-conf scylla-tools-core
@@ -22,8 +22,8 @@ URL:            http://www.scylladb.com/
 BuildArch:      noarch
 Requires:       java-headless
 Summary:        Core files for Scylla tools
-Version:        @@VERSION@@
-Release:        @@RELEASE@@%{?dist}
+Version:        {{version}}
+Release:        {{release}}%{?dist}
 Requires:       java-1.8.0-openjdk-headless python python-yaml
 
 %description core

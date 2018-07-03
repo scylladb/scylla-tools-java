@@ -849,6 +849,11 @@ public class NodeProbe implements AutoCloseable
         return spProxy.getHintedHandoffDisabledDCs();
     }
 
+    public Map<String, String> getViewBuildStatuses(String keyspace, String view)
+    {
+        return ssProxy.getViewBuildStatuses(keyspace, view);
+    }
+
     public void pauseHintsDelivery()
     {
         hhProxy.pauseHintsDelivery(true);

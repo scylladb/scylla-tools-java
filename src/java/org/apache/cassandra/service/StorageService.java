@@ -4181,6 +4181,11 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         return Collections.unmodifiableList(Schema.instance.getNonLocalStrategyKeyspaces());
     }
 
+    public Map<String, String> getViewBuildStatuses(String keyspace, String view)
+    {
+        return new HashMap<>();
+    }
+
     public void updateSnitch(String epSnitchClassName, Boolean dynamic, Integer dynamicUpdateInterval, Integer dynamicResetInterval, Double dynamicBadnessThreshold) throws ClassNotFoundException
     {
         IEndpointSnitch oldSnitch = DatabaseDescriptor.getEndpointSnitch();

@@ -25,7 +25,18 @@ is_redhat_variant() {
 is_debian_variant() {
     [ -f /etc/debian_version ]
 }
-
+is_debian() {
+    case "$1" in
+        jessie|stretch) return 0;;
+        *) return 1;;
+    esac
+}
+is_ubuntu() {
+    case "$1" in
+        trusty|xenial|bionic) return 0;;
+        *) return 1;;
+    esac
+}
 
 pkg_install() {
     if is_redhat_variant; then
@@ -74,6 +85,13 @@ fi
 if [ ! -f /usr/bin/dh_testdir ]; then
     pkg_install debhelper
 fi
+if [ ! -f /usr/bin/pystache ]; then
+    if is_redhat_variant; then
+        sudo yum install -y /usr/bin/pystache
+    elif is_debian_variant; then
+        sudo apt-get install -y python-pystache
+    fi
+fi
 
 
 if [ -z "$TARGET" ]; then
@@ -95,32 +113,30 @@ echo $VERSION > version
 ./scripts/git-archive-all --extra version --force-submodules --prefix scylla-tools ../scylla-tools_$SCYLLA_VERSION-$SCYLLA_RELEASE.orig.tar.gz 
 
 cp -a dist/debian/debian debian
-
-cp dist/debian/changelog.in debian/changelog
-cp dist/debian/control.in debian/control
-if [ "$TARGET" = "trusty" ] || [ "$TARGET" = "xenial" ] || [ "$TARGET" = "yakkety" ] || [ "$TARGET" = "zesty" ] || [ "$TARGET" = "artful" ]; then
-    sed -i -e "s/@@REVISION@@/0ubuntu1~$TARGET/g" debian/changelog
+PYTHON_SUPPORT=false
+if is_debian $TARGET; then
+    REVISION="1~$TARGET"
+elif is_ubuntu $TARGET; then
+    REVISION="0ubuntu1~$TARGET"
 else
-    sed -i -e "s/@@REVISION@@/1~$TARGET/g" debian/changelog
-    
+   echo "Unknown distribution: $TARGET"
 fi
-sed -i -e "s/@@VERSION@@/$SCYLLA_VERSION/g" debian/changelog
-sed -i -e "s/@@RELEASE@@/$SCYLLA_RELEASE/g" debian/changelog
-sed -i -e "s/@@CODENAME@@/$TARGET/g" debian/changelog
+if [ "$TARGET" = "jessie" ] || [ "$TARGET" = "trusty" ]; then
+    PYTHON_SUPPORT=true
+fi
+
+MUSTACHE_DIST="\"debian\": true, \"$TARGET\": true"
+pystache dist/debian/changelog.mustache "{ \"version\": \"$SCYLLA_VERSION\", \"release\": \"$SCYLLA_RELEASE\", \"revision\": \"$REVISION\", \"codename\": \"$TARGET\" }" > debian/changelog
+pystache dist/debian/control.mustache "{ $MUSTACHE_DIST, \"python-support\": $PYTHON_SUPPORT }" > debian/control
 
 cp ./dist/debian/pbuilderrc ~/.pbuilderrc
 sudo rm -fv /var/cache/pbuilder/scylla-tools-$TARGET.tgz
 sudo -E DIST=$TARGET /usr/sbin/pbuilder clean
 sudo -E DIST=$TARGET /usr/sbin/pbuilder create
 sudo -E DIST=$TARGET /usr/sbin/pbuilder update
-if [ "$TARGET" = "trusty" ]; then
-    sed -i -e "s/@@BUILD_DEPENDS@@/python-support (>= 0.90.0)/g" debian/control
-elif [ "$TARGET" = "jessie" ]; then
-    sed -i -e "s/@@BUILD_DEPENDS@@/python-support (>= 0.90.0)/g" debian/control
+if [ "$TARGET" = "jessie" ]; then
     echo "apt-get install -y -t jessie-backports ca-certificates-java" > build/jessie-pkginst.sh
     chmod a+rx build/jessie-pkginst.sh
     sudo -E DIST=$TARGET /usr/sbin/pbuilder execute build/jessie-pkginst.sh
-else
-    sed -i -e "s/@@BUILD_DEPENDS@@//g" debian/control
 fi
 sudo -E DIST=$TARGET pdebuild --buildresult build/debs

@@ -37,15 +37,11 @@ if [ ! -e dist/redhat/build_rpm.sh ]; then
     exit 1
 fi
 
-if [ "$(arch)" != "x86_64" ]; then
-    echo "Unsupported architecture: $(arch)"
-    exit 1
-fi
 if [ -z "$TARGET" ]; then
     if [ "$ID" = "centos" -o "$ID" = "rhel" ] && [ "$VERSION_ID" = "7" ]; then
-        TARGET=./dist/redhat/mock/scylla-tools-epel-7-x86_64.cfg
+        TARGET=epel-7-$(uname -m)
     elif [ "$ID" = "fedora" ]; then
-        TARGET=$ID-$VERSION_ID-x86_64
+        TARGET=$ID-$VERSION_ID-$(uname -m)
     else
         echo "Please specify target"
         exit 1
@@ -58,14 +54,28 @@ fi
 if [ ! -f /usr/bin/git ]; then
     pkg_install git
 fi
+if [ ! -f /usr/bin/wget ]; then
+    pkg_install wget
+fi
+if [ ! -f /usr/bin/yum-builddep ]; then
+    pkg_install yum-utils
+fi
+if [ ! -f /usr/bin/pystache ]; then
+    if is_redhat_variant; then
+        sudo yum install -y python2-pystache || sudo yum install -y pystache
+    elif is_debian_variant; then
+        sudo apt-get install -y python-pystache
+    fi
+fi
 
 VERSION=$(./SCYLLA-VERSION-GEN)
 SCYLLA_VERSION=$(cat build/SCYLLA-VERSION-FILE)
 SCYLLA_RELEASE=$(cat build/SCYLLA-RELEASE-FILE)
 git archive --format=tar --prefix=scylla-tools-$SCYLLA_VERSION/ HEAD -o build/scylla-tools-$VERSION.tar
-cp dist/redhat/scylla-tools.spec.in build/scylla-tools.spec
-sed -i -e "s/@@VERSION@@/$SCYLLA_VERSION/g" build/scylla-tools.spec
-sed -i -e "s/@@RELEASE@@/$SCYLLA_RELEASE/g" build/scylla-tools.spec
-
+pystache dist/redhat/scylla-tools.spec.mustache "{ \"version\": \"$SCYLLA_VERSION\", \"release\": \"$SCYLLA_RELEASE\" }" > build/scylla-tools.spec
 sudo mock --buildsrpm --root=$TARGET --resultdir=`pwd`/build/srpms --spec=build/scylla-tools.spec --sources=build/scylla-tools-$VERSION.tar
-sudo mock --rebuild --root=$TARGET --resultdir=`pwd`/build/rpms build/srpms/scylla-tools-$VERSION*.src.rpm
+if [[ "$TARGET" =~ ^epel-7- ]]; then
+    TARGET=scylla-tools-$TARGET
+    RPM_OPTS="$RPM_OPTS --configdir=dist/redhat/mock"
+fi
+sudo mock --rebuild --root=$TARGET --resultdir=`pwd`/build/rpms $RPM_OPTS build/srpms/scylla-tools-$VERSION*.src.rpm

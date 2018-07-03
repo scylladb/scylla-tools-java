@@ -90,7 +90,7 @@ public class NodeTool
                 // Remove until proven otherwise: GetTraceProbability.class,
                 // Remove until proven otherwise: GetInterDCStreamThroughput.class,
                 GetEndpoints.class,
-                // Remove for GA: GetSSTables.class,
+                GetSSTables.class,
                 GossipInfo.class,
                 // Remove for GA: InvalidateKeyCache.class,
                 // Remove for GA: InvalidateRowCache.class,
@@ -145,11 +145,12 @@ public class NodeTool
                 // Remove for GA: TpStats.class,
                 // Remove for GA: TopPartitions.class,
                 SetLoggingLevel.class,
-                GetLoggingLevels.class
+                GetLoggingLevels.class,
                 // Remove until proven otherwise: DisableHintsForDC.class,
                 // Remove until proven otherwise: EnableHintsForDC.class,
                 // Remove until proven otherwise: FailureDetectorInfo.class,
                 // Remove until proven otherwise: RefreshSizeEstimates.class
+                ViewBuildStatus.class
         );
 
         Cli.CliBuilder<Runnable> builder = Cli.builder("nodetool");
@@ -230,7 +231,6 @@ public class NodeTool
 
     @SuppressWarnings("serial")
     public static class CommandFailedButNeedNoMoreOutput extends Error {};
-    
     public static abstract class NodeToolCmd implements Runnable
     {
 
