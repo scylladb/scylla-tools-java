@@ -60,15 +60,19 @@ fi
 if [ ! -f /usr/bin/yum-builddep ]; then
     pkg_install yum-utils
 fi
+if [ ! -f /usr/bin/pystache ]; then
+    if is_redhat_variant; then
+        sudo yum install -y python2-pystache || sudo yum install -y pystache
+    elif is_debian_variant; then
+        sudo apt-get install -y python-pystache
+    fi
+fi
 
 VERSION=$(./SCYLLA-VERSION-GEN)
 SCYLLA_VERSION=$(cat build/SCYLLA-VERSION-FILE)
 SCYLLA_RELEASE=$(cat build/SCYLLA-RELEASE-FILE)
 git archive --format=tar --prefix=scylla-tools-$SCYLLA_VERSION/ HEAD -o build/scylla-tools-$VERSION.tar
-cp dist/redhat/scylla-tools.spec.in build/scylla-tools.spec
-sed -i -e "s/@@VERSION@@/$SCYLLA_VERSION/g" build/scylla-tools.spec
-sed -i -e "s/@@RELEASE@@/$SCYLLA_RELEASE/g" build/scylla-tools.spec
-
+pystache dist/redhat/scylla-tools.spec.mustache "{ \"version\": \"$SCYLLA_VERSION\", \"release\": \"$SCYLLA_RELEASE\" }" > build/scylla-tools.spec
 sudo mock --buildsrpm --root=$TARGET --resultdir=`pwd`/build/srpms --spec=build/scylla-tools.spec --sources=build/scylla-tools-$VERSION.tar
 if [[ "$TARGET" =~ ^epel-7- ]]; then
     TARGET=scylla-tools-$TARGET
