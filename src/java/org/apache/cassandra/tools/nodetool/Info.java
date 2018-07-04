@@ -43,7 +43,7 @@ public class Info extends NodeToolCmd
     @Override
     public void execute(NodeProbe probe)
     {
-        boolean gossipInitialized = probe.isInitialized();
+        boolean gossipInitialized = probe.isGossipRunning();
 
         System.out.printf("%-23s: %s%n", "ID", probe.getLocalHostId());
         System.out.printf("%-23s: %s%n", "Gossip active", gossipInitialized);
@@ -116,6 +116,31 @@ public class Info extends NodeToolCmd
                 probe.getCacheMetric("CounterCache", "Requests"),
                 probe.getCacheMetric("CounterCache", "HitRate"),
                 cacheService.getCounterCacheSavePeriodInSeconds());
+
+        // Chunk Cache: Hits, Requests, RecentHitRate, SavePeriodInSeconds
+        try
+        {
+            System.out.printf("%-23s: entries %d, size %s, capacity %s, %d misses, %d requests, %.3f recent hit rate, %.3f %s miss latency%n",
+                    "Chunk Cache",
+                    probe.getCacheMetric("ChunkCache", "Entries"),
+                    FileUtils.stringifyFileSize((long) probe.getCacheMetric("ChunkCache", "Size")),
+                    FileUtils.stringifyFileSize((long) probe.getCacheMetric("ChunkCache", "Capacity")),
+                    probe.getCacheMetric("ChunkCache", "Misses"),
+                    probe.getCacheMetric("ChunkCache", "Requests"),
+                    probe.getCacheMetric("ChunkCache", "HitRate"),
+                    probe.getCacheMetric("ChunkCache", "MissLatency"),
+                    probe.getCacheMetric("ChunkCache", "MissLatencyUnit"));
+        }
+        catch (RuntimeException e)
+        {
+            if (!(e.getCause() instanceof InstanceNotFoundException))
+                throw e;
+
+            // Chunk cache is not on.
+        }
+
+        // Global table stats
+        System.out.printf("%-23s: %s%%%n", "Percent Repaired", probe.getColumnFamilyMetric(null, null, "PercentRepaired"));
 
         // check if node is already joined, before getting tokens, since it throws exception if not.
         if (probe.isJoined())

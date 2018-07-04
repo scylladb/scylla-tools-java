@@ -30,6 +30,7 @@ import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.serializers.TypeSerializer;
 import org.apache.cassandra.serializers.MarshalException;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 /*
@@ -123,7 +124,8 @@ public class DynamicCompositeType extends AbstractCompositeType
          * If both types are ReversedType(Type), we need to compare on the wrapped type (which may differ between the two types) to avoid
          * incompatible comparisons being made.
          */
-        if ((comp1 instanceof ReversedType) && (comp2 instanceof ReversedType)) {
+        if ((comp1 instanceof ReversedType) && (comp2 instanceof ReversedType)) 
+        {
             comp1 = ((ReversedType<?>) comp1).baseType;
             comp2 = ((ReversedType<?>) comp2).baseType;
         }
@@ -381,7 +383,7 @@ public class DynamicCompositeType extends AbstractCompositeType
         }
 
         @Override
-        public String toJSONString(ByteBuffer buffer, int protocolVersion)
+        public String toJSONString(ByteBuffer buffer, ProtocolVersion protocolVersion)
         {
             throw new UnsupportedOperationException();
         }

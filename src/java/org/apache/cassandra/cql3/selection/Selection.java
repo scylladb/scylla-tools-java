@@ -20,19 +20,25 @@ package org.apache.cassandra.cql3.selection;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import com.google.common.base.Objects;
+import com.google.common.base.MoreObjects;
 import com.google.common.base.Predicate;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Iterators;
+import com.google.common.collect.Lists;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.*;
 import org.apache.cassandra.cql3.functions.Function;
-import org.apache.cassandra.db.rows.Cell;
+import org.apache.cassandra.db.Clustering;
+import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.aggregation.AggregationSpecification;
+import org.apache.cassandra.db.aggregation.GroupMaker;
 import org.apache.cassandra.db.context.CounterContext;
 import org.apache.cassandra.db.marshal.UTF8Type;
+import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 public abstract class Selection
@@ -54,6 +60,8 @@ public abstract class Selection
     private final ResultSet.ResultMetadata metadata;
     private final boolean collectTimestamps;
     private final boolean collectTTLs;
+    // Columns used to order the result set for multi-partition queries
+    private Map<ColumnDefinition, Integer> orderingIndex;
 
     protected Selection(CFMetaData cfm,
                         List<ColumnDefinition> columns,
@@ -73,7 +81,7 @@ public abstract class Selection
     public boolean isWildcard()
     {
         return false;
-    }    
+    }
 
     /**
      * Checks if this selection contains static columns.
@@ -81,7 +89,7 @@ public abstract class Selection
      */
     public boolean containsStaticColumns()
     {
-        if (!cfm.hasStaticColumns())
+        if (cfm.isStaticCompactTable() || !cfm.hasStaticColumns())
             return false;
 
         if (isWildcard())
@@ -112,17 +120,35 @@ public abstract class Selection
     }
 
     /**
-     * Checks if this selection contains a collection.
+     * Checks if this selection contains a complex column.
      *
-     * @return <code>true</code> if this selection contains a collection, <code>false</code> otherwise.
+     * @return <code>true</code> if this selection contains a multicell collection or UDT, <code>false</code> otherwise.
      */
-    public boolean containsACollection()
+    public boolean containsAComplexColumn()
     {
         for (ColumnDefinition def : getColumns())
-            if (def.type.isCollection() && def.type.isMultiCell())
+            if (def.isComplex())
                 return true;
 
         return false;
+    }
+
+    public Map<ColumnDefinition, Integer> getOrderingIndex(boolean isJson)
+    {
+        if (!isJson)
+            return orderingIndex;
+
+        // If we order post-query in json, the first and only column that we ship to the client is the json column.
+        // In that case, we should keep ordering columns around to perform the ordering, then these columns will
+        // be placed after the json column. As a consequence of where the colums are placed, we should give the
+        // ordering index a value based on their position in the json encoding and discard the original index.
+        // (CASSANDRA-14286)
+        int columnIndex = 1;
+        Map<ColumnDefinition, Integer> jsonOrderingIndex = new LinkedHashMap<>(orderingIndex.size());
+        for (ColumnDefinition column : orderingIndex.keySet())
+            jsonOrderingIndex.put(column, columnIndex++);
+
+        return jsonOrderingIndex;
     }
 
     public ResultSet.ResultMetadata getResultMetadata(boolean isJson)
@@ -132,7 +158,13 @@ public abstract class Selection
 
         ColumnSpecification firstColumn = metadata.names.get(0);
         ColumnSpecification jsonSpec = new ColumnSpecification(firstColumn.ksName, firstColumn.cfName, Json.JSON_COLUMN_ID, UTF8Type.instance);
-        return new ResultSet.ResultMetadata(Arrays.asList(jsonSpec));
+        ResultSet.ResultMetadata resultMetadata = new ResultSet.ResultMetadata(Lists.newArrayList(jsonSpec));
+        if (orderingIndex != null)
+        {
+            for (ColumnDefinition orderingColumn : orderingIndex.keySet())
+                resultMetadata.addNonSerializedColumn(orderingColumn);
+        }
+        return resultMetadata;
     }
 
     public static Selection wildcard(CFMetaData cfm)
@@ -142,12 +174,37 @@ public abstract class Selection
         return new SimpleSelection(cfm, all, true);
     }
 
+    public static Selection wildcardWithGroupBy(CFMetaData cfm, VariableSpecifications boundNames)
+    {
+        List<RawSelector> rawSelectors = new ArrayList<>(cfm.allColumns().size());
+        Iterator<ColumnDefinition> iter = cfm.allColumnsInSelectOrder();
+        while (iter.hasNext())
+        {
+            ColumnDefinition.Raw raw = ColumnDefinition.Raw.forColumn(iter.next());
+            rawSelectors.add(new RawSelector(raw, null));
+        }
+        return fromSelectors(cfm, rawSelectors, boundNames, true);
+    }
+
     public static Selection forColumns(CFMetaData cfm, List<ColumnDefinition> columns)
     {
         return new SimpleSelection(cfm, columns, false);
     }
 
-    public int addColumnForOrdering(ColumnDefinition c)
+    public void addColumnForOrdering(ColumnDefinition c)
+    {
+        if (orderingIndex == null)
+            orderingIndex = new LinkedHashMap<>();
+
+        int index = getResultSetIndex(c);
+
+        if (index < 0)
+            index = addOrderingColumn(c);
+
+        orderingIndex.put(c, index);
+    }
+
+    protected int addOrderingColumn(ColumnDefinition c)
     {
         columns.add(c);
         metadata.addNonSerializedColumn(c);
@@ -168,15 +225,15 @@ public abstract class Selection
         return false;
     }
 
-    public static Selection fromSelectors(CFMetaData cfm, List<RawSelector> rawSelectors) throws InvalidRequestException
+    public static Selection fromSelectors(CFMetaData cfm, List<RawSelector> rawSelectors, VariableSpecifications boundNames, boolean hasGroupBy)
     {
         List<ColumnDefinition> defs = new ArrayList<>();
 
         SelectorFactories factories =
-                SelectorFactories.createFactoriesAndCollectColumnDefinitions(RawSelector.toSelectables(rawSelectors, cfm), cfm, defs);
+                SelectorFactories.createFactoriesAndCollectColumnDefinitions(RawSelector.toSelectables(rawSelectors, cfm), null, cfm, defs, boundNames);
         SelectionColumnMapping mapping = collectColumnMappings(cfm, rawSelectors, factories);
 
-        return (processesSelection(rawSelectors) || rawSelectors.size() != defs.size())
+        return (processesSelection(rawSelectors) || rawSelectors.size() != defs.size() || hasGroupBy)
                ? new SelectionWithProcessing(cfm, defs, mapping, factories)
                : new SimpleSelection(cfm, defs, mapping, false);
     }
@@ -220,7 +277,7 @@ public abstract class Selection
         return selectionColumns;
     }
 
-    protected abstract Selectors newSelectors() throws InvalidRequestException;
+    protected abstract Selectors newSelectors(QueryOptions options) throws InvalidRequestException;
 
     /**
      * @return the list of CQL3 columns value this SelectionClause needs.
@@ -238,9 +295,15 @@ public abstract class Selection
         return columnMapping;
     }
 
-    public ResultSetBuilder resultSetBuilder(boolean isJons) throws InvalidRequestException
+    public ResultSetBuilder resultSetBuilder(QueryOptions options, boolean isJson)
     {
-        return new ResultSetBuilder(isJons);
+        return new ResultSetBuilder(options, isJson);
+    }
+
+    public ResultSetBuilder resultSetBuilder(QueryOptions options, boolean isJson, AggregationSpecification aggregationSpec)
+    {
+        return aggregationSpec == null ? new ResultSetBuilder(options, isJson)
+                : new ResultSetBuilder(options, isJson, aggregationSpec.newGroupMaker());
     }
 
     public abstract boolean isAggregate();
@@ -248,24 +311,60 @@ public abstract class Selection
     @Override
     public String toString()
     {
-        return Objects.toStringHelper(this)
-                .add("columns", columns)
-                .add("columnMapping", columnMapping)
-                .add("metadata", metadata)
-                .add("collectTimestamps", collectTimestamps)
-                .add("collectTTLs", collectTTLs)
-                .toString();
+        return MoreObjects.toStringHelper(this)
+                          .add("columns", columns)
+                          .add("columnMapping", columnMapping)
+                          .add("metadata", metadata)
+                          .add("collectTimestamps", collectTimestamps)
+                          .add("collectTTLs", collectTTLs)
+                          .toString();
+    }
+
+    public static List<ByteBuffer> rowToJson(List<ByteBuffer> row, ProtocolVersion protocolVersion, ResultSet.ResultMetadata metadata)
+    {
+        StringBuilder sb = new StringBuilder("{");
+        for (int i = 0; i < metadata.getColumnCount(); i++)
+        {
+            if (i > 0)
+                sb.append(", ");
+
+            ColumnSpecification spec = metadata.names.get(i);
+            String columnName = spec.name.toString();
+            if (!columnName.equals(columnName.toLowerCase(Locale.US)))
+                columnName = "\"" + columnName + "\"";
+
+            ByteBuffer buffer = row.get(i);
+            sb.append('"');
+            sb.append(Json.quoteAsJsonString(columnName));
+            sb.append("\": ");
+            if (buffer == null)
+                sb.append("null");
+            else if (!buffer.hasRemaining())
+                sb.append("\"\"");
+            else
+                sb.append(spec.type.toJSONString(buffer, protocolVersion));
+        }
+        sb.append("}");
+        List<ByteBuffer> jsonRow = new ArrayList<>();
+        jsonRow.add(UTF8Type.instance.getSerializer().serialize(sb.toString()));
+        return jsonRow;
     }
 
     public class ResultSetBuilder
     {
         private final ResultSet resultSet;
+        private final ProtocolVersion protocolVersion;
 
         /**
          * As multiple thread can access a <code>Selection</code> instance each <code>ResultSetBuilder</code> will use
          * its own <code>Selectors</code> instance.
          */
         private final Selectors selectors;
+
+        /**
+         * The <code>GroupMaker</code> used to build the aggregates.
+         */
+        private final GroupMaker groupMaker;
 
         /*
          * We'll build CQL3 row one by one.
@@ -281,10 +380,17 @@ public abstract class Selection
 
         private final boolean isJson;
 
-        private ResultSetBuilder(boolean isJson) throws InvalidRequestException
+        private ResultSetBuilder(QueryOptions options, boolean isJson)
+        {
+            this(options, isJson, null);
+        }
+
+        private ResultSetBuilder(QueryOptions options, boolean isJson, GroupMaker groupMaker)
         {
             this.resultSet = new ResultSet(getResultMetadata(isJson).copy(), new ArrayList<List<ByteBuffer>>());
-            this.selectors = newSelectors();
+            this.protocolVersion = options.getProtocolVersion();
+            this.selectors = newSelectors(options);
+            this.groupMaker = groupMaker;
             this.timestamps = collectTimestamps ? new long[columns.size()] : null;
             this.ttls = collectTTLs ? new int[columns.size()] : null;
             this.isJson = isJson;
@@ -334,66 +440,70 @@ public abstract class Selection
                  : c.value();
         }
 
-        public void newRow(int protocolVersion) throws InvalidRequestException
+        /**
+         * Notifies this <code>Builder</code> that a new row is being processed.
+         *
+         * @param partitionKey the partition key of the new row
+         * @param clustering the clustering of the new row
+         */
+        public void newRow(DecoratedKey partitionKey, Clustering clustering)
         {
+            // The groupMaker needs to be called for each row
+            boolean isNewAggregate = groupMaker == null || groupMaker.isNewGroup(partitionKey, clustering);
             if (current != null)
             {
                 selectors.addInputRow(protocolVersion, this);
-                if (!selectors.isAggregate())
+                if (isNewAggregate)
                 {
-                    resultSet.addRow(getOutputRow(protocolVersion));
+                    resultSet.addRow(getOutputRow());
                     selectors.reset();
                 }
             }
             current = new ArrayList<>(columns.size());
+
+            // Timestamps and TTLs are arrays per row, we must null them out between rows
+            if (timestamps != null)
+                Arrays.fill(timestamps, Long.MIN_VALUE);
+            if (ttls != null)
+                Arrays.fill(ttls, -1);
         }
 
-        public ResultSet build(int protocolVersion) throws InvalidRequestException
+        /**
+         * Builds the <code>ResultSet</code>
+         */
+        public ResultSet build()
         {
             if (current != null)
             {
                 selectors.addInputRow(protocolVersion, this);
-                resultSet.addRow(getOutputRow(protocolVersion));
+                resultSet.addRow(getOutputRow());
                 selectors.reset();
                 current = null;
             }
 
-            if (resultSet.isEmpty() && selectors.isAggregate())
-                resultSet.addRow(getOutputRow(protocolVersion));
+            // For aggregates we need to return a row even it no records have been found
+            if (resultSet.isEmpty() && groupMaker != null && groupMaker.returnAtLeastOneRow())
+                resultSet.addRow(getOutputRow());
             return resultSet;
         }
 
-        private List<ByteBuffer> getOutputRow(int protocolVersion)
+        private List<ByteBuffer> getOutputRow()
         {
             List<ByteBuffer> outputRow = selectors.getOutputRow(protocolVersion);
-            return isJson ? rowToJson(outputRow, protocolVersion)
-                          : outputRow;
-        }
-
-        private List<ByteBuffer> rowToJson(List<ByteBuffer> row, int protocolVersion)
-        {
-            StringBuilder sb = new StringBuilder("{");
-            for (int i = 0; i < metadata.names.size(); i++)
+            if (isJson)
             {
-                if (i > 0)
-                    sb.append(", ");
+                // Keep all columns around for possible post-query ordering. (CASSANDRA-14286)
+                List<ByteBuffer> jsonRow = rowToJson(outputRow, protocolVersion, metadata);
 
-                ColumnSpecification spec = metadata.names.get(i);
-                String columnName = spec.name.toString();
-                if (!columnName.equals(columnName.toLowerCase(Locale.US)))
-                    columnName = "\"" + columnName + "\"";
-
-                ByteBuffer buffer = row.get(i);
-                sb.append('"');
-                sb.append(Json.quoteAsJsonString(columnName));
-                sb.append("\": ");
-                if (buffer == null)
-                    sb.append("null");
-                else
-                    sb.append(spec.type.toJSONString(buffer, protocolVersion));
+                // Keep ordering columns around for possible post-query ordering. (CASSANDRA-14286)
+                if (orderingIndex != null)
+                {
+                    for (Integer orderingColumnIndex : orderingIndex.values())
+                        jsonRow.add(outputRow.get(orderingColumnIndex));
+                }
+                outputRow = jsonRow;
             }
-            sb.append("}");
-            return Collections.singletonList(UTF8Type.instance.getSerializer().serialize(sb.toString()));
+            return outputRow;
         }
     }
 
@@ -404,17 +514,18 @@ public abstract class Selection
         /**
          * Adds the current row of the specified <code>ResultSetBuilder</code>.
          *
+         * @param protocolVersion
          * @param rs the <code>ResultSetBuilder</code>
          * @throws InvalidRequestException
          */
-        public void addInputRow(int protocolVersion, ResultSetBuilder rs) throws InvalidRequestException;
+        public void addInputRow(ProtocolVersion protocolVersion, ResultSetBuilder rs) throws InvalidRequestException;
 
-        public List<ByteBuffer> getOutputRow(int protocolVersion) throws InvalidRequestException;
+        public List<ByteBuffer> getOutputRow(ProtocolVersion protocolVersion) throws InvalidRequestException;
 
         public void reset();
     }
 
-    // Special cased selection for when no function is used (this save some allocations).
+    // Special cased selection for when only columns are selected.
     private static class SimpleSelection extends Selection
     {
         private final boolean isWildcard;
@@ -449,7 +560,7 @@ public abstract class Selection
             return false;
         }
 
-        protected Selectors newSelectors()
+        protected Selectors newSelectors(QueryOptions options)
         {
             return new Selectors()
             {
@@ -460,12 +571,12 @@ public abstract class Selection
                     current = null;
                 }
 
-                public List<ByteBuffer> getOutputRow(int protocolVersion)
+                public List<ByteBuffer> getOutputRow(ProtocolVersion protocolVersion)
                 {
                     return current;
                 }
 
-                public void addInputRow(int protocolVersion, ResultSetBuilder rs) throws InvalidRequestException
+                public void addInputRow(ProtocolVersion protocolVersion, ResultSetBuilder rs) throws InvalidRequestException
                 {
                     current = rs.current;
                 }
@@ -518,9 +629,9 @@ public abstract class Selection
         }
 
         @Override
-        public int addColumnForOrdering(ColumnDefinition c)
+        protected int addOrderingColumn(ColumnDefinition c)
         {
-            int index = super.addColumnForOrdering(c);
+            int index = super.addOrderingColumn(c);
             factories.addSelectorForOrdering(c, index);
             return factories.size() - 1;
         }
@@ -530,11 +641,11 @@ public abstract class Selection
             return factories.doesAggregation();
         }
 
-        protected Selectors newSelectors() throws InvalidRequestException
+        protected Selectors newSelectors(final QueryOptions options) throws InvalidRequestException
         {
             return new Selectors()
             {
-                private final List<Selector> selectors = factories.newInstances();
+                private final List<Selector> selectors = factories.newInstances(options);
 
                 public void reset()
                 {
@@ -547,7 +658,7 @@ public abstract class Selection
                     return factories.doesAggregation();
                 }
 
-                public List<ByteBuffer> getOutputRow(int protocolVersion) throws InvalidRequestException
+                public List<ByteBuffer> getOutputRow(ProtocolVersion protocolVersion) throws InvalidRequestException
                 {
                     List<ByteBuffer> outputRow = new ArrayList<>(selectors.size());
 
@@ -557,7 +668,7 @@ public abstract class Selection
                     return outputRow;
                 }
 
-                public void addInputRow(int protocolVersion, ResultSetBuilder rs) throws InvalidRequestException
+                public void addInputRow(ProtocolVersion protocolVersion, ResultSetBuilder rs) throws InvalidRequestException
                 {
                     for (Selector selector : selectors)
                         selector.addInput(protocolVersion, rs);

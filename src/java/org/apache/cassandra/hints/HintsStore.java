@@ -25,6 +25,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,7 +50,7 @@ final class HintsStore
     private final File hintsDirectory;
     private final ImmutableMap<String, Object> writerParams;
 
-    private final Map<HintsDescriptor, Long> dispatchOffsets;
+    private final Map<HintsDescriptor, InputPosition> dispatchPositions;
     private final Deque<HintsDescriptor> dispatchDequeue;
     private final Queue<HintsDescriptor> blacklistedFiles;
 
@@ -63,7 +64,7 @@ final class HintsStore
         this.hintsDirectory = hintsDirectory;
         this.writerParams = writerParams;
 
-        dispatchOffsets = new ConcurrentHashMap<>();
+        dispatchPositions = new ConcurrentHashMap<>();
         dispatchDequeue = new ConcurrentLinkedDeque<>(descriptors);
         blacklistedFiles = new ConcurrentLinkedQueue<>();
 
@@ -75,6 +76,12 @@ final class HintsStore
     {
         descriptors.sort((d1, d2) -> Long.compare(d1.timestamp, d2.timestamp));
         return new HintsStore(hostId, hintsDirectory, writerParams, descriptors);
+    }
+
+    @VisibleForTesting
+    int getDispatchQueueSize()
+    {
+        return dispatchDequeue.size();
     }
 
     InetAddress address()
@@ -136,19 +143,19 @@ final class HintsStore
         return !dispatchDequeue.isEmpty();
     }
 
-    Optional<Long> getDispatchOffset(HintsDescriptor descriptor)
+    InputPosition getDispatchOffset(HintsDescriptor descriptor)
     {
-        return Optional.ofNullable(dispatchOffsets.get(descriptor));
+        return dispatchPositions.get(descriptor);
     }
 
-    void markDispatchOffset(HintsDescriptor descriptor, long mark)
+    void markDispatchOffset(HintsDescriptor descriptor, InputPosition inputPosition)
     {
-        dispatchOffsets.put(descriptor, mark);
+        dispatchPositions.put(descriptor, inputPosition);
     }
 
     void cleanUp(HintsDescriptor descriptor)
     {
-        dispatchOffsets.remove(descriptor);
+        dispatchPositions.remove(descriptor);
     }
 
     void blacklist(HintsDescriptor descriptor)

@@ -25,6 +25,7 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.transform.FilteredRows;
 import org.apache.cassandra.db.transform.MoreRows;
 import org.apache.cassandra.db.transform.Transformation;
@@ -35,7 +36,6 @@ import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.IMergeIterator;
 import org.apache.cassandra.utils.MergeIterator;
-import org.apache.cassandra.utils.memory.AbstractAllocator;
 
 /**
  * Static methods to work with atom iterators.
@@ -140,6 +140,32 @@ public abstract class UnfilteredRowIterators
         return EmptyIterators.unfilteredRow(cfm, partitionKey, isReverseOrder, staticRow, partitionDeletion);
     }
 
+    public static UnfilteredRowIterator singleton(Unfiltered unfiltered,
+                                                  CFMetaData metadata,
+                                                  DecoratedKey partitionKey,
+                                                  DeletionTime partitionLevelDeletion,
+                                                  PartitionColumns columns,
+                                                  Row staticRow,
+                                                  boolean isReverseOrder,
+                                                  EncodingStats encodingStats)
+    {
+        return new AbstractUnfilteredRowIterator(metadata, partitionKey, partitionLevelDeletion, columns, staticRow, isReverseOrder, encodingStats)
+        {
+            boolean isDone = false;
+
+            protected Unfiltered computeNext()
+            {
+                if (!isDone)
+                {
+                    isDone = true;
+                    return unfiltered;
+                }
+
+                return endOfData();
+            }
+        };
+    }
+
     /**
      * Digests the partition represented by the provided iterator.
      *
@@ -183,6 +209,23 @@ public abstract class UnfilteredRowIterators
     }
 
     /**
+     * Filter the provided iterator to exclude cells that have been fetched but are not queried by the user
+     * (see ColumnFilter for detailes).
+     *
+     * @param iterator the iterator to filter.
+     * @param filter the {@code ColumnFilter} to use when deciding which columns are the one queried by the
+     * user. This should be the filter that was used when querying {@code iterator}.
+     * @return the filtered iterator..
+     */
+    public static UnfilteredRowIterator withOnlyQueriedData(UnfilteredRowIterator iterator, ColumnFilter filter)
+    {
+        if (filter.allFetchedColumnsAreQueried())
+            return iterator;
+
+        return Transformation.apply(iterator, new WithOnlyQueriedData(filter));
+    }
+
+    /**
      * Returns an iterator that concatenate two atom iterators.
      * This method assumes that both iterator are from the same partition and that the atom from
      * {@code iter2} come after the ones of {@code iter1} (that is, that concatenating the iterator
@@ -194,7 +237,6 @@ public abstract class UnfilteredRowIterators
             && iter1.partitionKey().equals(iter2.partitionKey())
             && iter1.partitionLevelDeletion().equals(iter2.partitionLevelDeletion())
             && iter1.isReverseOrder() == iter2.isReverseOrder()
-            && iter1.columns().equals(iter2.columns())
             && iter1.staticRow().equals(iter2.staticRow());
 
         class Extend implements MoreRows<UnfilteredRowIterator>
@@ -209,33 +251,35 @@ public abstract class UnfilteredRowIterators
             }
         }
 
-        return MoreRows.extend(iter1, new Extend());
+        return MoreRows.extend(iter1, new Extend(), iter1.columns().mergeTo(iter2.columns()));
     }
 
-    public static UnfilteredRowIterator cloningIterator(UnfilteredRowIterator iterator, final AbstractAllocator allocator)
+    /**
+     * Returns an iterator that concatenate the specified atom with the iterator.
+     */
+    public static UnfilteredRowIterator concat(final Unfiltered first, final UnfilteredRowIterator rest)
     {
-        class Cloner extends Transformation
+        return new WrappingUnfilteredRowIterator(rest)
         {
-            private final Row.Builder builder = allocator.cloningBTreeRowBuilder();
+            private boolean hasReturnedFirst;
 
-            public Row applyToStatic(Row row)
+            @Override
+            public boolean hasNext()
             {
-                return Rows.copy(row, builder).build();
+                return hasReturnedFirst ? super.hasNext() : true;
             }
 
             @Override
-            public Row applyToRow(Row row)
+            public Unfiltered next()
             {
-                return Rows.copy(row, builder).build();
+                if (!hasReturnedFirst)
+                {
+                    hasReturnedFirst = true;
+                    return first;
+                }
+                return super.next();
             }
-
-            @Override
-            public RangeTombstoneMarker applyToMarker(RangeTombstoneMarker marker)
-            {
-                return marker.copy(allocator);
-            }
-        }
-        return Transformation.apply(iterator, new Cloner());
+        };
     }
 
     /**

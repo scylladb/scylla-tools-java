@@ -23,13 +23,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.marshal.AbstractType;
-import org.apache.cassandra.db.marshal.BytesType;
-import org.apache.cassandra.db.marshal.CounterColumnType;
-import org.apache.cassandra.db.marshal.LongType;
-import org.apache.cassandra.db.marshal.ReversedType;
+import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.serializers.MarshalException;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 /**
@@ -41,8 +38,34 @@ public abstract class Constants
 
     public enum Type
     {
-        STRING, INTEGER, UUID, FLOAT, DATE, TIME, BOOLEAN, HEX;
+        STRING, INTEGER, UUID, FLOAT, BOOLEAN, HEX, DURATION;
     }
+
+    private static class UnsetLiteral extends Term.Raw
+    {
+        public Term prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException
+        {
+            return UNSET_VALUE;
+        }
+
+        public AssignmentTestable.TestResult testAssignment(String keyspace, ColumnSpecification receiver)
+        {
+            return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
+        }
+
+        public String getText()
+        {
+            return "";
+        }
+
+        public AbstractType<?> getExactTypeIfKnown(String keyspace)
+        {
+            return null;
+        }
+    }
+
+    // We don't have "unset" literal in the syntax, but it's used implicitely for JSON "DEFAULT UNSET" option
+    public static final UnsetLiteral UNSET_LITERAL = new UnsetLiteral();
 
     public static final Value UNSET_VALUE = new Value(ByteBufferUtil.UNSET_BYTE_BUFFER);
 
@@ -66,6 +89,11 @@ public abstract class Constants
         public String getText()
         {
             return "NULL";
+        }
+
+        public AbstractType<?> getExactTypeIfKnown(String keyspace)
+        {
+            return null;
         }
     }
 
@@ -129,6 +157,11 @@ public abstract class Constants
             return new Literal(Type.HEX, text);
         }
 
+        public static Literal duration(String text)
+        {
+            return new Literal(Type.DURATION, text);
+        }
+
         public Value prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException
         {
             if (!testAssignment(keyspace, receiver).isAssignable())
@@ -159,10 +192,11 @@ public abstract class Constants
             }
         }
 
+        @Override
         public AssignmentTestable.TestResult testAssignment(String keyspace, ColumnSpecification receiver)
         {
             CQL3Type receiverType = receiver.type.asCQL3Type();
-            if (receiverType.isCollection())
+            if (receiverType.isCollection() || receiverType.isUDT())
                 return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
 
             if (!(receiverType instanceof CQL3Type.Native))
@@ -193,6 +227,7 @@ public abstract class Constants
                         case DATE:
                         case DECIMAL:
                         case DOUBLE:
+                        case DURATION:
                         case FLOAT:
                         case INT:
                         case SMALLINT:
@@ -234,8 +269,25 @@ public abstract class Constants
                             return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
                     }
                     break;
+                case DURATION:
+                    switch (nt)
+                    {
+                        case DURATION:
+                            return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
+                    }
+                    break;
             }
             return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
+        }
+
+        public AbstractType<?> getExactTypeIfKnown(String keyspace)
+        {
+            // Most constant are valid for more than one type (the extreme example being integer constants, which can
+            // be use for any numerical type, including date, time, ...) so they don't have an exact type. And in fact,
+            // for good or bad, any literal is valid for custom types, so we can never claim an exact type.
+            // But really, the reason it's fine to return null here is that getExactTypeIfKnown is only used to
+            // implement testAssignment() in Selectable and that method is overriden above.
+            return null;
         }
 
         public String getRawText()
@@ -261,7 +313,7 @@ public abstract class Constants
             this.bytes = bytes;
         }
 
-        public ByteBuffer get(int protocolVersion)
+        public ByteBuffer get(ProtocolVersion protocolVersion)
         {
             return bytes;
         }
@@ -281,7 +333,8 @@ public abstract class Constants
 
     public static class Marker extends AbstractMarker
     {
-        protected Marker(int bindIndex, ColumnSpecification receiver)
+        // Constructor is public only for the SuperColumn tables support
+        public Marker(int bindIndex, ColumnSpecification receiver)
         {
             super(bindIndex, receiver);
             assert !receiver.type.isCollection();

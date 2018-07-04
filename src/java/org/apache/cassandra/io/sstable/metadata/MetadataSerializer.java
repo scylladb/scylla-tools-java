@@ -21,7 +21,6 @@ import java.io.*;
 import java.util.*;
 
 import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,7 +36,7 @@ import org.apache.cassandra.io.util.RandomAccessReader;
 import org.apache.cassandra.utils.FBUtilities;
 
 /**
- * Metadata serializer for SSTables version >= 'k'.
+ * Metadata serializer for SSTables {@code version >= 'k'}.
  *
  * <pre>
  * File format := | number of components (4 bytes) | toc | component1 | component2 | ... |
@@ -84,7 +83,7 @@ public class MetadataSerializer implements IMetadataSerializer
         if (!statsFile.exists())
         {
             logger.trace("No sstable stats for {}", descriptor);
-            components = Maps.newHashMap();
+            components = new EnumMap<>(MetadataType.class);
             components.put(MetadataType.STATS, MetadataCollector.defaultStatsMetadata());
         }
         else
@@ -104,11 +103,11 @@ public class MetadataSerializer implements IMetadataSerializer
 
     public Map<MetadataType, MetadataComponent> deserialize(Descriptor descriptor, FileDataInput in, EnumSet<MetadataType> types) throws IOException
     {
-        Map<MetadataType, MetadataComponent> components = Maps.newHashMap();
+        Map<MetadataType, MetadataComponent> components = new EnumMap<>(MetadataType.class);
         // read number of components
         int numComponents = in.readInt();
         // read toc
-        Map<MetadataType, Integer> toc = new HashMap<>(numComponents);
+        Map<MetadataType, Integer> toc = new EnumMap<>(MetadataType.class);
         MetadataType[] values = MetadataType.values();
         for (int i = 0; i < numComponents; i++)
         {
@@ -156,7 +155,7 @@ public class MetadataSerializer implements IMetadataSerializer
             out.flush();
         }
         // we cant move a file on top of another file in windows:
-        if (FBUtilities.isWindows())
+        if (FBUtilities.isWindows)
             FileUtils.delete(descriptor.filenameFor(Component.STATS));
         FileUtils.renameWithConfirm(filePath, descriptor.filenameFor(Component.STATS));
 

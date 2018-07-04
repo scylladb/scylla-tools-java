@@ -28,6 +28,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.net.IncomingStreamingConnection;
+import org.apache.cassandra.utils.FBUtilities;
 
 /**
  * A future on the result ({@link StreamState}) of a streaming plan.
@@ -72,10 +73,12 @@ public final class StreamResultFuture extends AbstractFuture<StreamState>
 
     private StreamResultFuture(UUID planId, String description, boolean keepSSTableLevels, boolean isIncremental)
     {
-        this(planId, description, new StreamCoordinator(0, keepSSTableLevels, isIncremental, new DefaultConnectionFactory()));
+        this(planId, description, new StreamCoordinator(0, keepSSTableLevels, isIncremental,
+                                                        new DefaultConnectionFactory(), false));
     }
 
-    static StreamResultFuture init(UUID planId, String description, Collection<StreamEventHandler> listeners, StreamCoordinator coordinator)
+    static StreamResultFuture init(UUID planId, String description, Collection<StreamEventHandler> listeners,
+                                   StreamCoordinator coordinator)
     {
         StreamResultFuture future = createAndRegister(planId, description, coordinator);
         if (listeners != null)
@@ -84,14 +87,15 @@ public final class StreamResultFuture extends AbstractFuture<StreamState>
                 future.addEventListener(listener);
         }
 
-        logger.info("[Stream #{}] Executing streaming plan for {}", planId, description);
+        logger.info("[Stream #{}] Executing streaming plan for {}", planId,  description);
 
         // Initialize and start all sessions
         for (final StreamSession session : coordinator.getAllStreamSessions())
         {
             session.init(future);
         }
-        coordinator.connectAllStreamSessions();
+
+        coordinator.connect(future);
 
         return future;
     }
@@ -166,13 +170,13 @@ public final class StreamResultFuture extends AbstractFuture<StreamState>
     void handleSessionPrepared(StreamSession session)
     {
         SessionInfo sessionInfo = session.getSessionInfo();
-        logger.info("[Stream #{} ID#{}] Prepare completed. Receiving {} files({} bytes), sending {} files({} bytes)",
-                    session.planId(),
-                    session.sessionIndex(),
-                    sessionInfo.getTotalFilesToReceive(),
-                    sessionInfo.getTotalSizeToReceive(),
-                    sessionInfo.getTotalFilesToSend(),
-                    sessionInfo.getTotalSizeToSend());
+        logger.info("[Stream #{} ID#{}] Prepare completed. Receiving {} files({}), sending {} files({})",
+                              session.planId(),
+                              session.sessionIndex(),
+                              sessionInfo.getTotalFilesToReceive(),
+                              FBUtilities.prettyPrintMemory(sessionInfo.getTotalSizeToReceive()),
+                              sessionInfo.getTotalFilesToSend(),
+                              FBUtilities.prettyPrintMemory(sessionInfo.getTotalSizeToSend()));
         StreamEvent.SessionPreparedEvent event = new StreamEvent.SessionPreparedEvent(planId, sessionInfo);
         coordinator.addSessionInfo(sessionInfo);
         fireStreamEvent(event);

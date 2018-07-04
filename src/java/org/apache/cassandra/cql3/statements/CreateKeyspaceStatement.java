@@ -17,9 +17,11 @@
  */
 package org.apache.cassandra.cql3.statements;
 
+import java.util.regex.Pattern;
+
 import org.apache.cassandra.auth.*;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.exceptions.*;
 import org.apache.cassandra.locator.LocalStrategy;
 import org.apache.cassandra.schema.KeyspaceMetadata;
@@ -31,6 +33,8 @@ import org.apache.cassandra.transport.Event;
 /** A <code>CREATE KEYSPACE</code> statement parsed from a CQL query. */
 public class CreateKeyspaceStatement extends SchemaAlteringStatement
 {
+    private static final Pattern PATTERN_WORD_CHARS = Pattern.compile("\\w+");
+
     private final String name;
     private final KeyspaceAttributes attrs;
     private final boolean ifNotExists;
@@ -73,10 +77,10 @@ public class CreateKeyspaceStatement extends SchemaAlteringStatement
         ThriftValidation.validateKeyspaceNotSystem(name);
 
         // keyspace name
-        if (!name.matches("\\w+"))
+        if (!PATTERN_WORD_CHARS.matcher(name).matches())
             throw new InvalidRequestException(String.format("\"%s\" is not a valid keyspace name", name));
-        if (name.length() > Schema.NAME_LENGTH)
-            throw new InvalidRequestException(String.format("Keyspace names shouldn't be more than %s characters long (got \"%s\")", Schema.NAME_LENGTH, name));
+        if (name.length() > SchemaConstants.NAME_LENGTH)
+            throw new InvalidRequestException(String.format("Keyspace names shouldn't be more than %s characters long (got \"%s\")", SchemaConstants.NAME_LENGTH, name));
 
         attrs.validate();
 
@@ -92,7 +96,7 @@ public class CreateKeyspaceStatement extends SchemaAlteringStatement
             throw new ConfigurationException("Unable to use given strategy class: LocalStrategy is reserved for internal use.");
     }
 
-    public Event.SchemaChange announceMigration(boolean isLocalOnly) throws RequestValidationException
+    public Event.SchemaChange announceMigration(QueryState queryState, boolean isLocalOnly) throws RequestValidationException
     {
         KeyspaceMetadata ksm = KeyspaceMetadata.create(name, attrs.asNewKeyspaceParams());
         try

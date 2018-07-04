@@ -19,14 +19,16 @@ package org.apache.cassandra.streaming.compression;
 
 import java.io.*;
 import java.util.*;
-import java.util.concurrent.SynchronousQueue;
-import java.util.concurrent.TimeUnit;
 
+import org.junit.BeforeClass;
 import org.junit.Test;
+
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ClusteringComparator;
 import org.apache.cassandra.db.marshal.BytesType;
 import org.apache.cassandra.io.compress.CompressedSequentialWriter;
 import org.apache.cassandra.io.compress.CompressionMetadata;
+import org.apache.cassandra.io.util.SequentialWriterOption;
 import org.apache.cassandra.schema.CompressionParams;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
@@ -43,6 +45,12 @@ import static org.junit.Assert.fail;
  */
 public class CompressedInputStreamTest
 {
+    @BeforeClass
+    public static void setupDD()
+    {
+        DatabaseDescriptor.daemonInitialization();
+    }
+
     @Test
     public void testCompressedRead() throws Exception
     {
@@ -82,7 +90,11 @@ public class CompressedInputStreamTest
         MetadataCollector collector = new MetadataCollector(new ClusteringComparator(BytesType.instance));
         CompressionParams param = CompressionParams.snappy(32);
         Map<Long, Long> index = new HashMap<Long, Long>();
-        try (CompressedSequentialWriter writer = new CompressedSequentialWriter(tmp, desc.filenameFor(Component.COMPRESSION_INFO), param, collector))
+        try (CompressedSequentialWriter writer = new CompressedSequentialWriter(tmp,
+                                                                                desc.filenameFor(Component.COMPRESSION_INFO),
+                                                                                null,
+                                                                                SequentialWriterOption.DEFAULT,
+                                                                                param, collector))
         {
             for (long l = 0L; l < 1000; l++)
             {

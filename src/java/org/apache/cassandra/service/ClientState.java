@@ -28,9 +28,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.auth.*;
-import org.apache.cassandra.config.Config;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.cql3.QueryHandler;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.functions.Function;
@@ -40,7 +41,6 @@ import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.exceptions.UnauthorizedException;
 import org.apache.cassandra.schema.SchemaKeyspace;
 import org.apache.cassandra.thrift.ThriftValidation;
-import org.apache.cassandra.tracing.TraceKeyspace;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.CassandraVersion;
@@ -55,37 +55,38 @@ public class ClientState
 
     private static final Set<IResource> READABLE_SYSTEM_RESOURCES = new HashSet<>();
     private static final Set<IResource> PROTECTED_AUTH_RESOURCES = new HashSet<>();
-    private static final Set<String> ALTERABLE_SYSTEM_KEYSPACES = new HashSet<>();
-    private static final Set<IResource> DROPPABLE_SYSTEM_TABLES = new HashSet<>();
+    private static final Set<IResource> DROPPABLE_SYSTEM_AUTH_TABLES = new HashSet<>();
     static
     {
         // We want these system cfs to be always readable to authenticated users since many tools rely on them
         // (nodetool, cqlsh, bulkloader, etc.)
         for (String cf : Arrays.asList(SystemKeyspace.LOCAL, SystemKeyspace.PEERS))
-            READABLE_SYSTEM_RESOURCES.add(DataResource.table(SystemKeyspace.NAME, cf));
+            READABLE_SYSTEM_RESOURCES.add(DataResource.table(SchemaConstants.SYSTEM_KEYSPACE_NAME, cf));
 
-        SchemaKeyspace.ALL.forEach(table -> READABLE_SYSTEM_RESOURCES.add(DataResource.table(SchemaKeyspace.NAME, table)));
+        SchemaKeyspace.ALL.forEach(table -> READABLE_SYSTEM_RESOURCES.add(DataResource.table(SchemaConstants.SCHEMA_KEYSPACE_NAME, table)));
 
-        if (!Config.isClientMode())
+        // neither clients nor tools need authentication/authorization
+        if (DatabaseDescriptor.isDaemonInitialized())
         {
             PROTECTED_AUTH_RESOURCES.addAll(DatabaseDescriptor.getAuthenticator().protectedResources());
             PROTECTED_AUTH_RESOURCES.addAll(DatabaseDescriptor.getAuthorizer().protectedResources());
             PROTECTED_AUTH_RESOURCES.addAll(DatabaseDescriptor.getRoleManager().protectedResources());
         }
 
-        // allow users with sufficient privileges to alter KS level options on AUTH_KS and
-        // TRACING_KS, and also to drop legacy tables (users, credentials, permissions) from
-        // AUTH_KS
-        ALTERABLE_SYSTEM_KEYSPACES.add(AuthKeyspace.NAME);
-        ALTERABLE_SYSTEM_KEYSPACES.add(TraceKeyspace.NAME);
-        DROPPABLE_SYSTEM_TABLES.add(DataResource.table(AuthKeyspace.NAME, PasswordAuthenticator.LEGACY_CREDENTIALS_TABLE));
-        DROPPABLE_SYSTEM_TABLES.add(DataResource.table(AuthKeyspace.NAME, CassandraRoleManager.LEGACY_USERS_TABLE));
-        DROPPABLE_SYSTEM_TABLES.add(DataResource.table(AuthKeyspace.NAME, CassandraAuthorizer.USER_PERMISSIONS));
+        DROPPABLE_SYSTEM_AUTH_TABLES.add(DataResource.table(SchemaConstants.AUTH_KEYSPACE_NAME, PasswordAuthenticator.LEGACY_CREDENTIALS_TABLE));
+        DROPPABLE_SYSTEM_AUTH_TABLES.add(DataResource.table(SchemaConstants.AUTH_KEYSPACE_NAME, CassandraRoleManager.LEGACY_USERS_TABLE));
+        DROPPABLE_SYSTEM_AUTH_TABLES.add(DataResource.table(SchemaConstants.AUTH_KEYSPACE_NAME, CassandraAuthorizer.USER_PERMISSIONS));
     }
 
     // Current user for the session
     private volatile AuthenticatedUser user;
     private volatile String keyspace;
+
+    /**
+     * Force Compact Tables to be represented as CQL ones for the current client session (simulates
+     * ALTER .. DROP COMPACT STORAGE but only for this session)
+     */
+    private volatile boolean noCompactMode;
 
     private static final QueryHandler cqlQueryHandler;
     static
@@ -259,6 +260,16 @@ public class ClientState
         keyspace = ks;
     }
 
+    public void setNoCompactMode()
+    {
+        this.noCompactMode = true;
+    }
+
+    public boolean isNoCompactMode()
+    {
+        return noCompactMode;
+    }
+
     /**
      * Attempts to login the given user.
      */
@@ -293,30 +304,42 @@ public class ClientState
         hasAccess(keyspace, perm, DataResource.table(keyspace, columnFamily));
     }
 
+    public void hasColumnFamilyAccess(CFMetaData cfm, Permission perm)
+    throws UnauthorizedException, InvalidRequestException
+    {
+        hasAccess(cfm.ksName, perm, cfm.resource);
+    }
+
     private void hasAccess(String keyspace, Permission perm, DataResource resource)
     throws UnauthorizedException, InvalidRequestException
     {
         validateKeyspace(keyspace);
+
         if (isInternal)
             return;
+
         validateLogin();
+
         preventSystemKSSchemaModification(keyspace, resource, perm);
+
         if ((perm == Permission.SELECT) && READABLE_SYSTEM_RESOURCES.contains(resource))
             return;
+
         if (PROTECTED_AUTH_RESOURCES.contains(resource))
             if ((perm == Permission.CREATE) || (perm == Permission.ALTER) || (perm == Permission.DROP))
                 throw new UnauthorizedException(String.format("%s schema is protected", resource));
+
         ensureHasPermission(perm, resource);
     }
 
     public void ensureHasPermission(Permission perm, IResource resource) throws UnauthorizedException
     {
-        if (DatabaseDescriptor.getAuthorizer() instanceof AllowAllAuthorizer)
+        if (!DatabaseDescriptor.getAuthorizer().requireAuthorization())
             return;
 
         // Access to built in functions is unrestricted
         if(resource instanceof FunctionResource && resource.hasParent())
-            if (((FunctionResource)resource).getKeyspace().equals(SystemKeyspace.NAME))
+            if (((FunctionResource)resource).getKeyspace().equals(SchemaConstants.SYSTEM_KEYSPACE_NAME))
                 return;
 
         checkPermissionOnResourceChain(perm, resource);
@@ -327,7 +350,7 @@ public class ClientState
     public void ensureHasPermission(Permission permission, Function function)
     {
         // Save creating a FunctionResource is we don't need to
-        if (DatabaseDescriptor.getAuthorizer() instanceof AllowAllAuthorizer)
+        if (!DatabaseDescriptor.getAuthorizer().requireAuthorization())
             return;
 
         // built in functions are always available to all
@@ -353,21 +376,25 @@ public class ClientState
 
     private void preventSystemKSSchemaModification(String keyspace, DataResource resource, Permission perm) throws UnauthorizedException
     {
-        // we only care about schema modification.
-        if (!((perm == Permission.ALTER) || (perm == Permission.DROP) || (perm == Permission.CREATE)))
+        // we only care about DDL statements
+        if (perm != Permission.ALTER && perm != Permission.DROP && perm != Permission.CREATE)
             return;
 
-        // prevent system keyspace modification
-        if (Schema.isSystemKeyspace(keyspace))
+        // prevent ALL local system keyspace modification
+        if (SchemaConstants.isLocalSystemKeyspace(keyspace))
             throw new UnauthorizedException(keyspace + " keyspace is not user-modifiable.");
 
-        // allow users with sufficient privileges to alter KS level options on AUTH_KS and
-        // TRACING_KS, and also to drop legacy tables (users, credentials, permissions) from
-        // AUTH_KS
-        if (ALTERABLE_SYSTEM_KEYSPACES.contains(resource.getKeyspace().toLowerCase())
-           && ((perm == Permission.ALTER && !resource.isKeyspaceLevel())
-               || (perm == Permission.DROP && !DROPPABLE_SYSTEM_TABLES.contains(resource))))
+        if (SchemaConstants.isReplicatedSystemKeyspace(keyspace))
         {
+            // allow users with sufficient privileges to alter replication params of replicated system keyspaces
+            if (perm == Permission.ALTER && resource.isKeyspaceLevel())
+                return;
+
+            // allow users with sufficient privileges to drop legacy tables in replicated system keyspaces
+            if (perm == Permission.DROP && DROPPABLE_SYSTEM_AUTH_TABLES.contains(resource))
+                return;
+
+            // prevent all other modifications of replicated system keyspaces
             throw new UnauthorizedException(String.format("Cannot %s %s", perm, resource));
         }
     }

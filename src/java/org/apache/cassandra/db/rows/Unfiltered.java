@@ -17,7 +17,9 @@
  */
 package org.apache.cassandra.db.rows;
 
+import java.nio.ByteBuffer;
 import java.security.MessageDigest;
+import java.util.Set;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.Clusterable;
@@ -46,14 +48,26 @@ public interface Unfiltered extends Clusterable
     public void digest(MessageDigest digest);
 
     /**
+     * Digest the atom using the provided {@code MessageDigest}.
+     * This method only exists in 3.11.
+     * Same like {@link #digest(MessageDigest)}, but excludes the given columns from digest calculation.
+     */
+    public default void digest(MessageDigest digest, Set<ByteBuffer> columnsToExclude)
+    {
+        throw new UnsupportedOperationException("no no no - don't use this one - use digest(MessageDigest) instead");
+    }
+
+    /**
      * Validate the data of this atom.
      *
      * @param metadata the metadata for the table this atom is part of.
-     * @throws MarshalException if some of the data in this atom is
+     * @throws org.apache.cassandra.serializers.MarshalException if some of the data in this atom is
      * invalid (some value is invalid for its column type, or some field
      * is nonsensical).
      */
     public void validateData(CFMetaData metadata);
+
+    public boolean isEmpty();
 
     public String toString(CFMetaData metadata);
     public String toString(CFMetaData metadata, boolean fullDetails);

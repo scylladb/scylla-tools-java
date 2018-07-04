@@ -23,11 +23,12 @@ import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
+import javax.annotation.Nullable;
 
 import com.google.common.collect.ImmutableMap;
 
 import org.apache.cassandra.io.FSReadError;
-import org.apache.cassandra.utils.CLibrary;
+import org.apache.cassandra.utils.NativeLibrary;
 import org.apache.cassandra.utils.SyncUtil;
 
 import static java.util.stream.Collectors.groupingBy;
@@ -61,7 +62,9 @@ final class HintsCatalog
             Map<UUID, List<HintsDescriptor>> stores =
                 Files.list(hintsDirectory.toPath())
                      .filter(HintsDescriptor::isHintFileName)
-                     .map(HintsDescriptor::readFromFile)
+                     .map(HintsDescriptor::readFromFileQuietly)
+                     .filter(Optional::isPresent)
+                     .map(Optional::get)
                      .collect(groupingBy(h -> h.hostId));
             return new HintsCatalog(hintsDirectory, writerParams, stores);
         }
@@ -90,6 +93,12 @@ final class HintsCatalog
         return store == null
              ? stores.computeIfAbsent(hostId, (id) -> HintsStore.create(id, hintsDirectory, writerParams, Collections.emptyList()))
              : store;
+    }
+
+    @Nullable
+    HintsStore getNullable(UUID hostId)
+    {
+        return stores.get(hostId);
     }
 
     /**
@@ -130,11 +139,11 @@ final class HintsCatalog
 
     void fsyncDirectory()
     {
-        int fd = CLibrary.tryOpenDirectory(hintsDirectory.getAbsolutePath());
+        int fd = NativeLibrary.tryOpenDirectory(hintsDirectory.getAbsolutePath());
         if (fd != -1)
         {
             SyncUtil.trySync(fd);
-            CLibrary.tryCloseFD(fd);
+            NativeLibrary.tryCloseFD(fd);
         }
     }
 

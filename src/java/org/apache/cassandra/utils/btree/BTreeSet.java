@@ -21,14 +21,11 @@ package org.apache.cassandra.utils.btree;
 import java.util.*;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Iterables;
 import com.google.common.collect.Ordering;
 
 import org.apache.cassandra.utils.btree.BTree.Dir;
 
 import static org.apache.cassandra.utils.btree.BTree.findIndex;
-import static org.apache.cassandra.utils.btree.BTree.lower;
-import static org.apache.cassandra.utils.btree.BTree.toArray;
 
 public class BTreeSet<V> implements NavigableSet<V>, List<V>
 {
@@ -639,6 +636,6 @@ public class BTreeSet<V> implements NavigableSet<V>, List<V>
 
     public static <V> BTreeSet<V> of(Comparator<? super V> comparator, V value)
     {
-        return new BTreeSet<>(BTree.build(ImmutableList.of(value), UpdateFunction.<V>noOp()), comparator);
+        return new BTreeSet<>(BTree.singleton(value), comparator);
     }
 }

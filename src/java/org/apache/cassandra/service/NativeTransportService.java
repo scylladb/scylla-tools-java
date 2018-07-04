@@ -32,8 +32,8 @@ import io.netty.channel.epoll.Epoll;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.util.concurrent.EventExecutor;
-import io.netty.util.concurrent.Future;
 import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.metrics.AuthMetrics;
 import org.apache.cassandra.metrics.ClientMetrics;
 import org.apache.cassandra.transport.RequestThreadPoolExecutor;
 import org.apache.cassandra.transport.Server;
@@ -116,6 +116,8 @@ public class NativeTransportService
             return ret;
         });
 
+        AuthMetrics.init();
+
         initialized = true;
     }
 
@@ -145,16 +147,7 @@ public class NativeTransportService
         servers = Collections.emptyList();
 
         // shutdown executors used by netty for native transport server
-        Future<?> wgStop = workerGroup.shutdownGracefully(0, 0, TimeUnit.SECONDS);
-
-        try
-        {
-            wgStop.await(5000);
-        }
-        catch (InterruptedException e1)
-        {
-            Thread.currentThread().interrupt();
-        }
+        workerGroup.shutdownGracefully(3, 5, TimeUnit.SECONDS).awaitUninterruptibly();
 
         // shutdownGracefully not implemented yet in RequestThreadPoolExecutor
         eventExecutorGroup.shutdown();
@@ -165,7 +158,7 @@ public class NativeTransportService
      */
     public static boolean useEpoll()
     {
-        final boolean enableEpoll = Boolean.valueOf(System.getProperty("cassandra.native.epoll.enabled", "true"));
+        final boolean enableEpoll = Boolean.parseBoolean(System.getProperty("cassandra.native.epoll.enabled", "true"));
         return enableEpoll && Epoll.isAvailable();
     }
 

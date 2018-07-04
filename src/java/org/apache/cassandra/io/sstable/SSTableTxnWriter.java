@@ -18,6 +18,7 @@
 
 package org.apache.cassandra.io.sstable;
 
+import java.io.IOException;
 import java.util.Collection;
 
 import org.apache.cassandra.config.CFMetaData;
@@ -27,6 +28,9 @@ import org.apache.cassandra.db.SerializationHeader;
 import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
+import org.apache.cassandra.index.Index;
+import org.apache.cassandra.io.sstable.format.RangeAwareSSTableWriter;
+import org.apache.cassandra.io.sstable.format.SSTableFormat;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
 import org.apache.cassandra.utils.concurrent.Transactional;
@@ -93,7 +97,7 @@ public class SSTableTxnWriter extends Transactional.AbstractTransactional implem
         return writer.finished();
     }
 
-    @SuppressWarnings("resource") // log and writer closed during postCleanup
+    @SuppressWarnings("resource") // log and writer closed during doPostCleanup
     public static SSTableTxnWriter create(ColumnFamilyStore cfs, Descriptor descriptor, long keyCount, long repairedAt, int sstableLevel, SerializationHeader header)
     {
         LifecycleTransaction txn = LifecycleTransaction.offline(OperationType.WRITE);
@@ -101,13 +105,46 @@ public class SSTableTxnWriter extends Transactional.AbstractTransactional implem
         return new SSTableTxnWriter(txn, writer);
     }
 
-    @SuppressWarnings("resource") // log and writer closed during postCleanup
-    public static SSTableTxnWriter create(CFMetaData cfm, Descriptor descriptor, long keyCount, long repairedAt, int sstableLevel, SerializationHeader header)
+
+    @SuppressWarnings("resource") // log and writer closed during doPostCleanup
+    public static SSTableTxnWriter createRangeAware(CFMetaData cfm,
+                                                    long keyCount,
+                                                    long repairedAt,
+                                                    SSTableFormat.Type type,
+                                                    int sstableLevel,
+                                                    SerializationHeader header)
+    {
+
+        ColumnFamilyStore cfs = Keyspace.open(cfm.ksName).getColumnFamilyStore(cfm.cfName);
+        LifecycleTransaction txn = LifecycleTransaction.offline(OperationType.WRITE);
+        SSTableMultiWriter writer;
+        try
+        {
+            writer = new RangeAwareSSTableWriter(cfs, keyCount, repairedAt, type, sstableLevel, 0, txn, header);
+        }
+        catch (IOException e)
+        {
+            //We don't know the total size so this should never happen
+            //as we send in 0
+            throw new RuntimeException(e);
+        }
+
+        return new SSTableTxnWriter(txn, writer);
+    }
+
+    @SuppressWarnings("resource") // log and writer closed during doPostCleanup
+    public static SSTableTxnWriter create(CFMetaData cfm,
+                                          Descriptor descriptor,
+                                          long keyCount,
+                                          long repairedAt,
+                                          int sstableLevel,
+                                          SerializationHeader header,
+                                          Collection<Index> indexes)
     {
         // if the column family store does not exist, we create a new default SSTableMultiWriter to use:
         LifecycleTransaction txn = LifecycleTransaction.offline(OperationType.WRITE);
         MetadataCollector collector = new MetadataCollector(cfm.comparator).sstableLevel(sstableLevel);
-        SSTableMultiWriter writer = SimpleSSTableMultiWriter.create(descriptor, keyCount, repairedAt, cfm, collector, header, txn);
+        SSTableMultiWriter writer = SimpleSSTableMultiWriter.create(descriptor, keyCount, repairedAt, cfm, collector, header, indexes, txn);
         return new SSTableTxnWriter(txn, writer);
     }
 

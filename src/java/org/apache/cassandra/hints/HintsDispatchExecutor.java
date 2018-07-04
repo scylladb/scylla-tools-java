@@ -23,6 +23,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import com.google.common.util.concurrent.RateLimiter;
@@ -48,18 +50,17 @@ final class HintsDispatchExecutor
     private final File hintsDirectory;
     private final ExecutorService executor;
     private final AtomicBoolean isPaused;
+    private final Function<InetAddress, Boolean> isAlive;
     private final Map<UUID, Future> scheduledDispatches;
 
-    HintsDispatchExecutor(File hintsDirectory, int maxThreads, AtomicBoolean isPaused)
+    HintsDispatchExecutor(File hintsDirectory, int maxThreads, AtomicBoolean isPaused, Function<InetAddress, Boolean> isAlive)
     {
         this.hintsDirectory = hintsDirectory;
         this.isPaused = isPaused;
+        this.isAlive = isAlive;
 
         scheduledDispatches = new ConcurrentHashMap<>();
-        executor = new JMXEnabledThreadPoolExecutor(1,
-                                                    maxThreads,
-                                                    1,
-                                                    TimeUnit.MINUTES,
+        executor = new JMXEnabledThreadPoolExecutor(maxThreads, 1, TimeUnit.MINUTES,
                                                     new LinkedBlockingQueue<>(),
                                                     new NamedThreadFactory("HintsDispatcher", Thread.MIN_PRIORITY),
                                                     "internal");
@@ -72,6 +73,14 @@ final class HintsDispatchExecutor
     {
         scheduledDispatches.clear();
         executor.shutdownNow();
+        try
+        {
+            executor.awaitTermination(1, TimeUnit.MINUTES);
+        }
+        catch (InterruptedException e)
+        {
+            throw new AssertionError(e);
+        }
     }
 
     boolean isScheduled(HintsStore store)
@@ -117,6 +126,14 @@ final class HintsDispatchExecutor
         }
     }
 
+    void interruptDispatch(UUID hostId)
+    {
+        Future future = scheduledDispatches.remove(hostId);
+
+        if (null != future)
+            future.cancel(true);
+    }
+
     private final class TransferHintsTask implements Runnable
     {
         private final HintsCatalog catalog;
@@ -137,11 +154,12 @@ final class HintsDispatchExecutor
         public void run()
         {
             UUID hostId = hostIdSupplier.get();
-            logger.info("Transferring all hints to {}", hostId);
+            InetAddress address = StorageService.instance.getEndpointForHostId(hostId);
+            logger.info("Transferring all hints to {}: {}", address, hostId);
             if (transfer(hostId))
                 return;
 
-            logger.warn("Failed to transfer all hints to {}; will retry in {} seconds", hostId, 10);
+            logger.warn("Failed to transfer all hints to {}: {}; will retry in {} seconds", address, hostId, 10);
 
             try
             {
@@ -153,10 +171,10 @@ final class HintsDispatchExecutor
             }
 
             hostId = hostIdSupplier.get();
-            logger.info("Transferring all hints to {}", hostId);
+            logger.info("Transferring all hints to {}: {}", address, hostId);
             if (!transfer(hostId))
             {
-                logger.error("Failed to transfer all hints to {}", hostId);
+                logger.error("Failed to transfer all hints to {}: {}", address, hostId);
                 throw new RuntimeException("Failed to transfer all hints to " + hostId);
             }
         }
@@ -249,9 +267,10 @@ final class HintsDispatchExecutor
         private boolean deliver(HintsDescriptor descriptor, InetAddress address)
         {
             File file = new File(hintsDirectory, descriptor.fileName());
-            Long offset = store.getDispatchOffset(descriptor).orElse(null);
+            InputPosition offset = store.getDispatchOffset(descriptor);
 
-            try (HintsDispatcher dispatcher = HintsDispatcher.create(file, rateLimiter, address, descriptor.hostId, isPaused))
+            BooleanSupplier shouldAbort = () -> !isAlive.apply(address) || isPaused.get();
+            try (HintsDispatcher dispatcher = HintsDispatcher.create(file, rateLimiter, address, descriptor.hostId, shouldAbort))
             {
                 if (offset != null)
                     dispatcher.seek(offset);
@@ -260,14 +279,14 @@ final class HintsDispatchExecutor
                 {
                     store.delete(descriptor);
                     store.cleanUp(descriptor);
-                    logger.info("Finished hinted handoff of file {} to endpoint {}", descriptor.fileName(), hostId);
+                    logger.info("Finished hinted handoff of file {} to endpoint {}: {}", descriptor.fileName(), address, hostId);
                     return true;
                 }
                 else
                 {
-                    store.markDispatchOffset(descriptor, dispatcher.dispatchOffset());
+                    store.markDispatchOffset(descriptor, dispatcher.dispatchPosition());
                     store.offerFirst(descriptor);
-                    logger.info("Finished hinted handoff of file {} to endpoint {}, partially", descriptor.fileName(), hostId);
+                    logger.info("Finished hinted handoff of file {} to endpoint {}: {}, partially", descriptor.fileName(), address, hostId);
                     return false;
                 }
             }

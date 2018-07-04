@@ -24,6 +24,7 @@ import com.google.common.base.Objects;
 import org.apache.cassandra.cql3.AssignmentTestable;
 import org.apache.cassandra.cql3.ColumnSpecification;
 import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.commons.lang3.text.StrBuilder;
 
 /**
  * Base class for our native/hardcoded functions.
@@ -89,7 +90,7 @@ public abstract class AbstractFunction implements Function
         // We should ignore the fact that the receiver type is frozen in our comparison as functions do not support
         // frozen types for return type
         AbstractType<?> returnType = returnType();
-        if (receiver.type.isFrozenCollection())
+        if (receiver.type.isFreezable() && !receiver.type.isMultiCell())
             returnType = returnType.freeze();
 
         if (receiver.type.equals(returnType))
@@ -114,5 +115,14 @@ public abstract class AbstractFunction implements Function
         }
         sb.append(") -> ").append(returnType.asCQL3Type());
         return sb.toString();
+    }
+
+    @Override
+    public String columnName(List<String> columnNames)
+    {
+        return new StrBuilder(name().toString()).append('(')
+                                                .appendWithSeparators(columnNames, ", ")
+                                                .append(')')
+                                                .toString();
     }
 }

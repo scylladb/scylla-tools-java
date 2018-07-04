@@ -36,18 +36,23 @@ import org.apache.cassandra.schema.IndexMetadata;
  * has no impact) and v the cell value.
  *
  * Such a cell is always indexed by this index (or rather, it is indexed if
+ * {@code 
  * n >= columnDef.componentIndex, which will always be the case in practice)
  * and it will generate (makeIndexColumnName()) an index entry whose:
  *   - row key will be ck_i (getIndexedValue()) where i == columnDef.componentIndex.
  *   - cell name will
  *       rk ck_0 ... ck_{i-1} ck_{i+1} ck_n
  *     where rk is the row key of the initial cell and i == columnDef.componentIndex.
+ * }
  */
 public class ClusteringColumnIndex extends CassandraIndex
 {
+    private final boolean enforceStrictLiveness;
+
     public ClusteringColumnIndex(ColumnFamilyStore baseCfs, IndexMetadata indexDef)
     {
         super(baseCfs, indexDef);
+        this.enforceStrictLiveness = baseCfs.metadata.enforceStrictLiveness();
     }
 
 
@@ -95,6 +100,6 @@ public class ClusteringColumnIndex extends CassandraIndex
 
     public boolean isStale(Row data, ByteBuffer indexValue, int nowInSec)
     {
-        return !data.hasLiveData(nowInSec);
+        return !data.hasLiveData(nowInSec, enforceStrictLiveness);
     }
 }

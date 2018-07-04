@@ -20,6 +20,7 @@ package org.apache.cassandra.dht;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
+import java.security.MessageDigest;
 import java.util.*;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -45,10 +46,46 @@ public class RandomPartitioner implements IPartitioner
     public static final BigIntegerToken MINIMUM = new BigIntegerToken("-1");
     public static final BigInteger MAXIMUM = new BigInteger("2").pow(127);
 
-    private static final int HEAP_SIZE = (int) ObjectSizes.measureDeep(new BigIntegerToken(FBUtilities.hashToBigInteger(ByteBuffer.allocate(1))));
+    /**
+     * Maintain a separate threadlocal message digest, exclusively for token hashing. This is necessary because
+     * when Tracing is enabled and using the default tracing implementation, creating the mutations for the trace
+     * events involves tokenizing the partition keys. This happens multiple times whilst servicing a ReadCommand,
+     * and so can interfere with the stateful digest calculation if the node is a replica producing a digest response.
+     */
+    private static final ThreadLocal<MessageDigest> localMD5Digest = new ThreadLocal<MessageDigest>()
+    {
+        @Override
+        protected MessageDigest initialValue()
+        {
+            return FBUtilities.newMessageDigest("MD5");
+        }
+
+        @Override
+        public MessageDigest get()
+        {
+            MessageDigest digest = super.get();
+            digest.reset();
+            return digest;
+        }
+    };
+
+    private static final int HEAP_SIZE = (int) ObjectSizes.measureDeep(new BigIntegerToken(hashToBigInteger(ByteBuffer.allocate(1))));
 
     public static final RandomPartitioner instance = new RandomPartitioner();
     public static final AbstractType<?> partitionOrdering = new PartitionerDefinedOrder(instance);
+
+    private final Splitter splitter = new Splitter(this)
+    {
+        public Token tokenForValue(BigInteger value)
+        {
+            return new BigIntegerToken(value);
+        }
+
+        public BigInteger valueForToken(Token token)
+        {
+            return ((BigIntegerToken)token).getTokenValue();
+        }
+    };
 
     public DecoratedKey decorateKey(ByteBuffer key)
     {
@@ -65,6 +102,32 @@ public class RandomPartitioner implements IPartitioner
         return new BigIntegerToken(midpair.left);
     }
 
+    public Token split(Token ltoken, Token rtoken, double ratioToLeft)
+    {
+        BigDecimal left = ltoken.equals(MINIMUM) ? BigDecimal.ZERO : new BigDecimal(((BigIntegerToken)ltoken).token),
+                   right = rtoken.equals(MINIMUM) ? BigDecimal.ZERO : new BigDecimal(((BigIntegerToken)rtoken).token),
+                   ratio = BigDecimal.valueOf(ratioToLeft);
+
+        BigInteger newToken;
+
+        if (left.compareTo(right) < 0)
+        {
+            newToken = right.subtract(left).multiply(ratio).add(left).toBigInteger();
+        }
+        else
+        {
+            // wrapping case
+            // L + ((R - min) + (max - L)) * ratio
+            BigDecimal max = new BigDecimal(MAXIMUM);
+
+            newToken = max.add(right).subtract(left).multiply(ratio).add(left).toBigInteger().mod(MAXIMUM);
+        }
+
+        assert isValidToken(newToken) : "Invalid tokens from split";
+
+        return new BigIntegerToken(newToken);
+    }
+
     public BigIntegerToken getMinimumToken()
     {
         return MINIMUM;
@@ -72,13 +135,26 @@ public class RandomPartitioner implements IPartitioner
 
     public BigIntegerToken getRandomToken()
     {
-        BigInteger token = FBUtilities.hashToBigInteger(GuidGenerator.guidAsBytes());
+        BigInteger token = hashToBigInteger(GuidGenerator.guidAsBytes());
         if ( token.signum() == -1 )
             token = token.multiply(BigInteger.valueOf(-1L));
         return new BigIntegerToken(token);
     }
 
-    private final Token.TokenFactory tokenFactory = new Token.TokenFactory() {
+    public BigIntegerToken getRandomToken(Random random)
+    {
+        BigInteger token = hashToBigInteger(GuidGenerator.guidAsBytes(random, "host/127.0.0.1", 0));
+        if ( token.signum() == -1 )
+            token = token.multiply(BigInteger.valueOf(-1L));
+        return new BigIntegerToken(token);
+    }
+
+    private boolean isValidToken(BigInteger token) {
+        return token.compareTo(ZERO) >= 0 && token.compareTo(MAXIMUM) <= 0;
+    }
+
+    private final Token.TokenFactory tokenFactory = new Token.TokenFactory()
+    {
         public ByteBuffer toByteArray(Token token)
         {
             BigIntegerToken bigIntegerToken = (BigIntegerToken) token;
@@ -100,11 +176,8 @@ public class RandomPartitioner implements IPartitioner
         {
             try
             {
-                BigInteger i = new BigInteger(token);
-                if (i.compareTo(ZERO) < 0)
-                    throw new ConfigurationException("Token must be >= 0");
-                if (i.compareTo(MAXIMUM) > 0)
-                    throw new ConfigurationException("Token must be <= 2**127");
+                if(!isValidToken(new BigInteger(token)))
+                    throw new ConfigurationException("Token must be >= 0 and <= 2**127");
             }
             catch (NumberFormatException e)
             {
@@ -139,7 +212,8 @@ public class RandomPartitioner implements IPartitioner
 
         // convenience method for testing
         @VisibleForTesting
-        public BigIntegerToken(String token) {
+        public BigIntegerToken(String token)
+        {
             this(new BigInteger(token));
         }
 
@@ -154,13 +228,27 @@ public class RandomPartitioner implements IPartitioner
         {
             return HEAP_SIZE;
         }
+
+        public Token increaseSlightly()
+        {
+            return new BigIntegerToken(token.add(BigInteger.ONE));
+        }
+
+        public double size(Token next)
+        {
+            BigIntegerToken n = (BigIntegerToken) next;
+            BigInteger v = n.token.subtract(token);  // Overflow acceptable and desired.
+            double d = Math.scalb(v.doubleValue(), -127); // Scale so that the full range is 1.
+            return d > 0.0 ? d : (d + 1.0); // Adjust for signed long, also making sure t.size(t) == 1.
+        }
     }
 
     public BigIntegerToken getToken(ByteBuffer key)
     {
         if (key.remaining() == 0)
             return MINIMUM;
-        return new BigIntegerToken(FBUtilities.hashToBigInteger(key));
+
+        return new BigIntegerToken(hashToBigInteger(key));
     }
 
     public Map<Token, Float> describeOwnership(List<Token> sortedTokens)
@@ -171,17 +259,20 @@ public class RandomPartitioner implements IPartitioner
         // 0-case
         if (!i.hasNext()) { throw new RuntimeException("No nodes present in the cluster. Has this node finished starting up?"); }
         // 1-case
-        if (sortedTokens.size() == 1) {
+        if (sortedTokens.size() == 1)
+        {
             ownerships.put(i.next(), new Float(1.0));
         }
         // n-case
-        else {
+        else
+        {
             // NOTE: All divisions must take place in BigDecimals, and all modulo operators must take place in BigIntegers.
             final BigInteger ri = MAXIMUM;                                                  //  (used for addition later)
             final BigDecimal r  = new BigDecimal(ri);                                       // The entire range, 2**127
             Token start = i.next(); BigInteger ti = ((BigIntegerToken)start).token;  // The first token and its value
             Token t; BigInteger tim1 = ti;                                                  // The last token and its value (after loop)
-            while (i.hasNext()) {
+            while (i.hasNext())
+            {
                 t = i.next(); ti = ((BigIntegerToken)t).token;                                      // The next token and its value
                 float x = new BigDecimal(ti.subtract(tim1).add(ri).mod(ri)).divide(r).floatValue(); // %age = ((T(i) - T(i-1) + R) % R) / R
                 ownerships.put(t, x);                                                               // save (T(i) -> %age)
@@ -194,6 +285,11 @@ public class RandomPartitioner implements IPartitioner
         return ownerships;
     }
 
+    public Token getMaximumToken()
+    {
+        return new BigIntegerToken(MAXIMUM);
+    }
+
     public AbstractType<?> getTokenValidator()
     {
         return IntegerType.instance;
@@ -202,5 +298,21 @@ public class RandomPartitioner implements IPartitioner
     public AbstractType<?> partitionOrdering()
     {
         return partitionOrdering;
+    }
+
+    public Optional<Splitter> splitter()
+    {
+        return Optional.of(splitter);
+    }
+
+    private static BigInteger hashToBigInteger(ByteBuffer data)
+    {
+        MessageDigest messageDigest = localMD5Digest.get();
+        if (data.hasArray())
+            messageDigest.update(data.array(), data.arrayOffset() + data.position(), data.remaining());
+        else
+            messageDigest.update(data.duplicate());
+
+        return new BigInteger(messageDigest.digest()).abs();
     }
 }

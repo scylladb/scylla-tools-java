@@ -17,7 +17,7 @@
  * specific language governing permissions and limitations
  * under the License.
  *
-*/
+ */
 package org.apache.cassandra.db.transform;
 
 import org.apache.cassandra.config.CFMetaData;
@@ -33,11 +33,13 @@ implements BaseRowIterator<R>
 {
 
     private Row staticRow;
+    private DecoratedKey partitionKey;
 
     public BaseRows(I input)
     {
         super(input);
         staticRow = input.staticRow();
+        partitionKey = input.partitionKey();
     }
 
     // swap parameter order to avoid casting errors
@@ -45,6 +47,7 @@ implements BaseRowIterator<R>
     {
         super(copyFrom);
         staticRow = copyFrom.staticRow;
+        partitionKey = copyFrom.partitionKey();
     }
 
     public CFMetaData metadata()
@@ -105,6 +108,7 @@ implements BaseRowIterator<R>
         if (staticRow != null)
             staticRow = transformation.applyToStatic(staticRow);
         next = applyOne(next, transformation);
+        partitionKey = transformation.applyToPartitionKey(partitionKey);
     }
 
     @Override
@@ -126,7 +130,7 @@ implements BaseRowIterator<R>
             Transformation[] fs = stack;
             int len = length;
 
-            while (!stop.isSignalled && input.hasNext())
+            while (!stop.isSignalled && !stopChild.isSignalled && input.hasNext())
             {
                 Unfiltered next = input.next();
 
@@ -152,7 +156,7 @@ implements BaseRowIterator<R>
                 }
             }
 
-            if (stop.isSignalled || !hasMoreContents())
+            if (stop.isSignalled || stopChild.isSignalled || !hasMoreContents())
                 return false;
         }
         return true;

@@ -25,12 +25,11 @@ import java.security.SecureRandom;
 import java.util.Collection;
 import java.util.Random;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.TimeUnit;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Charsets;
 import com.google.common.primitives.Ints;
-
 
 /**
  * The goods are here: www.ietf.org/rfc/rfc4122.txt.
@@ -60,7 +59,7 @@ public class UUIDGen
     // placement of this singleton is important.  It needs to be instantiated *AFTER* the other statics.
     private static final UUIDGen instance = new UUIDGen();
 
-    private long lastNanos;
+    private AtomicLong lastNanos = new AtomicLong();
 
     private UUIDGen()
     {
@@ -140,6 +139,15 @@ public class UUIDGen
     public static UUID getUUID(ByteBuffer raw)
     {
         return new UUID(raw.getLong(raw.position()), raw.getLong(raw.position() + 8));
+    }
+
+    public static ByteBuffer toByteBuffer(UUID uuid)
+    {
+        ByteBuffer buffer = ByteBuffer.allocate(16);
+        buffer.putLong(uuid.getMostSignificantBits());
+        buffer.putLong(uuid.getLeastSignificantBits());
+        buffer.flip();
+        return buffer;
     }
 
     /** decomposes a uuid into raw bytes. */
@@ -225,7 +233,8 @@ public class UUIDGen
      * @param timestamp milliseconds since Unix epoch
      * @return
      */
-    private static long fromUnixTimestamp(long timestamp) {
+    private static long fromUnixTimestamp(long timestamp)
+    {
         return fromUnixTimestamp(timestamp, 0L);
     }
 
@@ -239,7 +248,7 @@ public class UUIDGen
      * of a type 1 UUID (a time-based UUID).
      *
      * To specify a 100-nanoseconds precision timestamp, one should provide a milliseconds timestamp and
-     * a number 0 <= n < 10000 such that n*100 is the number of nanoseconds within that millisecond.
+     * a number {@code 0 <= n < 10000} such that n*100 is the number of nanoseconds within that millisecond.
      *
      * <p><i><b>Warning:</b> This method is not guaranteed to return unique UUIDs; Multiple
      * invocations using identical timestamps will result in identical UUIDs.</i></p>
@@ -294,15 +303,31 @@ public class UUIDGen
 
     // needs to return two different values for the same when.
     // we can generate at most 10k UUIDs per ms.
-    private synchronized long createTimeSafe()
+    private long createTimeSafe()
     {
-        long nanosSince = (System.currentTimeMillis() - START_EPOCH) * 10000;
-        if (nanosSince > lastNanos)
-            lastNanos = nanosSince;
-        else
-            nanosSince = ++lastNanos;
-
-        return createTime(nanosSince);
+        long newLastNanos;
+        while (true)
+        {
+            //Generate a candidate value for new lastNanos
+            newLastNanos = (System.currentTimeMillis() - START_EPOCH) * 10000;
+            long originalLastNanos = lastNanos.get();
+            if (newLastNanos > originalLastNanos)
+            {
+                //Slow path once per millisecond do a CAS
+                if (lastNanos.compareAndSet(originalLastNanos, newLastNanos))
+                {
+                    break;
+                }
+            }
+            else
+            {
+                //Fast path do an atomic increment
+                //Or when falling behind this will move time forward past the clock if necessary
+                newLastNanos = lastNanos.incrementAndGet();
+                break;
+            }
+        }
+        return createTime(newLastNanos);
     }
 
     private long createTimeUnsafe(long when, int nanos)
@@ -360,7 +385,7 @@ public class UUIDGen
                 messageDigest.update(addr.getAddress());
 
             // Identify the process on the load: we use both the PID and class loader hash.
-            long pid = SigarLibrary.instance.getPid();
+            long pid = NativeLibrary.getProcessID();
             if (pid < 0)
                 pid = new Random(System.currentTimeMillis()).nextLong();
             FBUtilities.updateWithLong(messageDigest, pid);

@@ -56,8 +56,8 @@ import com.google.common.util.concurrent.Uninterruptibles;
  * Slightly modified version of the Apache Thrift TThreadPoolServer.
  * <p>
  * This allows passing an executor so you have more control over the actual
- * behaviour of the tasks being run.
- * <p/>
+ * behavior of the tasks being run.
+ * </p>
  * Newer version of Thrift should make this obsolete.
  */
 public class CustomTThreadPoolServer extends TServer
@@ -75,13 +75,16 @@ public class CustomTThreadPoolServer extends TServer
     private final TThreadPoolServer.Args args;
 
     //Track and Limit the number of connected clients
-    private final AtomicInteger activeClients = new AtomicInteger(0);
+    private final AtomicInteger activeClients;
 
 
-    public CustomTThreadPoolServer(TThreadPoolServer.Args args, ExecutorService executorService) {
+    public CustomTThreadPoolServer(TThreadPoolServer.Args args, ExecutorService executorService)
+    {
         super(args);
         this.executorService = executorService;
+        this.stopped = false;
         this.args = args;
+        this.activeClients = new AtomicInteger(0);
     }
 
     @SuppressWarnings("resource")
@@ -97,7 +100,6 @@ public class CustomTThreadPoolServer extends TServer
             return;
         }
 
-        stopped = false;
         while (!stopped)
         {
             // block until we are under max clients
@@ -256,8 +258,7 @@ public class CustomTThreadPoolServer extends TServer
                     SSLServerSocket sslServerSocket = (SSLServerSocket) sslServer.getServerSocket();
                     String[] suites = SSLFactory.filterCipherSuites(sslServerSocket.getSupportedCipherSuites(), clientEnc.cipher_suites);
                     sslServerSocket.setEnabledCipherSuites(suites);
-                    sslServerSocket.setEnabledProtocols(SSLFactory.ACCEPTED_PROTOCOLS);
-                    serverTransport = new TCustomServerSocket(sslServer.getServerSocket(), args.keepAlive, args.sendBufferSize, args.recvBufferSize);
+                    serverTransport = new TCustomServerSocket(sslServerSocket, args.keepAlive, args.sendBufferSize, args.recvBufferSize);
                 }
                 else
                 {

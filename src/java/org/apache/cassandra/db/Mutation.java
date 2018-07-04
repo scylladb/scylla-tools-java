@@ -38,15 +38,12 @@ import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.utils.ByteBufferUtil;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 // TODO convert this to a Builder pattern instead of encouraging M.add directly,
 // which is less-efficient since we have to keep a mutable HashMap around
 public class Mutation implements IMutation
 {
     public static final MutationSerializer serializer = new MutationSerializer();
-    private static final Logger logger = LoggerFactory.getLogger(Mutation.class);
 
     public static final String FORWARD_TO = "FWD_TO";
     public static final String FORWARD_FROM = "FWD_FRM";
@@ -64,6 +61,8 @@ public class Mutation implements IMutation
     // keep track of when mutation has started waiting for a MV partition lock
     public final AtomicLong viewLockAcquireStart = new AtomicLong(0);
 
+    private boolean cdcEnabled = false;
+
     public Mutation(String keyspaceName, DecoratedKey key)
     {
         this(keyspaceName, key, new HashMap<>());
@@ -79,6 +78,8 @@ public class Mutation implements IMutation
         this.keyspaceName = keyspaceName;
         this.key = key;
         this.modifications = modifications;
+        for (PartitionUpdate pu : modifications.values())
+            cdcEnabled |= pu.metadata().params.cdc;
     }
 
     public Mutation copy()
@@ -93,6 +94,11 @@ public class Mutation implements IMutation
 
         Mutation copy = copy();
         copy.modifications.keySet().removeAll(cfIds);
+
+        copy.cdcEnabled = false;
+        for (PartitionUpdate pu : modifications.values())
+            copy.cdcEnabled |= pu.metadata().params.cdc;
+
         return copy;
     }
 
@@ -126,10 +132,21 @@ public class Mutation implements IMutation
         return modifications.get(cfId);
     }
 
+    /**
+     * Adds PartitionUpdate to the local set of modifications.
+     * Assumes no updates for the Table this PartitionUpdate impacts.
+     *
+     * @param update PartitionUpdate to append to Modifications list
+     * @return Mutation this mutation
+     * @throws IllegalArgumentException If PartitionUpdate for duplicate table is passed as argument
+     */
     public Mutation add(PartitionUpdate update)
     {
         assert update != null;
         assert update.partitionKey().getPartitioner() == key.getPartitioner();
+
+        cdcEnabled |= update.metadata().params.cdc;
+
         PartitionUpdate prev = modifications.put(update.metadata().cfId, update);
         if (prev != null)
             // developer error
@@ -199,27 +216,20 @@ public class Mutation implements IMutation
         return new Mutation(ks, key, modifications);
     }
 
-    private CompletableFuture<?> applyFuture(boolean durableWrites)
-    {
-        Keyspace ks = Keyspace.open(keyspaceName);
-        return ks.apply(this, durableWrites);
-    }
-
     public CompletableFuture<?> applyFuture()
     {
-        return applyFuture(Keyspace.open(keyspaceName).getMetadata().params.durableWrites);
+        Keyspace ks = Keyspace.open(keyspaceName);
+        return ks.applyFuture(this, Keyspace.open(keyspaceName).getMetadata().params.durableWrites, true);
+    }
+
+    public void apply(boolean durableWrites, boolean isDroppable)
+    {
+        Keyspace.open(keyspaceName).apply(this, durableWrites, true, isDroppable);
     }
 
     public void apply(boolean durableWrites)
     {
-        try
-        {
-            Uninterruptibles.getUninterruptibly(applyFuture(durableWrites));
-        }
-        catch (ExecutionException e)
-        {
-            throw Throwables.propagate(e.getCause());
-        }
+        apply(durableWrites, true);
     }
 
     /*
@@ -259,6 +269,11 @@ public class Mutation implements IMutation
         return gcgs;
     }
 
+    public boolean trackedByCDC()
+    {
+        return cdcEnabled;
+    }
+
     public String toString()
     {
         return toString(false);
@@ -272,7 +287,7 @@ public class Mutation implements IMutation
         buff.append(", modifications=[");
         if (shallow)
         {
-            List<String> cfnames = new ArrayList<String>(modifications.size());
+            List<String> cfnames = new ArrayList<>(modifications.size());
             for (UUID cfid : modifications.keySet())
             {
                 CFMetaData cfm = Schema.instance.getCFMetaData(cfid);
@@ -282,9 +297,75 @@ public class Mutation implements IMutation
         }
         else
         {
-            buff.append("\n  ").append(StringUtils.join(modifications.values(), "\n  ")).append("\n");
+            buff.append("\n  ").append(StringUtils.join(modifications.values(), "\n  ")).append('\n');
         }
         return buff.append("])").toString();
+    }
+
+    /**
+     * Creates a new simple mutuation builder.
+     *
+     * @param keyspaceName the name of the keyspace this is a mutation for.
+     * @param partitionKey the key of partition this if a mutation for.
+     * @return a newly created builder.
+     */
+    public static SimpleBuilder simpleBuilder(String keyspaceName, DecoratedKey partitionKey)
+    {
+        return new SimpleBuilders.MutationBuilder(keyspaceName, partitionKey);
+    }
+
+    /**
+     * Interface for building mutations geared towards human.
+     * <p>
+     * This should generally not be used when performance matters too much, but provides a more convenient interface to
+     * build a mutation than using the class constructor when performance is not of the utmost importance.
+     */
+    public interface SimpleBuilder
+    {
+        /**
+         * Sets the timestamp to use for the following additions to this builder or any derived (update or row) builder.
+         *
+         * @param timestamp the timestamp to use for following additions. If that timestamp hasn't been set, the current
+         * time in microseconds will be used.
+         * @return this builder.
+         */
+        public SimpleBuilder timestamp(long timestamp);
+
+        /**
+         * Sets the ttl to use for the following additions to this builder or any derived (update or row) builder.
+         * <p>
+         * Note that the for non-compact tables, this method must be called before any column addition for this
+         * ttl to be used for the row {@code LivenessInfo}.
+         *
+         * @param ttl the ttl to use for following additions. If that ttl hasn't been set, no ttl will be used.
+         * @return this builder.
+         */
+        public SimpleBuilder ttl(int ttl);
+
+        /**
+         * Adds an update for table identified by the provided metadata and return a builder for that partition.
+         *
+         * @param metadata the metadata of the table for which to add an update.
+         * @return a builder for the partition identified by {@code metadata} (and the partition key for which this is a
+         * mutation of).
+         */
+        public PartitionUpdate.SimpleBuilder update(CFMetaData metadata);
+
+        /**
+         * Adds an update for table identified by the provided name and return a builder for that partition.
+         *
+         * @param tableName the name of the table for which to add an update.
+         * @return a builder for the partition identified by {@code metadata} (and the partition key for which this is a
+         * mutation of).
+         */
+        public PartitionUpdate.SimpleBuilder update(String tableName);
+
+        /**
+         * Build the mutation represented by this builder.
+         *
+         * @return the built mutation.
+         */
+        public Mutation build();
     }
 
     public static class MutationSerializer implements IVersionedSerializer<Mutation>

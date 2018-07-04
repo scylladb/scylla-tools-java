@@ -18,7 +18,6 @@
 package org.apache.cassandra.thrift;
 
 import java.util.*;
-import java.util.regex.Matcher;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
@@ -27,6 +26,7 @@ import com.google.common.collect.Maps;
 import org.apache.cassandra.config.*;
 import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.cql3.Operator;
+import org.apache.cassandra.cql3.SuperColumnCompatibility;
 import org.apache.cassandra.cql3.statements.IndexTarget;
 import org.apache.cassandra.db.CompactTables;
 import org.apache.cassandra.db.LegacyLayout;
@@ -35,7 +35,7 @@ import org.apache.cassandra.db.compaction.AbstractCompactionStrategy;
 import org.apache.cassandra.db.filter.RowFilter;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.exceptions.*;
-import org.apache.cassandra.index.internal.CassandraIndex;
+import org.apache.cassandra.index.TargetParser;
 import org.apache.cassandra.io.compress.ICompressor;
 import org.apache.cassandra.locator.AbstractReplicationStrategy;
 import org.apache.cassandra.locator.LocalStrategy;
@@ -194,7 +194,7 @@ public class ThriftConversion
     private static boolean isSuper(String thriftColumnType)
     throws org.apache.cassandra.exceptions.InvalidRequestException
     {
-        switch (thriftColumnType.toLowerCase())
+        switch (thriftColumnType.toLowerCase(Locale.ENGLISH))
         {
             case "standard": return false;
             case "super": return true;
@@ -273,7 +273,8 @@ public class ThriftConversion
                                       hasKeyAlias ? null : keyValidator,
                                       rawComparator,
                                       subComparator,
-                                      defaultValidator);
+                                      defaultValidator,
+                                      isDense);
             }
 
             // We do not allow Thrift views, so we always set it to false
@@ -368,7 +369,8 @@ public class ThriftConversion
                                               AbstractType<?> keyValidator,
                                               AbstractType<?> comparator,
                                               AbstractType<?> subComparator,
-                                              AbstractType<?> defaultValidator)
+                                              AbstractType<?> defaultValidator,
+                                              boolean isDense)
     {
         CompactTables.DefaultNames names = CompactTables.defaultNameGenerator(defs);
         if (keyValidator != null)
@@ -389,7 +391,12 @@ public class ThriftConversion
         {
             // SuperColumn tables: we use a special map to hold dynamic values within a given super column
             defs.add(ColumnDefinition.clusteringDef(ks, cf, names.defaultClusteringName(), comparator, 0));
-            defs.add(ColumnDefinition.regularDef(ks, cf, CompactTables.SUPER_COLUMN_MAP_COLUMN_STR, MapType.getInstance(subComparator, defaultValidator, true)));
+            defs.add(ColumnDefinition.regularDef(ks, cf, SuperColumnCompatibility.SUPER_COLUMN_MAP_COLUMN_STR, MapType.getInstance(subComparator, defaultValidator, true)));
+            if (isDense)
+            {
+                defs.add(ColumnDefinition.clusteringDef(ks, cf, names.defaultClusteringName(), subComparator, 1));
+                defs.add(ColumnDefinition.regularDef(ks, cf, names.defaultCompactValueName(), defaultValidator));
+            }
         }
         else
         {
@@ -591,7 +598,7 @@ public class ThriftConversion
         IndexMetadata matchedIndex = null;
         for (IndexMetadata index : cfMetaData.getIndexes())
         {
-            Pair<ColumnDefinition, IndexTarget.Type> target  = CassandraIndex.parseTarget(cfMetaData, index);
+            Pair<ColumnDefinition, IndexTarget.Type> target  = TargetParser.parse(cfMetaData, index);
             if (target.left.equals(column))
             {
                 // we already found an index for this column, we've no option but to
@@ -676,7 +683,7 @@ public class ThriftConversion
 
     private static CachingParams cachingFromTrhfit(String caching)
     {
-        switch (caching.toUpperCase())
+        switch (caching.toUpperCase(Locale.ENGLISH))
         {
             case "ALL":
                 return CachingParams.CACHE_EVERYTHING;

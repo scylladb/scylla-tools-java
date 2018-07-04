@@ -17,12 +17,15 @@
  */
 package org.apache.cassandra.db.rows;
 
+import java.nio.ByteBuffer;
 import java.security.MessageDigest;
+import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.transform.Transformation;
 import org.apache.cassandra.utils.FBUtilities;
 
@@ -35,7 +38,7 @@ public abstract class RowIterators
 
     private RowIterators() {}
 
-    public static void digest(RowIterator iterator, MessageDigest digest)
+    public static void digest(RowIterator iterator, MessageDigest digest, MessageDigest altDigest, Set<ByteBuffer> columnsToExclude)
     {
         // TODO: we're not computing digest the same way that old nodes. This is
         // currently ok as this is only used for schema digest and the is no exchange
@@ -47,8 +50,39 @@ public abstract class RowIterators
         FBUtilities.updateWithBoolean(digest, iterator.isReverseOrder());
         iterator.staticRow().digest(digest);
 
+        if (altDigest != null)
+        {
+            // Compute the "alternative digest" here.
+            altDigest.update(iterator.partitionKey().getKey().duplicate());
+            iterator.columns().regulars.digest(altDigest, columnsToExclude);
+            iterator.columns().statics.digest(altDigest, columnsToExclude);
+            FBUtilities.updateWithBoolean(altDigest, iterator.isReverseOrder());
+            iterator.staticRow().digest(altDigest, columnsToExclude);
+        }
+
         while (iterator.hasNext())
-            iterator.next().digest(digest);
+        {
+            Row row = iterator.next();
+            row.digest(digest);
+            if (altDigest != null)
+                row.digest(altDigest, columnsToExclude);
+        }
+    }
+
+    /**
+     * Filter the provided iterator to only include cells that are selected by the user.
+     *
+     * @param iterator the iterator to filter.
+     * @param filter the {@code ColumnFilter} to use when deciding which cells are queried by the user. This should be the filter
+     * that was used when querying {@code iterator}.
+     * @return the filtered iterator..
+     */
+    public static RowIterator withOnlyQueriedData(RowIterator iterator, ColumnFilter filter)
+    {
+        if (filter.allFetchedColumnsAreQueried())
+            return iterator;
+
+        return Transformation.apply(iterator, new WithOnlyQueriedData(filter));
     }
 
     /**

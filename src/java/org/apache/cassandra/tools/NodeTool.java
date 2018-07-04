@@ -65,6 +65,7 @@ public class NodeTool
                 // Remove until proven otherwise: Verify.class,
                 Flush.class,
                 // Remove for GA: UpgradeSSTable.class,
+                // Remove until supported: GarbageCollect.class,
                 // Remove for GA: DisableAutoCompaction.class,
                 // Remove for GA: EnableAutoCompaction.class,
                 CompactionStats.class,
@@ -80,13 +81,8 @@ public class NodeTool
                 // Remove for GA: GcStats.class,
                 // Remove for GA: GetCompactionThreshold.class,
                 // Remove for GA: GetCompactionThroughput.class,
+                // Remove until known: GetTimeout.class,
                 // Remove for GA: GetStreamThroughput.class,
-                // Remove until proven otherwise: EnableHandoff.class,
-                // Remove until proven otherwise: EnableThrift.class,
-                // Remove until proven otherwise: GcStats.class,
-                // Remove until proven otherwise: GetCompactionThreshold.class,
-                // Remove until proven otherwise: GetCompactionThroughput.class,
-                // Remove until proven otherwise: GetStreamThroughput.class,
                 // Remove until proven otherwise: GetTraceProbability.class,
                 // Remove until proven otherwise: GetInterDCStreamThroughput.class,
                 GetEndpoints.class,
@@ -106,11 +102,6 @@ public class NodeTool
                 RemoveNode.class,
                 // Remove until proven otherwise: Assassinate.class,
                 Repair.class,
-                // Remove for GA: SetCacheCapacity.class,
-                // Remove for GA: SetHintedHandoffThrottleInKB.class,
-                // Remove for GA: SetCompactionThreshold.class,
-                // Remove for GA: SetCompactionThroughput.class,
-                // Remove for GA: SetStreamThroughput.class,
                 // Remove until proven otherwise: ReplayBatchlog.class,
                 // Remove until proven otherwise: SetCacheCapacity.class,
                 // Remove until proven otherwise: SetHintedHandoffThrottleInKB.class,
@@ -118,6 +109,9 @@ public class NodeTool
                 // Remove until proven otherwise: SetCompactionThroughput.class,
                 // Remove until proven otherwise: SetStreamThroughput.class,
                 // Remove until proven otherwise: SetInterDCStreamThroughput.class,
+                // Remove until proven otherwise: GetConcurrentCompactors.class,
+                // Remove until proven otherwise: SetConcurrentCompactors.class,
+                // Remove until proven otherwise: SetTimeout.class,
                 SetTraceProbability.class,
                 Snapshot.class,
                 ListSnapshots.class,
@@ -137,6 +131,7 @@ public class NodeTool
                 DisableBackup.class,
                 // Remove for GA: ResetLocalSchema.class,
                 // Remove for GA: ReloadTriggers.class,
+                // Remove until proven otherwise: ReloadTriggers.class,
                 // Remove for GA: SetCacheKeysToSave.class,
                 // Remove for GA: DisableThrift.class,
                 // Remove for GA: DisableHandoff.class,
@@ -150,6 +145,7 @@ public class NodeTool
                 // Remove until proven otherwise: EnableHintsForDC.class,
                 // Remove until proven otherwise: FailureDetectorInfo.class,
                 // Remove until proven otherwise: RefreshSizeEstimates.class
+                // Remove until proven otherwise: RelocateSSTables.class,
                 ViewBuildStatus.class
         );
 
@@ -323,7 +319,7 @@ public class NodeTool
                     nodeClient = new NodeProbe(host, parseInt(port));
                 else
                     nodeClient = new NodeProbe(host, parseInt(port), username, password);
-            } catch (IOException e)
+            } catch (IOException | SecurityException e)
             {
                 Throwable rootCause = Throwables.getRootCause(e);
                 System.err.println(format("nodetool: Failed to connect to '%s:%s' - %s: '%s'.", host, port, rootCause.getClass().getSimpleName(), rootCause.getMessage()));
@@ -340,7 +336,7 @@ public class NodeTool
 
         protected List<String> parseOptionalKeyspace(List<String> cmdArgs, NodeProbe nodeProbe)
         {
-            return parseOptionalKeyspace(cmdArgs, nodeProbe, KeyspaceSet.NON_SYSTEM);
+            return parseOptionalKeyspace(cmdArgs, nodeProbe, KeyspaceSet.ALL);
         }
 
         protected List<String> parseOptionalKeyspace(List<String> cmdArgs, NodeProbe nodeProbe, KeyspaceSet defaultKeyspaceSet)

@@ -28,6 +28,8 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
@@ -39,8 +41,10 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 
 import org.cliffc.high_scale_lib.NonBlockingHashMap;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import org.apache.cassandra.concurrent.ExecutorLocals;
 import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.concurrent.Stage;
@@ -54,6 +58,7 @@ import org.apache.cassandra.dht.AbstractBounds;
 import org.apache.cassandra.dht.BootStrapper;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.exceptions.RequestFailureReason;
 import org.apache.cassandra.gms.EchoMessage;
 import org.apache.cassandra.gms.GossipDigestAck;
 import org.apache.cassandra.gms.GossipDigestAck2;
@@ -65,8 +70,10 @@ import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.locator.ILatencySubscriber;
+import org.apache.cassandra.metrics.CassandraMetricsRegistry;
 import org.apache.cassandra.metrics.ConnectionMetrics;
 import org.apache.cassandra.metrics.DroppedMessageMetrics;
+import org.apache.cassandra.metrics.MessagingMetrics;
 import org.apache.cassandra.repair.messages.RepairMessage;
 import org.apache.cassandra.security.SSLFactory;
 import org.apache.cassandra.service.*;
@@ -79,6 +86,10 @@ import org.apache.cassandra.utils.concurrent.SimpleCondition;
 
 public final class MessagingService implements MessagingServiceMBean
 {
+    // Required to allow schema migrations while upgrading within the minor 3.0.x/3.x versions to 3.11+.
+    // See CASSANDRA-13004 for details.
+    public final static boolean FORCE_3_0_PROTOCOL_VERSION = Boolean.getBoolean("cassandra.force_3_0_protocol_version");
+
     public static final String MBEAN_NAME = "org.apache.cassandra.net:type=MessagingService";
 
     // 8 bits version, so don't waste versions
@@ -87,11 +98,13 @@ public final class MessagingService implements MessagingServiceMBean
     public static final int VERSION_21 = 8;
     public static final int VERSION_22 = 9;
     public static final int VERSION_30 = 10;
-    public static final int current_version = VERSION_30;
+    public static final int VERSION_3014 = 11;
+    public static final int current_version = FORCE_3_0_PROTOCOL_VERSION ? VERSION_30 : VERSION_3014;
 
     public static final String FAILURE_CALLBACK_PARAM = "CAL_BAC";
     public static final byte[] ONE_BYTE = new byte[1];
     public static final String FAILURE_RESPONSE_PARAM = "FAIL";
+    public static final String FAILURE_REASON_PARAM = "FAIL_REASON";
 
     /**
      * we preface every message with this number so the recipient can validate the sender is sane
@@ -101,19 +114,63 @@ public final class MessagingService implements MessagingServiceMBean
     private boolean allNodesAtLeast22 = true;
     private boolean allNodesAtLeast30 = true;
 
+    public final MessagingMetrics metrics = new MessagingMetrics();
+
     /* All verb handler identifiers */
     public enum Verb
     {
-        MUTATION,
-        HINT,
-        READ_REPAIR,
-        READ,
+        MUTATION
+        {
+            public long getTimeout()
+            {
+                return DatabaseDescriptor.getWriteRpcTimeout();
+            }
+        },
+        HINT
+        {
+            public long getTimeout()
+            {
+                return DatabaseDescriptor.getWriteRpcTimeout();
+            }
+        },
+        READ_REPAIR
+        {
+            public long getTimeout()
+            {
+                return DatabaseDescriptor.getWriteRpcTimeout();
+            }
+        },
+        READ
+        {
+            public long getTimeout()
+            {
+                return DatabaseDescriptor.getReadRpcTimeout();
+            }
+        },
         REQUEST_RESPONSE, // client-initiated reads and writes
-        BATCH_STORE,  // was @Deprecated STREAM_INITIATE,
-        BATCH_REMOVE, // was @Deprecated STREAM_INITIATE_DONE,
+        BATCH_STORE
+        {
+            public long getTimeout()
+            {
+                return DatabaseDescriptor.getWriteRpcTimeout();
+            }
+        },  // was @Deprecated STREAM_INITIATE,
+        BATCH_REMOVE
+        {
+            public long getTimeout()
+            {
+                return DatabaseDescriptor.getWriteRpcTimeout();
+            }
+        }, // was @Deprecated STREAM_INITIATE_DONE,
         @Deprecated STREAM_REPLY,
         @Deprecated STREAM_REQUEST,
-        RANGE_SLICE,
+        RANGE_SLICE
+        {
+            public long getTimeout()
+            {
+                return DatabaseDescriptor.getRangeRpcTimeout();
+            }
+        },
         @Deprecated BOOTSTRAP_TOKEN,
         @Deprecated TREE_REQUEST,
         @Deprecated TREE_RESPONSE,
@@ -123,12 +180,24 @@ public final class MessagingService implements MessagingServiceMBean
         GOSSIP_DIGEST_ACK2,
         @Deprecated DEFINITIONS_ANNOUNCE,
         DEFINITIONS_UPDATE,
-        TRUNCATE,
+        TRUNCATE
+        {
+            public long getTimeout()
+            {
+                return DatabaseDescriptor.getTruncateRpcTimeout();
+            }
+        },
         SCHEMA_CHECK,
         @Deprecated INDEX_SCAN,
         REPLICATION_FINISHED,
         INTERNAL_RESPONSE, // responses to internal calls
-        COUNTER_MUTATION,
+        COUNTER_MUTATION
+        {
+            public long getTimeout()
+            {
+                return DatabaseDescriptor.getCounterWriteRpcTimeout();
+            }
+        },
         @Deprecated STREAMING_REPAIR_REQUEST,
         @Deprecated STREAMING_REPAIR_RESPONSE,
         SNAPSHOT, // Similar to nt snapshot
@@ -137,18 +206,65 @@ public final class MessagingService implements MessagingServiceMBean
         _TRACE, // dummy verb so we can use MS.droppedMessagesMap
         ECHO,
         REPAIR_MESSAGE,
-        PAXOS_PREPARE,
-        PAXOS_PROPOSE,
-        PAXOS_COMMIT,
-        @Deprecated PAGED_RANGE,
-        // remember to add new verbs at the end, since we serialize by ordinal
-        UNUSED_1,
+        PAXOS_PREPARE
+        {
+            public long getTimeout()
+            {
+                return DatabaseDescriptor.getWriteRpcTimeout();
+            }
+        },
+        PAXOS_PROPOSE
+        {
+            public long getTimeout()
+            {
+                return DatabaseDescriptor.getWriteRpcTimeout();
+            }
+        },
+        PAXOS_COMMIT
+        {
+            public long getTimeout()
+            {
+                return DatabaseDescriptor.getWriteRpcTimeout();
+            }
+        },
+        @Deprecated PAGED_RANGE
+        {
+            public long getTimeout()
+            {
+                return DatabaseDescriptor.getRangeRpcTimeout();
+            }
+        },
+        PING,
+        // UNUSED verbs were used as padding for backward/forward compatability before 4.0,
+        // but it wasn't quite as bullet/future proof as needed. We still need to keep these entries
+        // around, at least for a major rev or two (post-4.0). see CASSANDRA-13993 for a discussion.
+        // For now, though, the UNUSED are legacy values (placeholders, basically) that should only be used
+        // for correctly adding VERBs that need to be emergency additions to 3.0/3.11.
+        // We can reclaim them (their id's, to be correct) in future versions, if desired, though.
         UNUSED_2,
         UNUSED_3,
         UNUSED_4,
         UNUSED_5,
         ;
+        // remember to add new verbs at the end, since we serialize by ordinal
+
+        // This is to support a "late" choice of the verb based on the messaging service version.
+        // See CASSANDRA-12249 for more details.
+        public static Verb convertForMessagingServiceVersion(Verb verb, int version)
+        {
+            if (verb == PAGED_RANGE && version >= VERSION_30)
+                return RANGE_SLICE;
+
+            return verb;
+        }
+
+        public long getTimeout()
+        {
+            return DatabaseDescriptor.getRpcTimeout();
+        }
     }
+
+    public static final Verb[] verbValues = Verb.values();
 
     public static final EnumMap<MessagingService.Verb, Stage> verbStages = new EnumMap<MessagingService.Verb, Stage>(MessagingService.Verb.class)
     {{
@@ -194,9 +310,10 @@ public final class MessagingService implements MessagingServiceMBean
         put(Verb.SNAPSHOT, Stage.MISC);
         put(Verb.ECHO, Stage.GOSSIP);
 
-        put(Verb.UNUSED_1, Stage.INTERNAL_RESPONSE);
         put(Verb.UNUSED_2, Stage.INTERNAL_RESPONSE);
         put(Verb.UNUSED_3, Stage.INTERNAL_RESPONSE);
+
+        put(Verb.PING, Stage.READ);
     }};
 
     /**
@@ -208,7 +325,7 @@ public final class MessagingService implements MessagingServiceMBean
      * intermediary byte[] (See CASSANDRA-3716), we need to wire that up to the CallbackInfo object
      * (see below).
      */
-    public static final EnumMap<Verb, IVersionedSerializer<?>> verbSerializers = new EnumMap<Verb, IVersionedSerializer<?>>(Verb.class)
+    public final EnumMap<Verb, IVersionedSerializer<?>> verbSerializers = new EnumMap<Verb, IVersionedSerializer<?>>(Verb.class)
     {{
         put(Verb.REQUEST_RESPONSE, CallbackDeterminedSerializer.instance);
         put(Verb.INTERNAL_RESPONSE, CallbackDeterminedSerializer.instance);
@@ -235,6 +352,7 @@ public final class MessagingService implements MessagingServiceMBean
         put(Verb.HINT, HintMessage.serializer);
         put(Verb.BATCH_STORE, Batch.serializer);
         put(Verb.BATCH_REMOVE, UUIDSerializer.serializer);
+        put(Verb.PING, PingMessage.serializer);
     }};
 
     /**
@@ -319,21 +437,34 @@ public final class MessagingService implements MessagingServiceMBean
                                                                    Verb.BATCH_STORE,
                                                                    Verb.BATCH_REMOVE);
 
-
     private static final class DroppedMessages
     {
         final DroppedMessageMetrics metrics;
-        final AtomicInteger droppedInternalTimeout;
-        final AtomicInteger droppedCrossNodeTimeout;
+        final AtomicInteger droppedInternal;
+        final AtomicInteger droppedCrossNode;
 
         DroppedMessages(Verb verb)
         {
-            this.metrics = new DroppedMessageMetrics(verb);
-            this.droppedInternalTimeout = new AtomicInteger(0);
-            this.droppedCrossNodeTimeout = new AtomicInteger(0);
+            this(new DroppedMessageMetrics(verb));
         }
 
+        DroppedMessages(DroppedMessageMetrics metrics)
+        {
+            this.metrics = metrics;
+            this.droppedInternal = new AtomicInteger(0);
+            this.droppedCrossNode = new AtomicInteger(0);
+        }
     }
+
+    @VisibleForTesting
+    public void resetDroppedMessagesMap(String scope)
+    {
+        for (Verb verb : droppedMessagesMap.keySet())
+            droppedMessagesMap.put(verb, new DroppedMessages(new DroppedMessageMetrics(metricName -> {
+                return new CassandraMetricsRegistry.MetricName("DroppedMessages", metricName, scope);
+            })));
+    }
+
     // total dropped message counts for server lifetime
     private final Map<Verb, DroppedMessages> droppedMessagesMap = new EnumMap<>(Verb.class);
 
@@ -345,15 +476,8 @@ public final class MessagingService implements MessagingServiceMBean
     // message sinks are a testing hook
     private final Set<IMessageSink> messageSinks = new CopyOnWriteArraySet<>();
 
-    public void addMessageSink(IMessageSink sink)
-    {
-        messageSinks.add(sink);
-    }
-
-    public void clearMessageSinks()
-    {
-        messageSinks.clear();
-    }
+    // back-pressure implementation
+    private final BackPressureStrategy backPressure = DatabaseDescriptor.getBackPressureStrategy();
 
     private static class MSHandle
     {
@@ -399,15 +523,25 @@ public final class MessagingService implements MessagingServiceMBean
             public Object apply(Pair<Integer, ExpiringMap.CacheableObject<CallbackInfo>> pair)
             {
                 final CallbackInfo expiredCallbackInfo = pair.right.value;
+
                 maybeAddLatency(expiredCallbackInfo.callback, expiredCallbackInfo.target, pair.right.timeout);
+
                 ConnectionMetrics.totalTimeouts.mark();
                 getConnectionPool(expiredCallbackInfo.target).incrementTimeout();
+
+                if (expiredCallbackInfo.callback.supportsBackPressure())
+                {
+                    updateBackPressureOnReceive(expiredCallbackInfo.target, expiredCallbackInfo.callback, true);
+                }
+
                 if (expiredCallbackInfo.isFailureCallback())
                 {
-                    StageManager.getStage(Stage.INTERNAL_RESPONSE).submit(new Runnable() {
+                    StageManager.getStage(Stage.INTERNAL_RESPONSE).submit(new Runnable()
+                    {
                         @Override
-                        public void run() {
-                            ((IAsyncCallbackWithFailure)expiredCallbackInfo.callback).onFailure(expiredCallbackInfo.target);
+                        public void run()
+                        {
+                            ((IAsyncCallbackWithFailure)expiredCallbackInfo.callback).onFailure(expiredCallbackInfo.target, RequestFailureReason.UNKNOWN);
                         }
                     });
                 }
@@ -435,6 +569,76 @@ public final class MessagingService implements MessagingServiceMBean
             {
                 throw new RuntimeException(e);
             }
+        }
+    }
+
+    public void addMessageSink(IMessageSink sink)
+    {
+        messageSinks.add(sink);
+    }
+
+    public void removeMessageSink(IMessageSink sink)
+    {
+        messageSinks.remove(sink);
+    }
+
+    public void clearMessageSinks()
+    {
+        messageSinks.clear();
+    }
+
+    /**
+     * Updates the back-pressure state on sending to the given host if enabled and the given message callback supports it.
+     *
+     * @param host The replica host the back-pressure state refers to.
+     * @param callback The message callback.
+     * @param message The actual message.
+     */
+    public void updateBackPressureOnSend(InetAddress host, IAsyncCallback callback, MessageOut<?> message)
+    {
+        if (DatabaseDescriptor.backPressureEnabled() && callback.supportsBackPressure())
+        {
+            BackPressureState backPressureState = getConnectionPool(host).getBackPressureState();
+            backPressureState.onMessageSent(message);
+        }
+    }
+
+    /**
+     * Updates the back-pressure state on reception from the given host if enabled and the given message callback supports it.
+     *
+     * @param host The replica host the back-pressure state refers to.
+     * @param callback The message callback.
+     * @param timeout True if updated following a timeout, false otherwise.
+     */
+    public void updateBackPressureOnReceive(InetAddress host, IAsyncCallback callback, boolean timeout)
+    {
+        if (DatabaseDescriptor.backPressureEnabled() && callback.supportsBackPressure())
+        {
+            BackPressureState backPressureState = getConnectionPool(host).getBackPressureState();
+            if (!timeout)
+                backPressureState.onResponseReceived();
+            else
+                backPressureState.onResponseTimeout();
+        }
+    }
+
+    /**
+     * Applies back-pressure for the given hosts, according to the configured strategy.
+     *
+     * If the local host is present, it is removed from the pool, as back-pressure is only applied
+     * to remote hosts.
+     *
+     * @param hosts The hosts to apply back-pressure to.
+     * @param timeoutInNanos The max back-pressure timeout.
+     */
+    public void applyBackPressure(Iterable<InetAddress> hosts, long timeoutInNanos)
+    {
+        if (DatabaseDescriptor.backPressureEnabled())
+        {
+            backPressure.apply(StreamSupport.stream(hosts.spliterator(), false)
+                    .filter(h -> !h.equals(FBUtilities.getBroadcastAddress()))
+                    .map(h -> getConnectionPool(h).getBackPressureState())
+                    .collect(Collectors.toSet()), timeoutInNanos, TimeUnit.NANOSECONDS);
         }
     }
 
@@ -592,7 +796,7 @@ public final class MessagingService implements MessagingServiceMBean
         OutboundTcpConnectionPool cp = connectionManagers.get(to);
         if (cp == null)
         {
-            cp = new OutboundTcpConnectionPool(to);
+            cp = new OutboundTcpConnectionPool(to, backPressure.newState(to));
             OutboundTcpConnectionPool existingPool = connectionManagers.putIfAbsent(to, cp);
             if (existingPool != null)
                 cp = existingPool;
@@ -698,6 +902,7 @@ public final class MessagingService implements MessagingServiceMBean
     public int sendRR(MessageOut message, InetAddress to, IAsyncCallback cb, long timeout, boolean failureCallback)
     {
         int id = addCallback(cb, message, to, timeout, failureCallback);
+        updateBackPressureOnSend(to, cb, message);
         sendOneWay(failureCallback ? message.withParameter(FAILURE_CALLBACK_PARAM, ONE_BYTE) : message, id, to);
         return id;
     }
@@ -720,6 +925,7 @@ public final class MessagingService implements MessagingServiceMBean
                       boolean allowHints)
     {
         int id = addCallback(handler, message, to, message.getTimeout(), handler.consistencyLevel, allowHints);
+        updateBackPressureOnSend(to, handler, message);
         sendOneWay(message.withParameter(FAILURE_CALLBACK_PARAM, ONE_BYTE), id, to);
         return id;
     }
@@ -788,7 +994,8 @@ public final class MessagingService implements MessagingServiceMBean
         assert !StageManager.getStage(Stage.MUTATION).isShutdown();
 
         // the important part
-        callbacks.shutdownBlocking();
+        if (!callbacks.shutdownBlocking())
+            logger.warn("Failed to wait for messaging service callbacks shutdown");
 
         // attempt to humor tests that try to stop and restart MS
         try
@@ -801,7 +1008,7 @@ public final class MessagingService implements MessagingServiceMBean
                 catch (IOException e)
                 {
                     // see https://issues.apache.org/jira/browse/CASSANDRA-10545
-                    handleIOException(e);
+                    handleIOExceptionOnClose(e);
                 }
         }
         catch (IOException e)
@@ -810,7 +1017,7 @@ public final class MessagingService implements MessagingServiceMBean
         }
     }
 
-    public void receive(MessageIn message, int id, long timestamp, boolean isCrossNodeTimestamp)
+    public void receive(MessageIn message, int id)
     {
         TraceState state = Tracing.instance.initializeFromMessage(message);
         if (state != null)
@@ -821,7 +1028,7 @@ public final class MessagingService implements MessagingServiceMBean
             if (!ms.allowIncomingMessage(message, id))
                 return;
 
-        Runnable runnable = new MessageDeliveryTask(message, id, timestamp, isCrossNodeTimestamp);
+        Runnable runnable = new MessageDeliveryTask(message, id);
         LocalAwareExecutorService stage = StageManager.getStage(message.getMessageType());
         assert stage != null : "No stage for message type " + message.verb;
 
@@ -877,9 +1084,6 @@ public final class MessagingService implements MessagingServiceMBean
      */
     public int setVersion(InetAddress endpoint, int version)
     {
-        // We can't talk to someone from the future
-        version = Math.min(version, current_version);
-
         logger.trace("Setting version {} for {}", version, endpoint);
 
         if (version < VERSION_22)
@@ -900,7 +1104,7 @@ public final class MessagingService implements MessagingServiceMBean
     {
         logger.trace("Resetting version for {}", endpoint);
         Integer removed = versions.remove(endpoint);
-        if (removed != null && removed <= VERSION_30)
+        if (removed != null && Math.min(removed, current_version) <= VERSION_30)
             refreshAllNodeMinVersions();
     }
 
@@ -925,6 +1129,10 @@ public final class MessagingService implements MessagingServiceMBean
         allNodesAtLeast30 = !anyNodeLowerThan30;
     }
 
+    /**
+     * Returns the messaging-version as announced by the given node but capped
+     * to the min of the version as announced by the node and {@link #current_version}.
+     */
     public int getVersion(InetAddress endpoint)
     {
         Integer v = versions.get(endpoint);
@@ -943,6 +1151,9 @@ public final class MessagingService implements MessagingServiceMBean
         return getVersion(InetAddress.getByName(endpoint));
     }
 
+    /**
+     * Returns the messaging-version exactly as announced by the given endpoint.
+     */
     public int getRawVersion(InetAddress endpoint)
     {
         Integer v = versions.get(endpoint);
@@ -956,24 +1167,76 @@ public final class MessagingService implements MessagingServiceMBean
         return versions.containsKey(endpoint);
     }
 
+    public void incrementDroppedMutations(Optional<IMutation> mutationOpt, long timeTaken)
+    {
+        if (mutationOpt.isPresent())
+        {
+            updateDroppedMutationCount(mutationOpt.get());
+        }
+        incrementDroppedMessages(Verb.MUTATION, timeTaken);
+    }
+
     public void incrementDroppedMessages(Verb verb)
     {
         incrementDroppedMessages(verb, false);
     }
 
-    public void incrementDroppedMessages(Verb verb, boolean isCrossNodeTimeout)
+    public void incrementDroppedMessages(Verb verb, long timeTaken)
     {
-        assert DROPPABLE_VERBS.contains(verb) : "Verb " + verb + " should not legally be dropped";
-        incrementDroppedMessages(droppedMessagesMap.get(verb), isCrossNodeTimeout);
+        incrementDroppedMessages(verb, timeTaken, false);
     }
 
-    private void incrementDroppedMessages(DroppedMessages droppedMessages, boolean isCrossNodeTimeout)
+    public void incrementDroppedMessages(MessageIn message, long timeTaken)
+    {
+        if (message.payload instanceof IMutation)
+        {
+            updateDroppedMutationCount((IMutation) message.payload);
+        }
+        incrementDroppedMessages(message.verb, timeTaken, message.isCrossNode());
+    }
+
+    public void incrementDroppedMessages(Verb verb, long timeTaken, boolean isCrossNode)
+    {
+        assert DROPPABLE_VERBS.contains(verb) : "Verb " + verb + " should not legally be dropped";
+        incrementDroppedMessages(droppedMessagesMap.get(verb), timeTaken, isCrossNode);
+    }
+
+    public void incrementDroppedMessages(Verb verb, boolean isCrossNode)
+    {
+        assert DROPPABLE_VERBS.contains(verb) : "Verb " + verb + " should not legally be dropped";
+        incrementDroppedMessages(droppedMessagesMap.get(verb), isCrossNode);
+    }
+
+    private void updateDroppedMutationCount(IMutation mutation)
+    {
+        assert mutation != null : "Mutation should not be null when updating dropped mutations count";
+
+        for (UUID columnFamilyId : mutation.getColumnFamilyIds())
+        {
+            ColumnFamilyStore cfs = Keyspace.open(mutation.getKeyspaceName()).getColumnFamilyStore(columnFamilyId);
+            if (cfs != null)
+            {
+                cfs.metric.droppedMutations.inc();
+            }
+        }
+    }
+
+    private void incrementDroppedMessages(DroppedMessages droppedMessages, long timeTaken, boolean isCrossNode)
+    {
+        if (isCrossNode)
+            droppedMessages.metrics.crossNodeDroppedLatency.update(timeTaken, TimeUnit.MILLISECONDS);
+        else
+            droppedMessages.metrics.internalDroppedLatency.update(timeTaken, TimeUnit.MILLISECONDS);
+        incrementDroppedMessages(droppedMessages, isCrossNode);
+    }
+
+    private void incrementDroppedMessages(DroppedMessages droppedMessages, boolean isCrossNode)
     {
         droppedMessages.metrics.dropped.mark();
-        if (isCrossNodeTimeout)
-            droppedMessages.droppedCrossNodeTimeout.incrementAndGet();
+        if (isCrossNode)
+            droppedMessages.droppedCrossNode.incrementAndGet();
         else
-            droppedMessages.droppedInternalTimeout.incrementAndGet();
+            droppedMessages.droppedInternal.incrementAndGet();
     }
 
     private void logDroppedMessages()
@@ -995,15 +1258,18 @@ public final class MessagingService implements MessagingServiceMBean
             Verb verb = entry.getKey();
             DroppedMessages droppedMessages = entry.getValue();
 
-            int droppedInternalTimeout = droppedMessages.droppedInternalTimeout.getAndSet(0);
-            int droppedCrossNodeTimeout = droppedMessages.droppedCrossNodeTimeout.getAndSet(0);
-            if (droppedInternalTimeout > 0 || droppedCrossNodeTimeout > 0)
+            int droppedInternal = droppedMessages.droppedInternal.getAndSet(0);
+            int droppedCrossNode = droppedMessages.droppedCrossNode.getAndSet(0);
+            if (droppedInternal > 0 || droppedCrossNode > 0)
             {
-                ret.add(String.format("%s messages were dropped in last %d ms: %d for internal timeout and %d for cross node timeout",
-                                      verb,
-                                      LOG_DROPPED_INTERVAL_IN_MS,
-                                      droppedInternalTimeout,
-                                      droppedCrossNodeTimeout));
+                ret.add(String.format("%s messages were dropped in last %d ms: %d internal and %d cross node."
+                                     + " Mean internal dropped latency: %d ms and Mean cross-node dropped latency: %d ms",
+                                     verb,
+                                     LOG_DROPPED_INTERVAL_IN_MS,
+                                     droppedInternal,
+                                     droppedCrossNode,
+                                     TimeUnit.NANOSECONDS.toMillis((long)droppedMessages.metrics.internalDroppedLatency.getSnapshot().getMean()),
+                                     TimeUnit.NANOSECONDS.toMillis((long)droppedMessages.metrics.crossNodeDroppedLatency.getSnapshot().getMean())));
             }
         }
         return ret;
@@ -1071,9 +1337,9 @@ public final class MessagingService implements MessagingServiceMBean
                     logger.error("SSL handshake error for inbound connection from " + socket, e);
                     FileUtils.closeQuietly(socket);
                 }
-                catch (IOException e)
+                catch (Throwable t)
                 {
-                    logger.trace("Error reading the socket " + socket, e);
+                    logger.trace("Error reading the socket {}", socket, t);
                     FileUtils.closeQuietly(socket);
                 }
             }
@@ -1091,7 +1357,8 @@ public final class MessagingService implements MessagingServiceMBean
             catch (IOException e)
             {
                 // see https://issues.apache.org/jira/browse/CASSANDRA-8220
-                handleIOException(e);
+                // see https://issues.apache.org/jira/browse/CASSANDRA-12513
+                handleIOExceptionOnClose(e);
             }
             for (Closeable connection : connections)
             {
@@ -1105,12 +1372,22 @@ public final class MessagingService implements MessagingServiceMBean
         }
     }
 
-    private static void handleIOException(IOException e) throws IOException
+    private static void handleIOExceptionOnClose(IOException e) throws IOException
     {
         // dirty hack for clean shutdown on OSX w/ Java >= 1.8.0_20
-        // see https://bugs.openjdk.java.net/browse/JDK-8050499
-        if (!"Unknown error: 316".equals(e.getMessage()) || !"Mac OS X".equals(System.getProperty("os.name")))
-            throw e;
+        // see https://bugs.openjdk.java.net/browse/JDK-8050499;
+        // also CASSANDRA-12513
+        if ("Mac OS X".equals(System.getProperty("os.name")))
+        {
+            switch (e.getMessage())
+            {
+                case "Unknown error: 316":
+                case "No such file or directory":
+                    return;
+            }
+        }
+
+        throw e;
     }
 
     public Map<String, Integer> getLargeMessagePendingTasks()
@@ -1215,6 +1492,27 @@ public final class MessagingService implements MessagingServiceMBean
             result.put(ip, recent);
         }
         return result;
+    }
+
+    public Map<String, Double> getBackPressurePerHost()
+    {
+        Map<String, Double> map = new HashMap<>(connectionManagers.size());
+        for (Map.Entry<InetAddress, OutboundTcpConnectionPool> entry : connectionManagers.entrySet())
+            map.put(entry.getKey().getHostAddress(), entry.getValue().getBackPressureState().getBackPressureRateLimit());
+
+        return map;
+    }
+
+    @Override
+    public void setBackPressureEnabled(boolean enabled)
+    {
+        DatabaseDescriptor.setBackPressureEnabled(enabled);
+    }
+
+    @Override
+    public boolean isBackPressureEnabled()
+    {
+        return DatabaseDescriptor.backPressureEnabled();
     }
 
     public static IPartitioner globalPartitioner()

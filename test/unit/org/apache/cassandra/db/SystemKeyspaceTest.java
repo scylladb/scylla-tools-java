@@ -24,12 +24,16 @@ import java.net.UnknownHostException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
+import java.util.concurrent.Future;
 
 import org.apache.commons.io.FileUtils;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
+import org.apache.cassandra.concurrent.Stage;
+import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.dht.ByteOrderedPartitioner.BytesToken;
@@ -39,17 +43,22 @@ import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.CassandraVersion;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.*;
 
 public class SystemKeyspaceTest
 {
-    public static final String MIGRATION_SSTABLES_ROOT = "migration-sstable-root";
+    private static final String MIGRATION_SSTABLES_ROOT = "migration-sstable-root";
+
+    // any file name will do but unrelated files in our folders tend to be log files or very old data files
+    private static final String UNRELATED_FILE_NAME = "system.log";
+    private static final String UNRELATED_FOLDER_NAME = "snapshot-abc";
 
     @BeforeClass
     public static void prepSnapshotTracker()
     {
-        if (FBUtilities.isWindows())
+        DatabaseDescriptor.daemonInitialization();
+
+        if (FBUtilities.isWindows)
             WindowsFailedSnapshotTracker.deleteOldSnapshots();
     }
 
@@ -79,7 +88,8 @@ public class SystemKeyspaceTest
     {
         BytesToken token = new BytesToken(ByteBufferUtil.bytes("token3"));
         InetAddress address = InetAddress.getByName("127.0.0.2");
-        SystemKeyspace.updateTokens(address, Collections.<Token>singletonList(token));
+        Future<?> future = SystemKeyspace.updateTokens(address, Collections.singletonList(token), StageManager.getStage(Stage.MUTATION));
+        FBUtilities.waitOnFuture(future);
         assert SystemKeyspace.loadTokens().get(address).contains(token);
         SystemKeyspace.removeEndpoint(address);
         assert !SystemKeyspace.loadTokens().containsValue(token);
@@ -95,7 +105,7 @@ public class SystemKeyspaceTest
 
     private void assertDeletedOrDeferred(int expectedCount)
     {
-        if (FBUtilities.isWindows())
+        if (FBUtilities.isWindows)
             assertEquals(expectedCount, getDeferredDeletionCount());
         else
             assertTrue(getSystemSnapshotFiles().isEmpty());
@@ -119,9 +129,9 @@ public class SystemKeyspaceTest
     public void snapshotSystemKeyspaceIfUpgrading() throws IOException
     {
         // First, check that in the absence of any previous installed version, we don't create snapshots
-        for (ColumnFamilyStore cfs : Keyspace.open(SystemKeyspace.NAME).getColumnFamilyStores())
+        for (ColumnFamilyStore cfs : Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStores())
             cfs.clearUnsafe();
-        Keyspace.clearSnapshot(null, SystemKeyspace.NAME);
+        Keyspace.clearSnapshot(null, SchemaConstants.SYSTEM_KEYSPACE_NAME);
 
         int baseline = getDeferredDeletionCount();
 
@@ -130,7 +140,7 @@ public class SystemKeyspaceTest
 
         // now setup system.local as if we're upgrading from a previous version
         setupReleaseVersion(getOlderVersionString());
-        Keyspace.clearSnapshot(null, SystemKeyspace.NAME);
+        Keyspace.clearSnapshot(null, SchemaConstants.SYSTEM_KEYSPACE_NAME);
         assertDeletedOrDeferred(baseline);
 
         // Compare versions again & verify that snapshots were created for all tables in the system ks
@@ -139,7 +149,7 @@ public class SystemKeyspaceTest
 
         // clear out the snapshots & set the previous recorded version equal to the latest, we shouldn't
         // see any new snapshots created this time.
-        Keyspace.clearSnapshot(null, SystemKeyspace.NAME);
+        Keyspace.clearSnapshot(null, SchemaConstants.SYSTEM_KEYSPACE_NAME);
         setupReleaseVersion(FBUtilities.getReleaseVersionString());
 
         SystemKeyspace.snapshotOnVersionChange();
@@ -149,7 +159,7 @@ public class SystemKeyspaceTest
         // 10 files expected.
         assertDeletedOrDeferred(baseline + 10);
 
-        Keyspace.clearSnapshot(null, SystemKeyspace.NAME);
+        Keyspace.clearSnapshot(null, SchemaConstants.SYSTEM_KEYSPACE_NAME);
     }
 
     @Test
@@ -178,23 +188,23 @@ public class SystemKeyspaceTest
     @Test
     public void testMigrateDataDirs_2_1() throws IOException
     {
-        testMigrateDataDirs("2.1");
+        testMigrateDataDirs("2.1", 5); // see test data for num legacy files
     }
 
     @Test
     public void testMigrateDataDirs_2_2() throws IOException
     {
-        testMigrateDataDirs("2.2");
+        testMigrateDataDirs("2.2", 7); // see test data for num legacy files
     }
 
-    private void testMigrateDataDirs(String version) throws IOException
+    private void testMigrateDataDirs(String version, int numLegacyFiles) throws IOException
     {
         Path migrationSSTableRoot = Paths.get(System.getProperty(MIGRATION_SSTABLES_ROOT), version);
         Path dataDir = Paths.get(DatabaseDescriptor.getAllDataFileLocations()[0]);
 
         FileUtils.copyDirectory(migrationSSTableRoot.toFile(), dataDir.toFile());
 
-        assertEquals(5, numLegacyFiles()); // see test data
+        assertEquals(numLegacyFiles, numLegacyFiles());
 
         SystemKeyspace.migrateDataDirs();
 
@@ -219,12 +229,107 @@ public class SystemKeyspaceTest
                     else
                     {
                         File[] legacyFiles = cfdir.listFiles((d, n) -> Descriptor.isLegacyFile(new File(d, n)));
-                        ret += legacyFiles.length;
+                        if (legacyFiles != null)
+                            ret += legacyFiles.length;
                     }
                 }
             }
         }
         return ret;
+    }
+
+    @Test
+    public void testMigrateDataDirs_UnrelatedFiles_2_1() throws IOException
+    {
+        testMigrateDataDirsWithUnrelatedFiles("2.1");
+    }
+
+    @Test
+    public void testMigrateDataDirs_UnrelatedFiles_2_2() throws IOException
+    {
+        testMigrateDataDirsWithUnrelatedFiles("2.2");
+    }
+
+    private void testMigrateDataDirsWithUnrelatedFiles(String version) throws IOException
+    {
+        Path migrationSSTableRoot = Paths.get(System.getProperty(MIGRATION_SSTABLES_ROOT), version);
+        Path dataDir = Paths.get(DatabaseDescriptor.getAllDataFileLocations()[0]);
+
+        FileUtils.copyDirectory(migrationSSTableRoot.toFile(), dataDir.toFile());
+
+        addUnRelatedFiles(dataDir);
+
+        SystemKeyspace.migrateDataDirs();
+
+        checkUnrelatedFiles(dataDir);
+    }
+
+    /**
+     * Add some extra and totally unrelated files to the data dir and its sub-folders
+     */
+    private void addUnRelatedFiles(Path dataDir) throws IOException
+    {
+        File dir = new File(dataDir.toString());
+        createAndCheck(dir, UNRELATED_FILE_NAME, false);
+        createAndCheck(dir, UNRELATED_FOLDER_NAME, true);
+
+        for (File ksdir : dir.listFiles((d, n) -> new File(d, n).isDirectory()))
+        {
+            createAndCheck(ksdir, UNRELATED_FILE_NAME, false);
+            createAndCheck(ksdir, UNRELATED_FOLDER_NAME, true);
+
+            for (File cfdir : ksdir.listFiles((d, n) -> new File(d, n).isDirectory()))
+            {
+                createAndCheck(cfdir, UNRELATED_FILE_NAME, false);
+                createAndCheck(cfdir, UNRELATED_FOLDER_NAME, true);
+            }
+        }
+    }
+
+    /**
+     * Make sure the extra files are still in the data dir and its sub-folders, then
+     * remove them.
+     */
+    private void checkUnrelatedFiles(Path dataDir) throws IOException
+    {
+        File dir = new File(dataDir.toString());
+        checkAndDelete(dir, UNRELATED_FILE_NAME, false);
+        checkAndDelete(dir, UNRELATED_FOLDER_NAME, true);
+
+        for (File ksdir : dir.listFiles((d, n) -> new File(d, n).isDirectory()))
+        {
+            checkAndDelete(ksdir, UNRELATED_FILE_NAME, false);
+            checkAndDelete(ksdir, UNRELATED_FOLDER_NAME, true);
+
+            for (File cfdir : ksdir.listFiles((d, n) -> new File(d, n).isDirectory()))
+            {
+                checkAndDelete(cfdir, UNRELATED_FILE_NAME, false);
+                checkAndDelete(cfdir, UNRELATED_FOLDER_NAME, true);
+            }
+        }
+    }
+
+    private void createAndCheck(File dir, String fileName, boolean isDir) throws IOException
+    {
+        File f = new File(dir, fileName);
+
+        if (isDir)
+            f.mkdir();
+        else
+            f.createNewFile();
+
+        assertTrue(f.exists());
+    }
+
+    private void checkAndDelete(File dir, String fileName, boolean isDir) throws IOException
+    {
+        File f = new File(dir, fileName);
+        assertTrue(f.exists());
+
+        if (isDir)
+            FileUtils.deleteDirectory(f);
+        else
+            f.delete();
     }
 
     private String getOlderVersionString()
@@ -238,7 +343,7 @@ public class SystemKeyspaceTest
     private Set<String> getSystemSnapshotFiles()
     {
         Set<String> snapshottedTableNames = new HashSet<>();
-        for (ColumnFamilyStore cfs : Keyspace.open(SystemKeyspace.NAME).getColumnFamilyStores())
+        for (ColumnFamilyStore cfs : Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStores())
         {
             if (!cfs.getSnapshotDetails().isEmpty())
                 snapshottedTableNames.add(cfs.getColumnFamilyName());

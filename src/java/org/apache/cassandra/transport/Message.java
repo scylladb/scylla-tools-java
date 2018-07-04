@@ -121,7 +121,7 @@ public abstract class Message
             }
         }
 
-        private Type(int opcode, Direction direction, Codec<?> codec)
+        Type(int opcode, Direction direction, Codec<?> codec)
         {
             this.opcode = opcode;
             this.direction = direction;
@@ -150,7 +150,7 @@ public abstract class Message
     private int streamId;
     private Frame sourceFrame;
     private Map<String, ByteBuffer> customPayload;
-    protected Integer forcedProtocolVersion = null;
+    protected ProtocolVersion forcedProtocolVersion = null;
 
     protected Message(Type type)
     {
@@ -210,7 +210,7 @@ public abstract class Message
                 throw new IllegalArgumentException();
         }
 
-        public abstract Response execute(QueryState queryState);
+        public abstract Response execute(QueryState queryState, long queryStartNanoTime);
 
         public void setTracingRequested()
         {
@@ -275,7 +275,7 @@ public abstract class Message
 
             try
             {
-                if (isCustomPayload && frame.header.version < Server.VERSION_4)
+                if (isCustomPayload && frame.header.version.isSmallerThan(ProtocolVersion.V4))
                     throw new ProtocolException("Received frame with CUSTOM_PAYLOAD flag for native protocol version < 4");
 
                 Message message = frame.header.type.codec.decode(frame.body, frame.header.version);
@@ -319,8 +319,7 @@ public abstract class Message
         {
             Connection connection = ctx.channel().attr(Connection.attributeKey).get();
             // The only case the connection can be null is when we send the initial STARTUP message (client side thus)
-            int version = connection == null ? Server.CURRENT_VERSION : connection.getVersion();
-
+            ProtocolVersion version = connection == null ? ProtocolVersion.CURRENT : connection.getVersion();
             EnumSet<Frame.Header.Flag> flags = EnumSet.noneOf(Frame.Header.Flag.class);
 
             Codec<Message> codec = (Codec<Message>)message.type.codec;
@@ -337,13 +336,13 @@ public abstract class Message
                     List<String> warnings = ((Response)message).getWarnings();
                     if (warnings != null)
                     {
-                        if (version < Server.VERSION_4)
+                        if (version.isSmallerThan(ProtocolVersion.V4))
                             throw new ProtocolException("Must not send frame with WARNING flag for native protocol version < 4");
                         messageSize += CBUtil.sizeOfStringList(warnings);
                     }
                     if (customPayload != null)
                     {
-                        if (version < Server.VERSION_4)
+                        if (version.isSmallerThan(ProtocolVersion.V4))
                             throw new ProtocolException("Must not send frame with CUSTOM_PAYLOAD flag for native protocol version < 4");
                         messageSize += CBUtil.sizeOfBytesMap(customPayload);
                     }
@@ -392,9 +391,13 @@ public abstract class Message
 
                 // if the driver attempted to connect with a protocol version lower than the minimum supported
                 // version, respond with a protocol error message with the correct frame header for that version
-                int responseVersion = message.forcedProtocolVersion == null
+                ProtocolVersion responseVersion = message.forcedProtocolVersion == null
                                     ? version
                                     : message.forcedProtocolVersion;
+
+                if (responseVersion.isBeta())
+                    flags.add(Frame.Header.Flag.USE_BETA);
+
                 results.add(Frame.create(message.type, message.getStreamId(), responseVersion, flags, body));
             }
             catch (Throwable e)
@@ -499,18 +502,19 @@ public abstract class Message
 
             final Response response;
             final ServerConnection connection;
+            long queryStartNanoTime = System.nanoTime();
 
             try
             {
                 assert request.connection() instanceof ServerConnection;
                 connection = (ServerConnection)request.connection();
-                if (connection.getVersion() >= Server.VERSION_4)
+                if (connection.getVersion().isGreaterOrEqualTo(ProtocolVersion.V4))
                     ClientWarn.instance.captureWarnings();
 
                 QueryState qstate = connection.validateNewMessage(request.type, connection.getVersion(), request.getStreamId());
 
                 logger.trace("Received: {}, v={}", request, connection.getVersion());
-                response = request.execute(qstate);
+                response = request.execute(qstate, queryStartNanoTime);
                 response.setStreamId(request.getStreamId());
                 response.setWarnings(ClientWarn.instance.getWarnings());
                 response.attach(connection);
@@ -546,20 +550,28 @@ public abstract class Message
             flusher.queued.add(item);
             flusher.start();
         }
+    }
+
+    @ChannelHandler.Sharable
+    public static final class ExceptionHandler extends ChannelInboundHandlerAdapter
+    {
 
         @Override
         public void exceptionCaught(final ChannelHandlerContext ctx, Throwable cause)
-        throws Exception
         {
+            // Provide error message to client in case channel is still open
+            UnexpectedChannelExceptionHandler handler = new UnexpectedChannelExceptionHandler(ctx.channel(), false);
+            ErrorMessage errorMessage = ErrorMessage.fromException(cause, handler);
             if (ctx.channel().isOpen())
             {
-                UnexpectedChannelExceptionHandler handler = new UnexpectedChannelExceptionHandler(ctx.channel(), false);
-                ChannelFuture future = ctx.writeAndFlush(ErrorMessage.fromException(cause, handler));
+                ChannelFuture future = ctx.writeAndFlush(errorMessage);
                 // On protocol exception, close the channel as soon as the message have been sent
                 if (cause instanceof ProtocolException)
                 {
-                    future.addListener(new ChannelFutureListener() {
-                        public void operationComplete(ChannelFuture future) {
+                    future.addListener(new ChannelFutureListener()
+                    {
+                        public void operationComplete(ChannelFuture future)
+                        {
                             ctx.close();
                         }
                     });

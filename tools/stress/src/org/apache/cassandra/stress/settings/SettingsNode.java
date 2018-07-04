@@ -28,11 +28,13 @@ import java.net.UnknownHostException;
 import java.util.*;
 
 import com.datastax.driver.core.Host;
+import org.apache.cassandra.stress.util.ResultLogger;
 
 public class SettingsNode implements Serializable
 {
     public final List<String> nodes;
     public final boolean isWhiteList;
+    public final String datacenter;
 
     public SettingsNode(Options options)
     {
@@ -41,9 +43,8 @@ public class SettingsNode implements Serializable
             try
             {
                 String node;
-                List<String> tmpNodes = new ArrayList<String>();
-                BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(options.file.value())));
-                try
+                List<String> tmpNodes = new ArrayList<>();
+                try (BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(options.file.value()))))
                 {
                     while ((node = in.readLine()) != null)
                     {
@@ -51,10 +52,6 @@ public class SettingsNode implements Serializable
                             tmpNodes.add(node);
                     }
                     nodes = Arrays.asList(tmpNodes.toArray(new String[tmpNodes.size()]));
-                }
-                finally
-                {
-                    in.close();
                 }
             }
             catch(IOException ioe)
@@ -64,8 +61,12 @@ public class SettingsNode implements Serializable
 
         }
         else
+        {
             nodes = Arrays.asList(options.list.value().split(","));
+        }
+
         isWhiteList = options.whitelist.setByUser();
+        datacenter = options.datacenter.value();
     }
 
     public Set<String> resolveAllPermitted(StressSettings settings)
@@ -135,6 +136,7 @@ public class SettingsNode implements Serializable
 
     public static final class Options extends GroupedOptions
     {
+        final OptionSimple datacenter = new OptionSimple("datacenter=", ".*", null, "Datacenter used for DCAwareRoundRobinLoadPolicy", false);
         final OptionSimple whitelist = new OptionSimple("whitelist", "", null, "Limit communications to the provided nodes", false);
         final OptionSimple file = new OptionSimple("file=", ".*", null, "Node file (one per line)", false);
         final OptionSimple list = new OptionSimple("", "[^=,]+(,[^=,]+)*", "localhost", "comma delimited list of nodes", false);
@@ -142,11 +144,17 @@ public class SettingsNode implements Serializable
         @Override
         public List<? extends Option> options()
         {
-            return Arrays.asList(whitelist, file, list);
+            return Arrays.asList(datacenter, whitelist, file, list);
         }
     }
 
     // CLI Utility Methods
+    public void printSettings(ResultLogger out)
+    {
+        out.println("  Nodes: " + nodes);
+        out.println("  Is White List: " + isWhiteList);
+        out.println("  Datacenter: " + datacenter);
+    }
 
     public static SettingsNode get(Map<String, String[]> clArgs)
     {
@@ -171,13 +179,6 @@ public class SettingsNode implements Serializable
 
     public static Runnable helpPrinter()
     {
-        return new Runnable()
-        {
-            @Override
-            public void run()
-            {
-                printHelp();
-            }
-        };
+        return SettingsNode::printHelp;
     }
 }

@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -31,14 +32,11 @@ import java.util.stream.Stream;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
-import org.apache.cassandra.db.ClusteringPrefix;
-import org.apache.cassandra.db.DecoratedKey;
-import org.apache.cassandra.db.DeletionTime;
-import org.apache.cassandra.db.LivenessInfo;
-import org.apache.cassandra.db.RangeTombstone;
+import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.CollectionType;
 import org.apache.cassandra.db.marshal.CompositeType;
+import org.apache.cassandra.db.marshal.UserType;
 import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.db.rows.ColumnData;
 import org.apache.cassandra.db.rows.ComplexColumnData;
@@ -49,6 +47,7 @@ import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.db.rows.Unfiltered;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.codehaus.jackson.JsonFactory;
 import org.codehaus.jackson.JsonGenerator;
@@ -95,7 +94,7 @@ public final class JsonTransformer
     public static void toJson(ISSTableScanner currentScanner, Stream<UnfilteredRowIterator> partitions, boolean rawTime, CFMetaData metadata, OutputStream out)
             throws IOException
     {
-        try (JsonGenerator json = jsonFactory.createJsonGenerator(new OutputStreamWriter(out, "UTF-8")))
+        try (JsonGenerator json = jsonFactory.createJsonGenerator(new OutputStreamWriter(out, StandardCharsets.UTF_8)))
         {
             JsonTransformer transformer = new JsonTransformer(json, currentScanner, rawTime, metadata);
             json.writeStartArray();
@@ -106,7 +105,7 @@ public final class JsonTransformer
 
     public static void keysToJson(ISSTableScanner currentScanner, Stream<DecoratedKey> keys, boolean rawTime, CFMetaData metadata, OutputStream out) throws IOException
     {
-        try (JsonGenerator json = jsonFactory.createJsonGenerator(new OutputStreamWriter(out, "UTF-8")))
+        try (JsonGenerator json = jsonFactory.createJsonGenerator(new OutputStreamWriter(out, StandardCharsets.UTF_8)))
         {
             JsonTransformer transformer = new JsonTransformer(json, currentScanner, rawTime, metadata);
             json.writeStartArray();
@@ -179,7 +178,6 @@ public final class JsonTransformer
 
     private void serializePartition(UnfilteredRowIterator partition)
     {
-        String key = metadata.getKeyValidator().getString(partition.partitionKey().getKey());
         try
         {
             json.writeStartObject();
@@ -191,22 +189,18 @@ public final class JsonTransformer
             json.writeNumberField("position", this.currentScanner.getCurrentPosition());
 
             if (!partition.partitionLevelDeletion().isLive())
-            {
                 serializeDeletion(partition.partitionLevelDeletion());
-                // wtf? This must be fixed in mainline 3.x cassandra, but
-                // until we sync again, this fixes json writer state.
-                json.writeEndObject();
-            }
-            else
+
+            json.writeEndObject();
+
+            if (partition.hasNext() || partition.staticRow() != null)
             {
-                json.writeEndObject();
                 json.writeFieldName("rows");
                 json.writeStartArray();
                 updatePosition();
                 if (!partition.staticRow().isEmpty())
-                {
                     serializeRow(partition.staticRow());
-                }
+
                 Unfiltered unfiltered;
                 updatePosition();
                 while (partition.hasNext())
@@ -223,12 +217,13 @@ public final class JsonTransformer
                     updatePosition();
                 }
                 json.writeEndArray();
-            }
 
-            json.writeEndObject();
+                json.writeEndObject();
+            }
         }
         catch (IOException e)
         {
+            String key = metadata.getKeyValidator().getString(partition.partitionKey().getKey());
             logger.error("Fatal error parsing partition: {}", key, e);
         }
     }
@@ -320,7 +315,7 @@ public final class JsonTransformer
         }
     }
 
-    private void serializeBound(RangeTombstone.Bound bound, DeletionTime deletionTime) throws IOException
+    private void serializeBound(ClusteringBound bound, DeletionTime deletionTime) throws IOException
     {
         json.writeFieldName(bound.isStart() ? "start" : "end");
         json.writeStartObject();
@@ -349,7 +344,7 @@ public final class JsonTransformer
                 }
                 else
                 {
-                    json.writeString(column.cellValueType().getString(clustering.get(i)));
+                    json.writeRawValue(column.cellValueType().toJSONString(clustering.get(i), ProtocolVersion.CURRENT));
                 }
             }
             json.writeEndArray();
@@ -387,7 +382,6 @@ public final class JsonTransformer
                     objectIndenter.setCompact(true);
                     json.writeStartObject();
                     json.writeFieldName("name");
-                    AbstractType<?> type = cd.column().type;
                     json.writeString(cd.column().name.toCQLString());
                     serializeDeletion(complexData.complexDeletion());
                     objectIndenter.setCompact(true);
@@ -413,9 +407,10 @@ public final class JsonTransformer
             objectIndenter.setCompact(true);
             json.writeFieldName("name");
             AbstractType<?> type = cell.column().type;
+            AbstractType<?> cellType = null;
             json.writeString(cell.column().name.toCQLString());
 
-            if (cell.path() != null && cell.path().size() > 0)
+            if (type.isCollection() && type.isMultiCell()) // non-frozen collection
             {
                 CollectionType ct = (CollectionType) type;
                 json.writeFieldName("path");
@@ -427,6 +422,30 @@ public final class JsonTransformer
                 }
                 json.writeEndArray();
                 arrayIndenter.setCompact(false);
+
+                cellType = cell.column().cellValueType();
+            }
+            else if (type.isUDT() && type.isMultiCell()) // non-frozen udt
+            {
+                UserType ut = (UserType) type;
+                json.writeFieldName("path");
+                arrayIndenter.setCompact(true);
+                json.writeStartArray();
+                for (int i = 0; i < cell.path().size(); i++)
+                {
+                    Short fieldPosition = ut.nameComparator().compose(cell.path().get(i));
+                    json.writeString(ut.fieldNameAsString(fieldPosition));
+                }
+                json.writeEndArray();
+                arrayIndenter.setCompact(false);
+
+                // cellType of udt
+                Short fieldPosition = ((UserType) type).nameComparator().compose(cell.path().get(0));
+                cellType = ((UserType) type).fieldType(fieldPosition);
+            }
+            else
+            {
+                cellType = cell.column().cellValueType();
             }
             if (cell.isTombstone())
             {
@@ -441,7 +460,7 @@ public final class JsonTransformer
             else
             {
                 json.writeFieldName("value");
-                json.writeString(cell.column().cellValueType().getString(cell.value()));
+                json.writeRawValue(cellType.toJSONString(cell.value(), ProtocolVersion.CURRENT));
             }
             if (liveInfo.isEmpty() || cell.timestamp() != liveInfo.timestamp())
             {
@@ -468,9 +487,14 @@ public final class JsonTransformer
 
     private String dateString(TimeUnit from, long time)
     {
+        if (rawTime)
+        {
+            return Long.toString(time);
+        }
+        
         long secs = from.toSeconds(time);
         long offset = Math.floorMod(from.toNanos(time), 1000_000_000L); // nanos per sec
-        return rawTime? Long.toString(time) : Instant.ofEpochSecond(secs, offset).toString();
+        return Instant.ofEpochSecond(secs, offset).toString();
     }
 
     /**

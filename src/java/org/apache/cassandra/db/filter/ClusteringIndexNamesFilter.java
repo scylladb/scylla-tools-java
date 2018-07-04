@@ -72,7 +72,9 @@ public class ClusteringIndexNamesFilter extends AbstractClusteringIndexFilter
 
     public boolean selectsAllPartition()
     {
-        return false;
+        // if the clusterings set is empty we are selecting a static row and in this case we want to count
+        // static rows so we return true
+        return clusterings.isEmpty();
     }
 
     public boolean selects(Clustering clustering)
@@ -126,57 +128,19 @@ public class ClusteringIndexNamesFilter extends AbstractClusteringIndexFilter
         return Transformation.apply(iterator, new FilterNotIndexed());
     }
 
-    public UnfilteredRowIterator filter(final SliceableUnfilteredRowIterator iter)
+    public Slices getSlices(CFMetaData metadata)
     {
-        // Please note that this method assumes that rows from 'iter' already have their columns filtered, i.e. that
-        // they only include columns that we select.
-        return new WrappingUnfilteredRowIterator(iter)
-        {
-            private final Iterator<Clustering> clusteringIter = clusteringsInQueryOrder.iterator();
-            private Iterator<Unfiltered> currentClustering;
-            private Unfiltered next;
-
-            @Override
-            public boolean hasNext()
-            {
-                if (next != null)
-                    return true;
-
-                if (currentClustering != null && currentClustering.hasNext())
-                {
-                    next = currentClustering.next();
-                    return true;
-                }
-
-                while (clusteringIter.hasNext())
-                {
-                    Clustering nextClustering = clusteringIter.next();
-                    currentClustering = iter.slice(Slice.make(nextClustering));
-                    if (currentClustering.hasNext())
-                    {
-                        next = currentClustering.next();
-                        return true;
-                    }
-                }
-                return false;
-            }
-
-            @Override
-            public Unfiltered next()
-            {
-                if (next == null && !hasNext())
-                    throw new NoSuchElementException();
-
-                Unfiltered toReturn = next;
-                next = null;
-                return toReturn;
-            }
-        };
+        Slices.Builder builder = new Slices.Builder(metadata.comparator, clusteringsInQueryOrder.size());
+        for (Clustering clustering : clusteringsInQueryOrder)
+            builder.add(Slice.make(clustering));
+        return builder.build();
     }
 
     public UnfilteredRowIterator getUnfilteredRowIterator(final ColumnFilter columnFilter, final Partition partition)
     {
+        final Iterator<Clustering> clusteringIter = clusteringsInQueryOrder.iterator();
         final SearchIterator<Clustering, Row> searcher = partition.searchIterator(columnFilter, reversed);
+
         return new AbstractUnfilteredRowIterator(partition.metadata(),
                                         partition.partitionKey(),
                                         partition.partitionLevelDeletion(),
@@ -185,11 +149,9 @@ public class ClusteringIndexNamesFilter extends AbstractClusteringIndexFilter
                                         reversed,
                                         partition.stats())
         {
-            private final Iterator<Clustering> clusteringIter = clusteringsInQueryOrder.iterator();
-
             protected Unfiltered computeNext()
             {
-                while (clusteringIter.hasNext() && searcher.hasNext())
+                while (clusteringIter.hasNext())
                 {
                     Row row = searcher.next(clusteringIter.next());
                     if (row != null)
@@ -229,7 +191,7 @@ public class ClusteringIndexNamesFilter extends AbstractClusteringIndexFilter
 
     public String toCQLString(CFMetaData metadata)
     {
-        if (clusterings.isEmpty())
+        if (metadata.clusteringColumns().isEmpty() || clusterings.size() <= 1)
             return "";
 
         StringBuilder sb = new StringBuilder();

@@ -153,10 +153,10 @@ public class BatchTest extends CQLTester
         execute("INSERT INTO %s (partitionKey, clustering_1, value) VALUES (0, 6, 6)");
 
         execute("BEGIN BATCH " +
-                "UPDATE %1$s SET value = 7 WHERE partitionKey = 0 AND clustering_1 = 1" +
-                "UPDATE %1$s SET value = 8 WHERE partitionKey = 0 AND (clustering_1) = (2)" +
-                "UPDATE %1$s SET value = 10 WHERE partitionKey = 0 AND clustering_1 IN (3, 4)" +
-                "UPDATE %1$s SET value = 20 WHERE partitionKey = 0 AND (clustering_1) IN ((5), (6))" +
+                "UPDATE %1$s SET value = 7 WHERE partitionKey = 0 AND clustering_1 = 1;" +
+                "UPDATE %1$s SET value = 8 WHERE partitionKey = 0 AND (clustering_1) = (2);" +
+                "UPDATE %1$s SET value = 10 WHERE partitionKey = 0 AND clustering_1 IN (3, 4);" +
+                "UPDATE %1$s SET value = 20 WHERE partitionKey = 0 AND (clustering_1) IN ((5), (6));" +
                 "APPLY BATCH;");
 
         assertRows(execute("SELECT * FROM %s"),
@@ -199,4 +199,155 @@ public class BatchTest extends CQLTester
         assertRows(execute(String.format("SELECT * FROM %s", tbl1)), row(0, 1, 2));
         assertRows(execute(String.format("SELECT * FROM %s", tbl2)), row(0, 3, 4));
     }
+
+    @Test
+    public void testBatchWithInRestriction() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int, b int, c int, PRIMARY KEY (a,b))");
+        execute("INSERT INTO %s (a,b,c) VALUES (?,?,?)",1,1,1);
+        execute("INSERT INTO %s (a,b,c) VALUES (?,?,?)",1,2,2);
+        execute("INSERT INTO %s (a,b,c) VALUES (?,?,?)",1,3,3);
+
+        for (String inClause : new String[] { "()", "(1, 2)"})
+        {
+            assertInvalidMessage("IN on the clustering key columns is not supported with conditional updates",
+                                 "BEGIN BATCH " +
+                                 "UPDATE %1$s SET c = 100 WHERE a = 1 AND b = 1 IF c = 1;" +
+                                 "UPDATE %1$s SET c = 200 WHERE a = 1 AND b IN " + inClause + " IF c = 1;" +
+                                 "APPLY BATCH");
+
+            assertInvalidMessage("IN on the clustering key columns is not supported with conditional deletions",
+                                 "BEGIN BATCH " +
+                                 "UPDATE %1$s SET c = 100 WHERE a = 1 AND b = 1 IF c = 1;" +
+                                 "DELETE FROM %1$s WHERE a = 1 AND b IN " + inClause + " IF c = 1;" +
+                                 "APPLY BATCH");
+
+            assertInvalidMessage("Batch with conditions cannot span multiple partitions (you cannot use IN on the partition key)",
+                                 "BEGIN BATCH " +
+                                 "UPDATE %1$s SET c = 100 WHERE a = 1 AND b = 1 IF c = 1;" +
+                                 "UPDATE %1$s SET c = 200 WHERE a IN " + inClause + " AND b = 1 IF c = 1;" +
+                                 "APPLY BATCH");
+
+            assertInvalidMessage("Batch with conditions cannot span multiple partitions (you cannot use IN on the partition key)",
+                                 "BEGIN BATCH " +
+                                 "UPDATE %1$s SET c = 100 WHERE a = 1 AND b = 1 IF c = 1;" +
+                                 "DELETE FROM %1$s WHERE a IN " + inClause + " AND b = 1 IF c = 1;" +
+                                 "APPLY BATCH");
+        }
+        assertRows(execute("SELECT * FROM %s"),
+                   row(1,1,1),
+                   row(1,2,2),
+                   row(1,3,3));
+    }
+
+    @Test
+    public void testBatchAndConditionalInteraction() throws Throwable
+    {
+
+        createTable(String.format("CREATE TABLE %s.clustering (\n" +
+                "  id int,\n" +
+                "  clustering1 int,\n" +
+                "  clustering2 int,\n" +
+                "  clustering3 int,\n" +
+                "  val int, \n" +
+                " PRIMARY KEY(id, clustering1, clustering2, clustering3)" +
+                ")", KEYSPACE));
+
+        execute("DELETE FROM " + KEYSPACE +".clustering WHERE id=1");
+
+        String clusteringInsert = "INSERT INTO " + KEYSPACE + ".clustering(id, clustering1, clustering2, clustering3, val) VALUES(%s, %s, %s, %s, %s); ";
+        String clusteringUpdate = "UPDATE " + KEYSPACE + ".clustering SET val=%s WHERE id=%s AND clustering1=%s AND clustering2=%s AND clustering3=%s ;";
+        String clusteringConditionalUpdate = "UPDATE " + KEYSPACE + ".clustering SET val=%s WHERE id=%s AND clustering1=%s AND clustering2=%s AND clustering3=%s IF val=%s ;";
+        String clusteringDelete = "DELETE FROM " + KEYSPACE + ".clustering WHERE id=%s AND clustering1=%s AND clustering2=%s AND clustering3=%s ;";
+        String clusteringRangeDelete = "DELETE FROM " + KEYSPACE + ".clustering WHERE id=%s AND clustering1=%s ;";
+
+
+        execute("BEGIN BATCH " + String.format(clusteringInsert, 1, 1, 1, 1, 1) + " APPLY BATCH");
+
+        assertRows(execute("SELECT * FROM " + KEYSPACE+".clustering WHERE id=1"), row(1, 1, 1, 1, 1));
+
+        StringBuilder cmd2 = new StringBuilder();
+        cmd2.append("BEGIN BATCH ");
+        cmd2.append(String.format(clusteringInsert, 1, 1, 1, 2, 2));
+        cmd2.append(String.format(clusteringConditionalUpdate, 11, 1, 1, 1, 1, 1));
+        cmd2.append("APPLY BATCH ");
+        execute(cmd2.toString());
+
+
+        assertRows(execute("SELECT * FROM " + KEYSPACE+".clustering WHERE id=1"),
+                row(1, 1, 1, 1, 11),
+                row(1, 1, 1, 2, 2)
+        );
+
+
+        StringBuilder cmd3 = new StringBuilder();
+        cmd3.append("BEGIN BATCH ");
+        cmd3.append(String.format(clusteringInsert, 1, 1, 2, 3, 23));
+        cmd3.append(String.format(clusteringConditionalUpdate, 22, 1, 1, 1, 2, 2));
+        cmd3.append(String.format(clusteringDelete, 1, 1, 1, 1));
+        cmd3.append("APPLY BATCH ");
+        execute(cmd3.toString());
+
+        assertRows(execute("SELECT * FROM " + KEYSPACE+".clustering WHERE id=1"),
+                row(1, 1, 1, 2, 22),
+                row(1, 1, 2, 3, 23)
+        );
+
+        StringBuilder cmd4 = new StringBuilder();
+        cmd4.append("BEGIN BATCH ");
+        cmd4.append(String.format(clusteringInsert, 1, 2, 3, 4, 1234));
+        cmd4.append(String.format(clusteringConditionalUpdate, 234, 1, 1, 1, 2, 22));
+        cmd4.append("APPLY BATCH ");
+        execute(cmd4.toString());
+
+        System.out.println(execute("SELECT * FROM " + KEYSPACE+".clustering WHERE id=1"));
+        assertRows(execute("SELECT * FROM " + KEYSPACE+".clustering WHERE id=1"),
+                row(1, 1, 1, 2, 234),
+                row(1, 1, 2, 3, 23),
+                row(1, 2, 3, 4, 1234)
+        );
+
+        StringBuilder cmd5 = new StringBuilder();
+        cmd5.append("BEGIN BATCH ");
+        cmd5.append(String.format(clusteringRangeDelete, 1, 2));
+        cmd5.append(String.format(clusteringConditionalUpdate, 1234, 1, 1, 1, 2, 234));
+        cmd5.append("APPLY BATCH ");
+        execute(cmd5.toString());
+
+        System.out.println(execute("SELECT * FROM " + KEYSPACE+".clustering WHERE id=1"));
+        assertRows(execute("SELECT * FROM " + KEYSPACE+".clustering WHERE id=1"),
+                row(1, 1, 1, 2, 1234),
+                row(1, 1, 2, 3, 23)
+        );
+
+        StringBuilder cmd6 = new StringBuilder();
+        cmd6.append("BEGIN BATCH ");
+        cmd6.append(String.format(clusteringUpdate, 345, 1, 3, 4, 5));
+        cmd6.append(String.format(clusteringConditionalUpdate, 1, 1, 1, 1, 2, 1234));
+        cmd6.append("APPLY BATCH ");
+        execute(cmd6.toString());
+
+        System.out.println(execute("SELECT * FROM " + KEYSPACE+".clustering WHERE id=1"));
+        assertRows(execute("SELECT * FROM " + KEYSPACE+".clustering WHERE id=1"),
+                row(1, 1, 1, 2, 1),
+                row(1, 1, 2, 3, 23),
+                row(1, 3, 4, 5, 345)
+        );
+
+
+        StringBuilder cmd7 = new StringBuilder();
+        cmd7.append("BEGIN BATCH ");
+        cmd7.append(String.format(clusteringDelete, 1, 3, 4, 5));
+        cmd7.append(String.format(clusteringConditionalUpdate, 2300, 1, 1, 2, 3, 1));  // SHOULD NOT MATCH
+        cmd7.append("APPLY BATCH ");
+        execute(cmd7.toString());
+
+        System.out.println(execute("SELECT * FROM " + KEYSPACE+".clustering WHERE id=1"));
+        assertRows(execute("SELECT * FROM " + KEYSPACE+".clustering WHERE id=1"),
+                row(1, 1, 1, 2, 1),
+                row(1, 1, 2, 3, 23),
+                row(1, 3, 4, 5, 345)
+        );
+    }
+
 }

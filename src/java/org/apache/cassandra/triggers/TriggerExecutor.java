@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *   http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
@@ -31,6 +31,7 @@ import com.google.common.collect.Maps;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
+import org.apache.cassandra.exceptions.CassandraException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.schema.TriggerMetadata;
 import org.apache.cassandra.schema.Triggers;
@@ -85,7 +86,12 @@ public class TriggerExecutor
         if (intermediate == null || intermediate.isEmpty())
             return updates;
 
-        return PartitionUpdate.merge(validateForSinglePartition(updates.metadata().cfId, updates.partitionKey(), intermediate));
+        List<PartitionUpdate> augmented = validateForSinglePartition(updates.metadata().cfId,
+                                                                     updates.partitionKey(),
+                                                                     intermediate);
+        // concatenate augmented and origin
+        augmented.add(updates);
+        return PartitionUpdate.merge(augmented);
     }
 
     /**
@@ -231,9 +237,13 @@ public class TriggerExecutor
             }
             return tmutations;
         }
+        catch (CassandraException ex)
+        {
+            throw ex;
+        }
         catch (Exception ex)
         {
-            throw new RuntimeException(String.format("Exception while creating trigger on table with ID: %s", update.metadata().cfId), ex);
+            throw new RuntimeException(String.format("Exception while executing trigger on table with ID: %s", update.metadata().cfId), ex);
         }
         finally
         {

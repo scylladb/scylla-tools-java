@@ -39,7 +39,6 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.Slice.Bound;
 import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.marshal.AsciiType;
 import org.apache.cassandra.db.partitions.AbstractBTreePartition;
@@ -104,7 +103,7 @@ public class PartitionImplementationTest
         ColumnDefinition defCol = cfm.getColumnDefinition(new ColumnIdentifier("col", true));
         Row.Builder row = BTreeRow.unsortedBuilder(TIMESTAMP);
         row.newRow(clustering);
-        row.addCell(BufferCell.live(cfm, defCol, TIMESTAMP, ByteBufferUtil.bytes(colValue)));
+        row.addCell(BufferCell.live(defCol, TIMESTAMP, ByteBufferUtil.bytes(colValue)));
         return row.build();
     }
 
@@ -113,7 +112,7 @@ public class PartitionImplementationTest
         ColumnDefinition defCol = cfm.getColumnDefinition(new ColumnIdentifier("static_col", true));
         Row.Builder row = BTreeRow.unsortedBuilder(TIMESTAMP);
         row.newRow(Clustering.STATIC_CLUSTERING);
-        row.addCell(BufferCell.live(cfm, defCol, TIMESTAMP, ByteBufferUtil.bytes("static value")));
+        row.addCell(BufferCell.live(defCol, TIMESTAMP, ByteBufferUtil.bytes("static value")));
         return row.build();
     }
 
@@ -314,10 +313,10 @@ public class PartitionImplementationTest
         testSearchIterator(sortedContent, partition, cf, true);
 
         // sliceable iter
-        testSliceableIterator(sortedContent, partition, ColumnFilter.all(cfm), false);
-        testSliceableIterator(sortedContent, partition, cf, false);
-        testSliceableIterator(sortedContent, partition, ColumnFilter.all(cfm), true);
-        testSliceableIterator(sortedContent, partition, cf, true);
+        testSlicingOfIterators(sortedContent, partition, ColumnFilter.all(cfm), false);
+        testSlicingOfIterators(sortedContent, partition, cf, false);
+        testSlicingOfIterators(sortedContent, partition, ColumnFilter.all(cfm), true);
+        testSlicingOfIterators(sortedContent, partition, cf, true);
     }
 
     void testSearchIterator(NavigableSet<Clusterable> sortedContent, Partition partition, ColumnFilter cf, boolean reversed)
@@ -326,7 +325,7 @@ public class PartitionImplementationTest
         int pos = reversed ? KEY_RANGE : 0;
         int mul = reversed ? -1 : 1;
         boolean started = false;
-        while (searchIter.hasNext())
+        while (pos < KEY_RANGE)
         {
             int skip = rand.nextInt(KEY_RANGE / 10);
             pos += skip * mul;
@@ -355,29 +354,36 @@ public class PartitionImplementationTest
             Clustering start = clustering(pos);
             pos += sz;
             Clustering end = clustering(pos);
-            Slice slice = Slice.make(skip == 0 ? Bound.exclusiveStartOf(start) : Bound.inclusiveStartOf(start), Bound.inclusiveEndOf(end));
+            Slice slice = Slice.make(skip == 0 ? ClusteringBound.exclusiveStartOf(start) : ClusteringBound.inclusiveStartOf(start), ClusteringBound.inclusiveEndOf(end));
             builder.add(slice);
         }
         return builder.build();
     }
 
-    void testSliceableIterator(NavigableSet<Clusterable> sortedContent, AbstractBTreePartition partition, ColumnFilter cf, boolean reversed)
+    void testSlicingOfIterators(NavigableSet<Clusterable> sortedContent, AbstractBTreePartition partition, ColumnFilter cf, boolean reversed)
     {
         Function<? super Clusterable, ? extends Clusterable> colFilter = x -> x instanceof Row ? ((Row) x).filter(cf, cfm) : x;
         Slices slices = makeSlices();
-        try (SliceableUnfilteredRowIterator sliceableIter = partition.sliceableUnfilteredIterator(cf, reversed))
+
+        // fetch each slice in turn
+        for (Slice slice : (Iterable<Slice>) () -> directed(slices, reversed))
         {
-            for (Slice slice : (Iterable<Slice>) () -> directed(slices, reversed))
+            try (UnfilteredRowIterator slicedIter = partition.unfilteredIterator(cf, Slices.with(cfm.comparator, slice), reversed))
+            {
                 assertIteratorsEqual(streamOf(directed(slice(sortedContent, slice), reversed)).map(colFilter).iterator(),
-                                     sliceableIter.slice(slice));
+                                     slicedIter);
+            }
         }
 
-        // Try using sliceable as unfiltered iterator
-        try (SliceableUnfilteredRowIterator sliceableIter = partition.sliceableUnfilteredIterator(cf, reversed))
+        // Fetch all slices at once
+        try (UnfilteredRowIterator slicedIter = partition.unfilteredIterator(cf, slices, reversed))
         {
-            assertIteratorsEqual((reversed ? sortedContent.descendingSet() : sortedContent).
-                                     stream().map(colFilter).iterator(),
-                                 sliceableIter);
+            List<Iterator<? extends Clusterable>> slicelist = new ArrayList<>();
+            slices.forEach(slice -> slicelist.add(directed(slice(sortedContent, slice), reversed)));
+            if (reversed)
+                Collections.reverse(slicelist);
+
+            assertIteratorsEqual(Iterators.concat(slicelist.toArray(new Iterator[0])), slicedIter);
         }
     }
 

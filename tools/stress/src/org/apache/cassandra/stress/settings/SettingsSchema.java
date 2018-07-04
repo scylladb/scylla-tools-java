@@ -27,8 +27,8 @@ import java.util.*;
 
 import com.datastax.driver.core.exceptions.AlreadyExistsException;
 import org.apache.cassandra.stress.util.JavaDriverClient;
+import org.apache.cassandra.stress.util.ResultLogger;
 import org.apache.cassandra.thrift.*;
-import org.apache.cassandra.thrift.ConsistencyLevel;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 public class SettingsSchema implements Serializable
@@ -299,6 +299,17 @@ public class SettingsSchema implements Serializable
     }
 
     // CLI Utility Methods
+    public void printSettings(ResultLogger out)
+    {
+        out.println("  Keyspace: " + keyspace);
+        out.println("  Replication Strategy: " + replicationStrategy);
+        out.println("  Replication Strategy Pptions: " + replicationStrategyOptions);
+
+        out.println("  Table Compression: " + compression);
+        out.println("  Table Compaction Strategy: " + compactionStrategy);
+        out.println("  Table Compaction Strategy Options: " + compactionStrategyOptions);
+    }
+
 
     public static SettingsSchema get(Map<String, String[]> clArgs, SettingsCommand command)
     {

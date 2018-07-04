@@ -37,6 +37,7 @@ import static org.junit.Assert.assertNotNull;
 
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
+import org.apache.cassandra.cache.ChunkCache;
 import org.apache.cassandra.config.*;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.marshal.LongType;
@@ -187,6 +188,8 @@ public class BlacklistingCompactionsTest
                 byte[] corruption = new byte[corruptionSize];
                 random.nextBytes(corruption);
                 raf.write(corruption);
+                if (ChunkCache.instance != null)
+                    ChunkCache.instance.invalidateFile(sstable.getFilename());
 
             }
             finally

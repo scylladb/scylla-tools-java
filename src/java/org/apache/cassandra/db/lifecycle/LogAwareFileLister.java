@@ -122,10 +122,12 @@ final class LogAwareFileLister
      */
     void classifyFiles(File txnFile)
     {
-        LogFile txn = LogFile.make(txnFile);
-        readTxnLog(txn);
-        classifyFiles(txn);
-        files.put(txnFile, FileType.TXN_LOG);
+        try (LogFile txn = LogFile.make(txnFile))
+        {
+            readTxnLog(txn);
+            classifyFiles(txn);
+            files.put(txnFile, FileType.TXN_LOG);
+        }
     }
 
     void readTxnLog(LogFile txn)
@@ -169,13 +171,12 @@ final class LogAwareFileLister
 
         logger.error("Failed to classify files in {}\n" +
                      "Some old files are missing but the txn log is still there and not completed\n" +
-                     "Files in folder:\n{}\nTxn: {}\n{}",
+                     "Files in folder:\n{}\nTxn: {}",
                      folder,
                      files.isEmpty()
                         ? "\t-"
                         : String.join("\n", files.keySet().stream().map(f -> String.format("\t%s", f)).collect(Collectors.toList())),
-                     txnFile.toString(),
-                     String.join("\n", txnFile.getRecords().stream().map(r -> String.format("\t%s", r)).collect(Collectors.toList())));
+                     txnFile.toString(true));
 
         // some old files are missing and yet the txn is still there and not completed
         // something must be wrong (see comment at the top of LogTransaction requiring txn to be

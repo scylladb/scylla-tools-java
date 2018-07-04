@@ -49,7 +49,7 @@ public class KeysSearcher extends CassandraIndexSearcher
     protected UnfilteredPartitionIterator queryDataFromIndex(final DecoratedKey indexKey,
                                                              final RowIterator indexHits,
                                                              final ReadCommand command,
-                                                             final ReadOrderGroup orderGroup)
+                                                             final ReadExecutionController executionController)
     {
         assert indexHits.staticRow() == Rows.EMPTY_STATIC_ROW;
 
@@ -99,16 +99,16 @@ public class KeysSearcher extends CassandraIndexSearcher
                                                                                            command.rowFilter(),
                                                                                            DataLimits.NONE,
                                                                                            key,
-                                                                                           command.clusteringIndexFilter(key));
+                                                                                           command.clusteringIndexFilter(key),
+                                                                                           null);
 
                     @SuppressWarnings("resource") // filterIfStale closes it's iterator if either it materialize it or if it returns null.
                                                   // Otherwise, we close right away if empty, and if it's assigned to next it will be called either
                                                   // by the next caller of next, or through closing this iterator is this come before.
-                    UnfilteredRowIterator dataIter = filterIfStale(dataCmd.queryMemtableAndDisk(index.baseCfs,
-                                                                                                orderGroup.baseReadOpOrderGroup()),
+                    UnfilteredRowIterator dataIter = filterIfStale(dataCmd.queryMemtableAndDisk(index.baseCfs, executionController),
                                                                    hit,
                                                                    indexKey.getKey(),
-                                                                   orderGroup.writeOpOrderGroup(),
+                                                                   executionController.writeOpOrderGroup(),
                                                                    isForThrift(),
                                                                    command.nowInSec());
 
@@ -139,7 +139,7 @@ public class KeysSearcher extends CassandraIndexSearcher
 
     private ColumnFilter getExtendedFilter(ColumnFilter initialFilter)
     {
-        if (command.columnFilter().includes(index.getIndexedColumn()))
+        if (command.columnFilter().fetches(index.getIndexedColumn()))
             return initialFilter;
 
         ColumnFilter.Builder builder = ColumnFilter.selectionBuilder();
@@ -161,7 +161,7 @@ public class KeysSearcher extends CassandraIndexSearcher
             // is the indexed name and so we need to materialize the partition.
             ImmutableBTreePartition result = ImmutableBTreePartition.create(iterator);
             iterator.close();
-            Row data = result.getRow(new Clustering(index.getIndexedColumn().name.bytes));
+            Row data = result.getRow(Clustering.make(index.getIndexedColumn().name.bytes));
             if (data == null)
                 return null;
 
@@ -173,14 +173,14 @@ public class KeysSearcher extends CassandraIndexSearcher
             {
                 // Index is stale, remove the index entry and ignore
                 index.deleteStaleEntry(index.getIndexCfs().decorateKey(indexedValue),
-                                         new Clustering(index.getIndexedColumn().name.bytes),
+                                         Clustering.make(index.getIndexedColumn().name.bytes),
                                          new DeletionTime(indexHit.primaryKeyLivenessInfo().timestamp(), nowInSec),
                                          writeOp);
                 return null;
             }
             else
             {
-                if (command.columnFilter().includes(index.getIndexedColumn()))
+                if (command.columnFilter().fetches(index.getIndexedColumn()))
                     return result.unfilteredIterator();
 
                 // The query on the base table used an extended column filter to ensure that the
@@ -196,7 +196,13 @@ public class KeysSearcher extends CassandraIndexSearcher
         }
         else
         {
-            assert iterator.metadata().isCompactTable();
+            if (!iterator.metadata().isCompactTable())
+            {
+                logger.warn("Non-composite index was used on the table '{}' during the query. Starting from Cassandra 4.0, only " +
+                            "composite indexes will be supported. If compact flags were dropped for this table, drop and re-create " +
+                            "the index.", iterator.metadata().cfName);
+            }
+
             Row data = iterator.staticRow();
             if (index.isStale(data, indexedValue, nowInSec))
             {

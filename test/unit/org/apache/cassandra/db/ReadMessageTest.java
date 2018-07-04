@@ -30,6 +30,7 @@ import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.commitlog.CommitLogTestReplayer;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.apache.cassandra.db.rows.Row;
@@ -56,6 +57,8 @@ public class ReadMessageTest
     @BeforeClass
     public static void defineSchema() throws ConfigurationException
     {
+        DatabaseDescriptor.daemonInitialization();
+
         CFMetaData cfForReadMetadata = CFMetaData.Builder.create(KEYSPACE1, CF_FOR_READ_TEST)
                                                             .addPartitionKey("key", BytesType.instance)
                                                             .addClusteringColumn("col1", AsciiType.instance)
@@ -195,7 +198,9 @@ public class ReadMessageTest
 
         Checker checker = new Checker(cfs.metadata.getColumnDefinition(ByteBufferUtil.bytes("commit1")),
                                       cfsnocommit.metadata.getColumnDefinition(ByteBufferUtil.bytes("commit2")));
-        CommitLogTestReplayer.examineCommitLog(checker);
+
+        CommitLogTestReplayer replayer = new CommitLogTestReplayer(checker);
+        replayer.examineCommitLog();
 
         assertTrue(checker.commitLogMessageFound);
         assertFalse(checker.noCommitLogMessageFound);
@@ -219,7 +224,7 @@ public class ReadMessageTest
         {
             for (PartitionUpdate upd : mutation.getPartitionUpdates())
             {
-                Row r = upd.getRow(new Clustering(ByteBufferUtil.bytes("c")));
+                Row r = upd.getRow(Clustering.make(ByteBufferUtil.bytes("c")));
                 if (r != null)
                 {
                     if (r.getCell(withCommit) != null)

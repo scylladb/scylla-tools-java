@@ -18,6 +18,7 @@
 package org.apache.cassandra.db.compaction;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.junit.Test;
@@ -49,7 +50,7 @@ public class CompactionsCQLTest extends CQLTester
     @Test
     public void testTriggerMinorCompactionLCS() throws Throwable
     {
-        createTable("CREATE TABLE %s (id text PRIMARY KEY) WITH compaction = {'class':'LeveledCompactionStrategy', 'sstable_size_in_mb':1};");
+        createTable("CREATE TABLE %s (id text PRIMARY KEY) WITH compaction = {'class':'LeveledCompactionStrategy', 'sstable_size_in_mb':1, 'fanout_size':5};");
         assertTrue(getCurrentColumnFamilyStore().getCompactionStrategyManager().isEnabled());
         execute("insert into %s (id) values ('1')");
         flush();
@@ -64,9 +65,9 @@ public class CompactionsCQLTest extends CQLTester
     {
         createTable("CREATE TABLE %s (id text PRIMARY KEY) WITH compaction = {'class':'DateTieredCompactionStrategy', 'min_threshold':2};");
         assertTrue(getCurrentColumnFamilyStore().getCompactionStrategyManager().isEnabled());
-        execute("insert into %s (id) values ('1')");
+        execute("insert into %s (id) values ('1') using timestamp 1000"); // same timestamp = same window = minor compaction triggered
         flush();
-        execute("insert into %s (id) values ('1')");
+        execute("insert into %s (id) values ('1') using timestamp 1000");
         flush();
         waitForMinor(KEYSPACE, currentTable(), SLEEP_TIME, true);
     }
@@ -103,6 +104,12 @@ public class CompactionsCQLTest extends CQLTester
         assertFalse(getCurrentColumnFamilyStore().getCompactionStrategyManager().isEnabled());
         getCurrentColumnFamilyStore().enableAutoCompaction();
         assertTrue(getCurrentColumnFamilyStore().getCompactionStrategyManager().isEnabled());
+
+        // Alter keyspace replication settings to force compaction strategy reload and check strategy is still enabled
+        execute("alter keyspace "+keyspace()+" with replication = { 'class' : 'SimpleStrategy', 'replication_factor' : 3 }");
+        getCurrentColumnFamilyStore().getCompactionStrategyManager().maybeReloadDiskBoundaries();
+        assertTrue(getCurrentColumnFamilyStore().getCompactionStrategyManager().isEnabled());
+
         execute("insert into %s (id) values ('1')");
         flush();
         execute("insert into %s (id) values ('1')");
@@ -160,8 +167,14 @@ public class CompactionsCQLTest extends CQLTester
         localOptions.put("class", "DateTieredCompactionStrategy");
         getCurrentColumnFamilyStore().setCompactionParameters(localOptions);
         assertTrue(verifyStrategies(getCurrentColumnFamilyStore().getCompactionStrategyManager(), DateTieredCompactionStrategy.class));
+        // Invalidate disk boundaries to ensure that boundary invalidation will not cause the old strategy to be reloaded
+        getCurrentColumnFamilyStore().invalidateDiskBoundaries();
         // altering something non-compaction related
         execute("ALTER TABLE %s WITH gc_grace_seconds = 1000");
+        // should keep the local compaction strat
+        assertTrue(verifyStrategies(getCurrentColumnFamilyStore().getCompactionStrategyManager(), DateTieredCompactionStrategy.class));
+        // Alter keyspace replication settings to force compaction strategy reload
+        execute("alter keyspace "+keyspace()+" with replication = { 'class' : 'SimpleStrategy', 'replication_factor' : 3 }");
         // should keep the local compaction strat
         assertTrue(verifyStrategies(getCurrentColumnFamilyStore().getCompactionStrategyManager(), DateTieredCompactionStrategy.class));
         // altering a compaction option
@@ -169,7 +182,6 @@ public class CompactionsCQLTest extends CQLTester
         // will use the new option
         assertTrue(verifyStrategies(getCurrentColumnFamilyStore().getCompactionStrategyManager(), SizeTieredCompactionStrategy.class));
     }
-
 
     @Test
     public void testSetLocalCompactionStrategyDisable() throws Throwable
@@ -217,9 +229,9 @@ public class CompactionsCQLTest extends CQLTester
     public boolean verifyStrategies(CompactionStrategyManager manager, Class<? extends AbstractCompactionStrategy> expected)
     {
         boolean found = false;
-        for (AbstractCompactionStrategy actualStrategy : manager.getStrategies())
+        for (List<AbstractCompactionStrategy> strategies : manager.getStrategies())
         {
-            if (!actualStrategy.getClass().equals(expected))
+            if (!strategies.stream().allMatch((strategy) -> strategy.getClass().equals(expected)))
                 return false;
             found = true;
         }

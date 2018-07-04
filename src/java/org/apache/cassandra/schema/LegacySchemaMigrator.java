@@ -21,6 +21,7 @@ import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import org.slf4j.Logger;
@@ -28,7 +29,9 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.*;
 import org.apache.cassandra.cql3.ColumnIdentifier;
+import org.apache.cassandra.cql3.FieldIdentifier;
 import org.apache.cassandra.cql3.QueryProcessor;
+import org.apache.cassandra.cql3.SuperColumnCompatibility;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.cql3.functions.FunctionName;
 import org.apache.cassandra.cql3.functions.UDAggregate;
@@ -40,9 +43,7 @@ import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.db.rows.RowIterator;
 import org.apache.cassandra.db.rows.UnfilteredRowIterators;
 import org.apache.cassandra.exceptions.InvalidRequestException;
-import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.concurrent.OpOrder;
 
 import static java.lang.String.format;
 import static org.apache.cassandra.utils.ByteBufferUtil.bytes;
@@ -107,7 +108,7 @@ public final class LegacySchemaMigrator
         // write metadata to the new schema tables
         logger.info("Moving {} keyspaces from legacy schema tables to the new schema keyspace ({})",
                     keyspaces.size(),
-                    SchemaKeyspace.NAME);
+                    SchemaConstants.SCHEMA_KEYSPACE_NAME);
         keyspaces.forEach(LegacySchemaMigrator::storeKeyspaceInNewSchemaTables);
         keyspaces.forEach(LegacySchemaMigrator::migrateBuiltIndexesForKeyspace);
 
@@ -150,7 +151,7 @@ public final class LegacySchemaMigrator
 
     static void unloadLegacySchemaTables()
     {
-        KeyspaceMetadata systemKeyspace = Schema.instance.getKSMetaData(SystemKeyspace.NAME);
+        KeyspaceMetadata systemKeyspace = Schema.instance.getKSMetaData(SchemaConstants.SYSTEM_KEYSPACE_NAME);
 
         Tables systemTables = systemKeyspace.tables;
         for (CFMetaData table : LegacySchemaTables)
@@ -171,20 +172,20 @@ public final class LegacySchemaMigrator
     {
         logger.info("Migrating keyspace {}", keyspace);
 
-        Mutation mutation = SchemaKeyspace.makeCreateKeyspaceMutation(keyspace.name, keyspace.params, keyspace.timestamp);
+        Mutation.SimpleBuilder builder = SchemaKeyspace.makeCreateKeyspaceMutation(keyspace.name, keyspace.params, keyspace.timestamp);
         for (Table table : keyspace.tables)
-            SchemaKeyspace.addTableToSchemaMutation(table.metadata, table.timestamp, true, mutation);
+            SchemaKeyspace.addTableToSchemaMutation(table.metadata, true, builder.timestamp(table.timestamp));
 
         for (Type type : keyspace.types)
-            SchemaKeyspace.addTypeToSchemaMutation(type.metadata, type.timestamp, mutation);
+            SchemaKeyspace.addTypeToSchemaMutation(type.metadata, builder.timestamp(type.timestamp));
 
         for (Function function : keyspace.functions)
-            SchemaKeyspace.addFunctionToSchemaMutation(function.metadata, function.timestamp, mutation);
+            SchemaKeyspace.addFunctionToSchemaMutation(function.metadata, builder.timestamp(function.timestamp));
 
         for (Aggregate aggregate : keyspace.aggregates)
-            SchemaKeyspace.addAggregateToSchemaMutation(aggregate.metadata, aggregate.timestamp, mutation);
+            SchemaKeyspace.addAggregateToSchemaMutation(aggregate.metadata, builder.timestamp(aggregate.timestamp));
 
-        mutation.apply();
+        builder.build().apply();
     }
 
     /*
@@ -192,10 +193,10 @@ public final class LegacySchemaMigrator
      */
     private static Collection<Keyspace> readSchema()
     {
-        String query = format("SELECT keyspace_name FROM %s.%s", SystemKeyspace.NAME, SystemKeyspace.LEGACY_KEYSPACES);
+        String query = format("SELECT keyspace_name FROM %s.%s", SchemaConstants.SYSTEM_KEYSPACE_NAME, SystemKeyspace.LEGACY_KEYSPACES);
         Collection<String> keyspaceNames = new ArrayList<>();
         query(query).forEach(row -> keyspaceNames.add(row.getString("keyspace_name")));
-        keyspaceNames.removeAll(Schema.SYSTEM_KEYSPACE_NAMES);
+        keyspaceNames.removeAll(SchemaConstants.LOCAL_SYSTEM_KEYSPACE_NAMES);
 
         Collection<Keyspace> keyspaces = new ArrayList<>();
         keyspaceNames.forEach(name -> keyspaces.add(readKeyspace(name)));
@@ -224,7 +225,7 @@ public final class LegacySchemaMigrator
     private static long readKeyspaceTimestamp(String keyspaceName)
     {
         String query = format("SELECT writeTime(durable_writes) AS timestamp FROM %s.%s WHERE keyspace_name = ?",
-                              SystemKeyspace.NAME,
+                              SchemaConstants.SYSTEM_KEYSPACE_NAME,
                               SystemKeyspace.LEGACY_KEYSPACES);
         return query(query, keyspaceName).one().getLong("timestamp");
     }
@@ -232,7 +233,7 @@ public final class LegacySchemaMigrator
     private static KeyspaceParams readKeyspaceParams(String keyspaceName)
     {
         String query = format("SELECT * FROM %s.%s WHERE keyspace_name = ?",
-                              SystemKeyspace.NAME,
+                              SchemaConstants.SYSTEM_KEYSPACE_NAME,
                               SystemKeyspace.LEGACY_KEYSPACES);
         UntypedResultSet.Row row = query(query, keyspaceName).one();
 
@@ -252,7 +253,7 @@ public final class LegacySchemaMigrator
     private static Collection<Table> readTables(String keyspaceName)
     {
         String query = format("SELECT columnfamily_name FROM %s.%s WHERE keyspace_name = ?",
-                              SystemKeyspace.NAME,
+                              SchemaConstants.SYSTEM_KEYSPACE_NAME,
                               SystemKeyspace.LEGACY_COLUMNFAMILIES);
         Collection<String> tableNames = new ArrayList<>();
         query(query, keyspaceName).forEach(row -> tableNames.add(row.getString("columnfamily_name")));
@@ -272,7 +273,7 @@ public final class LegacySchemaMigrator
     private static long readTableTimestamp(String keyspaceName, String tableName)
     {
         String query = format("SELECT writeTime(type) AS timestamp FROM %s.%s WHERE keyspace_name = ? AND columnfamily_name = ?",
-                              SystemKeyspace.NAME,
+                              SchemaConstants.SYSTEM_KEYSPACE_NAME,
                               SystemKeyspace.LEGACY_COLUMNFAMILIES);
         return query(query, keyspaceName, tableName).one().getLong("timestamp");
     }
@@ -280,24 +281,25 @@ public final class LegacySchemaMigrator
     private static CFMetaData readTableMetadata(String keyspaceName, String tableName)
     {
         String tableQuery = format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND columnfamily_name = ?",
-                                   SystemKeyspace.NAME,
+                                   SchemaConstants.SYSTEM_KEYSPACE_NAME,
                                    SystemKeyspace.LEGACY_COLUMNFAMILIES);
         UntypedResultSet.Row tableRow = query(tableQuery, keyspaceName, tableName).one();
 
         String columnsQuery = format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND columnfamily_name = ?",
-                                     SystemKeyspace.NAME,
+                                     SchemaConstants.SYSTEM_KEYSPACE_NAME,
                                      SystemKeyspace.LEGACY_COLUMNS);
         UntypedResultSet columnRows = query(columnsQuery, keyspaceName, tableName);
 
         String triggersQuery = format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND columnfamily_name = ?",
-                                      SystemKeyspace.NAME,
+                                      SchemaConstants.SYSTEM_KEYSPACE_NAME,
                                       SystemKeyspace.LEGACY_TRIGGERS);
         UntypedResultSet triggerRows = query(triggersQuery, keyspaceName, tableName);
 
-        return decodeTableMetadata(tableRow, columnRows, triggerRows);
+        return decodeTableMetadata(tableName, tableRow, columnRows, triggerRows);
     }
 
-    private static CFMetaData decodeTableMetadata(UntypedResultSet.Row tableRow,
+    private static CFMetaData decodeTableMetadata(String tableName,
+                                                  UntypedResultSet.Row tableRow,
                                                   UntypedResultSet columnRows,
                                                   UntypedResultSet triggerRows)
     {
@@ -307,7 +309,7 @@ public final class LegacySchemaMigrator
         AbstractType<?> rawComparator = TypeParser.parse(tableRow.getString("comparator"));
         AbstractType<?> subComparator = tableRow.has("subcomparator") ? TypeParser.parse(tableRow.getString("subcomparator")) : null;
 
-        boolean isSuper = "super".equals(tableRow.getString("type").toLowerCase());
+        boolean isSuper = "super".equals(tableRow.getString("type").toLowerCase(Locale.ENGLISH));
         boolean isCompound = rawComparator instanceof CompositeType || isSuper;
 
         /*
@@ -320,7 +322,7 @@ public final class LegacySchemaMigrator
         if (rawIsDense != null && !rawIsDense)
             isDense = false;
         else
-            isDense = calculateIsDense(rawComparator, columnRows);
+            isDense = calculateIsDense(rawComparator, columnRows, isSuper);
 
         // now, if switched to sparse, remove redundant compact_value column and the last clustering column,
         // directly copying CASSANDRA-11502 logic. See CASSANDRA-11315.
@@ -412,7 +414,7 @@ public final class LegacySchemaMigrator
      * information for table just created through thrift, nor for table prior to CASSANDRA-7744, so this
      * method does its best to infer whether the table is dense or not based on other elements.
      */
-    private static boolean calculateIsDense(AbstractType<?> comparator, UntypedResultSet columnRows)
+    private static boolean calculateIsDense(AbstractType<?> comparator, UntypedResultSet columnRows, boolean isSuper)
     {
         /*
          * As said above, this method is only here because we need to deal with thrift upgrades.
@@ -434,8 +436,15 @@ public final class LegacySchemaMigrator
          * in the latter case only if the comparator is exactly CompositeType(UTF8Type).
          */
         for (UntypedResultSet.Row columnRow : columnRows)
+        {
             if ("regular".equals(columnRow.getString("type")))
                 return false;
+        }
+
+        // If we've checked the columns for supercf and found no regulars, it's dense. Relying on the emptiness
+        // of the value column is not enough due to index calculation.
+        if (isSuper)
+            return true;
 
         int maxClusteringIdx = -1;
         for (UntypedResultSet.Row columnRow : columnRows)
@@ -454,18 +463,11 @@ public final class LegacySchemaMigrator
         {
             String kind = columnRow.getString("type");
 
-            if ("compact_value".equals(kind))
+            if (!isSuper && "compact_value".equals(kind))
                 continue;
 
-            if ("clustering_key".equals(kind))
-            {
-                int position = columnRow.has("component_index") ? columnRow.getInt("component_index") : 0;
-                if (isSuper && position != 0)
-                    continue;
-
-                if (!isSuper && !isCompound)
-                    continue;
-            }
+            if ("clustering_key".equals(kind) && !isSuper && !isCompound)
+                continue;
 
             filteredRows.add(columnRow);
         }
@@ -496,7 +498,7 @@ public final class LegacySchemaMigrator
         if (row.has("memtable_flush_period_in_ms"))
             params.memtableFlushPeriodInMs(row.getInt("memtable_flush_period_in_ms"));
 
-        params.caching(CachingParams.fromMap(fromJsonMap(row.getString("caching"))));
+        params.caching(cachingFromRow(row.getString("caching")));
 
         if (row.has("default_time_to_live"))
             params.defaultTimeToLive(row.getInt("default_time_to_live"));
@@ -524,6 +526,33 @@ public final class LegacySchemaMigrator
             params.bloomFilterFpChance(row.getDouble("bloom_filter_fp_chance"));
 
         return params.build();
+    }
+
+
+    /**
+     *
+      * 2.1 and newer use JSON'ified map of caching parameters, but older versions had valid Strings
+      * NONE, KEYS_ONLY, ROWS_ONLY, and ALL
+      *
+      * @param caching, the string representing the table's caching options
+      * @return CachingParams object corresponding to the input string
+      */
+    @VisibleForTesting
+    public static CachingParams cachingFromRow(String caching)
+    {
+        switch(caching)
+        {
+            case "NONE":
+                return CachingParams.CACHE_NOTHING;
+            case "KEYS_ONLY":
+                return CachingParams.CACHE_KEYS;
+            case "ROWS_ONLY":
+                return new CachingParams(false, Integer.MAX_VALUE);
+            case "ALL":
+                return CachingParams.CACHE_EVERYTHING;
+            default:
+                return CachingParams.fromMap(fromJsonMap(caching));
+        }
     }
 
     /*
@@ -566,14 +595,9 @@ public final class LegacySchemaMigrator
     // Should only be called on compact tables
     private static boolean checkNeedsUpgrade(Iterable<UntypedResultSet.Row> defs, boolean isSuper, boolean isStaticCompactTable)
     {
+        // For SuperColumn tables, re-create a compact value column
         if (isSuper)
-        {
-            // Check if we've added the "supercolumn map" column yet or not
-            for (UntypedResultSet.Row row : defs)
-                if (row.getString("column_name").isEmpty())
-                    return false;
             return true;
-        }
 
         // For static compact tables, we need to upgrade if the regular definitions haven't been converted to static yet,
         // i.e. if we don't have a static definition yet.
@@ -623,7 +647,7 @@ public final class LegacySchemaMigrator
 
         if (isSuper)
         {
-            defs.add(ColumnDefinition.regularDef(ksName, cfName, CompactTables.SUPER_COLUMN_MAP_COLUMN_STR, MapType.getInstance(subComparator, defaultValidator, true)));
+            defs.add(ColumnDefinition.regularDef(ksName, cfName, SuperColumnCompatibility.SUPER_COLUMN_MAP_COLUMN_STR, MapType.getInstance(subComparator, defaultValidator, true)));
         }
         else if (isStaticCompactTable)
         {
@@ -742,6 +766,14 @@ public final class LegacySchemaMigrator
 
         AbstractType<?> validator = parseType(row.getString("validator"));
 
+        // In the 2.x schema we didn't store UDT's with a FrozenType wrapper because they were implicitly frozen.  After
+        // CASSANDRA-7423 (non-frozen UDTs), this is no longer true, so we need to freeze UDTs and nested freezable
+        // types (UDTs and collections) to properly migrate the schema.  See CASSANDRA-11609 and CASSANDRA-11613.
+        if (validator.isUDT() && validator.isMultiCell())
+            validator = validator.freeze();
+        else
+            validator = validator.freezeNestedMulticellTypes();
+
         return new ColumnDefinition(keyspace, table, name, validator, componentIndex, kind);
     }
 
@@ -771,21 +803,26 @@ public final class LegacySchemaMigrator
             if (row.has("index_options"))
                 indexOptions = fromJsonMap(row.getString("index_options"));
 
-            String indexName = null;
             if (row.has("index_name"))
-                indexName = row.getString("index_name");
+            {
+                String indexName = row.getString("index_name");
 
-            ColumnDefinition column = createColumnFromColumnRow(row,
-                                                                keyspace,
-                                                                table,
-                                                                rawComparator,
-                                                                rawSubComparator,
-                                                                isSuper,
-                                                                isCQLTable,
-                                                                isStaticCompactTable,
-                                                                needsUpgrade);
+                ColumnDefinition column = createColumnFromColumnRow(row,
+                                                                    keyspace,
+                                                                    table,
+                                                                    rawComparator,
+                                                                    rawSubComparator,
+                                                                    isSuper,
+                                                                    isCQLTable,
+                                                                    isStaticCompactTable,
+                                                                    needsUpgrade);
 
-            indexes.add(IndexMetadata.fromLegacyMetadata(cfm, column, indexName, kind, indexOptions));
+                indexes.add(IndexMetadata.fromLegacyMetadata(cfm, column, indexName, kind, indexOptions));
+            }
+            else
+            {
+                logger.error("Failed to find index name for legacy migration of index on {}.{}", keyspace, table);
+            }
         }
 
         return indexes.build();
@@ -823,7 +860,7 @@ public final class LegacySchemaMigrator
     private static Collection<Type> readTypes(String keyspaceName)
     {
         String query = format("SELECT type_name FROM %s.%s WHERE keyspace_name = ?",
-                              SystemKeyspace.NAME,
+                              SchemaConstants.SYSTEM_KEYSPACE_NAME,
                               SystemKeyspace.LEGACY_USERTYPES);
         Collection<String> typeNames = new ArrayList<>();
         query(query, keyspaceName).forEach(row -> typeNames.add(row.getString("type_name")));
@@ -846,7 +883,7 @@ public final class LegacySchemaMigrator
      */
     private static long readTypeTimestamp(String keyspaceName, String typeName)
     {
-        ColumnFamilyStore store = org.apache.cassandra.db.Keyspace.open(SystemKeyspace.NAME)
+        ColumnFamilyStore store = org.apache.cassandra.db.Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME)
                                                                   .getColumnFamilyStore(SystemKeyspace.LEGACY_USERTYPES);
 
         ClusteringComparator comparator = store.metadata.comparator;
@@ -855,8 +892,8 @@ public final class LegacySchemaMigrator
         DecoratedKey key = store.metadata.decorateKey(AsciiType.instance.fromString(keyspaceName));
         SinglePartitionReadCommand command = SinglePartitionReadCommand.create(store.metadata, nowInSec, key, slices);
 
-        try (OpOrder.Group op = store.readOrdering.start();
-             RowIterator partition = UnfilteredRowIterators.filter(command.queryMemtableAndDisk(store, op), nowInSec))
+        try (ReadExecutionController controller = command.executionController();
+             RowIterator partition = UnfilteredRowIterators.filter(command.queryMemtableAndDisk(store, controller), nowInSec))
         {
             long timestamp;
             do {
@@ -880,14 +917,14 @@ public final class LegacySchemaMigrator
     private static UserType readTypeMetadata(String keyspaceName, String typeName)
     {
         String query = format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND type_name = ?",
-                              SystemKeyspace.NAME,
+                              SchemaConstants.SYSTEM_KEYSPACE_NAME,
                               SystemKeyspace.LEGACY_USERTYPES);
         UntypedResultSet.Row row = query(query, keyspaceName, typeName).one();
 
-        List<ByteBuffer> names =
+        List<FieldIdentifier> names =
             row.getList("field_names", UTF8Type.instance)
                .stream()
-               .map(ByteBufferUtil::bytes)
+               .map(t -> FieldIdentifier.forInternalString(t))
                .collect(Collectors.toList());
 
         List<AbstractType<?>> types =
@@ -896,7 +933,7 @@ public final class LegacySchemaMigrator
                .map(LegacySchemaMigrator::parseType)
                .collect(Collectors.toList());
 
-        return new UserType(keyspaceName, bytes(typeName), names, types);
+        return new UserType(keyspaceName, bytes(typeName), names, types, true);
     }
 
     /*
@@ -906,7 +943,7 @@ public final class LegacySchemaMigrator
     private static Collection<Function> readFunctions(String keyspaceName)
     {
         String query = format("SELECT function_name, signature FROM %s.%s WHERE keyspace_name = ?",
-                              SystemKeyspace.NAME,
+                              SchemaConstants.SYSTEM_KEYSPACE_NAME,
                               SystemKeyspace.LEGACY_FUNCTIONS);
         HashMultimap<String, List<String>> functionSignatures = HashMultimap.create();
         query(query, keyspaceName).forEach(row -> functionSignatures.put(row.getString("function_name"), row.getList("signature", UTF8Type.instance)));
@@ -928,7 +965,7 @@ public final class LegacySchemaMigrator
         String query = format("SELECT writeTime(return_type) AS timestamp " +
                               "FROM %s.%s " +
                               "WHERE keyspace_name = ? AND function_name = ? AND signature = ?",
-                              SystemKeyspace.NAME,
+                              SchemaConstants.SYSTEM_KEYSPACE_NAME,
                               SystemKeyspace.LEGACY_FUNCTIONS);
         return query(query, keyspaceName, functionName, signature).one().getLong("timestamp");
     }
@@ -936,7 +973,7 @@ public final class LegacySchemaMigrator
     private static UDFunction readFunctionMetadata(String keyspaceName, String functionName, List<String> signature)
     {
         String query = format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND function_name = ? AND signature = ?",
-                              SystemKeyspace.NAME,
+                              SchemaConstants.SYSTEM_KEYSPACE_NAME,
                               SystemKeyspace.LEGACY_FUNCTIONS);
         UntypedResultSet.Row row = query(query, keyspaceName, functionName, signature).one();
 
@@ -975,7 +1012,7 @@ public final class LegacySchemaMigrator
     private static Collection<Aggregate> readAggregates(Functions functions, String keyspaceName)
     {
         String query = format("SELECT aggregate_name, signature FROM %s.%s WHERE keyspace_name = ?",
-                              SystemKeyspace.NAME,
+                              SchemaConstants.SYSTEM_KEYSPACE_NAME,
                               SystemKeyspace.LEGACY_AGGREGATES);
         HashMultimap<String, List<String>> aggregateSignatures = HashMultimap.create();
         query(query, keyspaceName).forEach(row -> aggregateSignatures.put(row.getString("aggregate_name"), row.getList("signature", UTF8Type.instance)));
@@ -997,7 +1034,7 @@ public final class LegacySchemaMigrator
         String query = format("SELECT writeTime(return_type) AS timestamp " +
                               "FROM %s.%s " +
                               "WHERE keyspace_name = ? AND aggregate_name = ? AND signature = ?",
-                              SystemKeyspace.NAME,
+                              SchemaConstants.SYSTEM_KEYSPACE_NAME,
                               SystemKeyspace.LEGACY_AGGREGATES);
         return query(query, keyspaceName, aggregateName, signature).one().getLong("timestamp");
     }
@@ -1005,7 +1042,7 @@ public final class LegacySchemaMigrator
     private static UDAggregate readAggregateMetadata(Functions functions, String keyspaceName, String functionName, List<String> signature)
     {
         String query = format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND aggregate_name = ? AND signature = ?",
-                              SystemKeyspace.NAME,
+                              SchemaConstants.SYSTEM_KEYSPACE_NAME,
                               SystemKeyspace.LEGACY_AGGREGATES);
         UntypedResultSet.Row row = query(query, keyspaceName, functionName, signature).one();
 

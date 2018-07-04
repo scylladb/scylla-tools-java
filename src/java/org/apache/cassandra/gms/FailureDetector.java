@@ -36,6 +36,7 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.util.FileUtils;
+import org.apache.cassandra.utils.Clock;
 import org.apache.cassandra.utils.FBUtilities;
 
 /**
@@ -52,7 +53,7 @@ public class FailureDetector implements IFailureDetector, FailureDetectorMBean
     private static final int DEBUG_PERCENTAGE = 80; // if the phi is larger than this percentage of the max, log a debug message
     private static final long DEFAULT_MAX_PAUSE = 5000L * 1000000L; // 5 seconds
     private static final long MAX_LOCAL_PAUSE_IN_NANOS = getMaxLocalPause();
-    private long lastInterpret = System.nanoTime();
+    private long lastInterpret = Clock.instance.nanoTime();
     private long lastPause = 0L;
 
     private static long getMaxLocalPause()
@@ -246,13 +247,13 @@ public class FailureDetector implements IFailureDetector, FailureDetectorMBean
         // it's worth being defensive here so minor bugs don't cause disproportionate
         // badness.  (See CASSANDRA-1463 for an example).
         if (epState == null)
-            logger.error("unknown endpoint {}", ep);
+            logger.error("Unknown endpoint: " + ep, new IllegalArgumentException(""));
         return epState != null && epState.isAlive();
     }
 
     public void report(InetAddress ep)
     {
-        long now = System.nanoTime();
+        long now = Clock.instance.nanoTime();
         ArrivalWindow heartbeatWindow = arrivalSamples.get(ep);
         if (heartbeatWindow == null)
         {
@@ -279,7 +280,7 @@ public class FailureDetector implements IFailureDetector, FailureDetectorMBean
         {
             return;
         }
-        long now = System.nanoTime();
+        long now = Clock.instance.nanoTime();
         long diff = now - lastInterpret;
         lastInterpret = now;
         if (diff > MAX_LOCAL_PAUSE_IN_NANOS)
@@ -288,7 +289,7 @@ public class FailureDetector implements IFailureDetector, FailureDetectorMBean
             lastPause = now;
             return;
         }
-        if (System.nanoTime() - lastPause < MAX_LOCAL_PAUSE_IN_NANOS)
+        if (Clock.instance.nanoTime() - lastPause < MAX_LOCAL_PAUSE_IN_NANOS)
         {
             logger.debug("Still not marking nodes down due to local pause");
             return;
@@ -350,7 +351,7 @@ public class FailureDetector implements IFailureDetector, FailureDetectorMBean
         for (InetAddress ep : eps)
         {
             ArrivalWindow hWnd = arrivalSamples.get(ep);
-            sb.append(ep + " : ");
+            sb.append(ep).append(" : ");
             sb.append(hWnd);
             sb.append(System.getProperty("line.separator"));
         }
@@ -453,7 +454,7 @@ class ArrivalWindow
             }
             else
             {
-                logger.debug("Ignoring interval time of {} for {}", interArrivalTime, ep);
+                logger.trace("Ignoring interval time of {} for {}", interArrivalTime, ep);
             }
         }
         else

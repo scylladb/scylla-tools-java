@@ -19,10 +19,13 @@ package org.apache.cassandra.service;
 
 import java.net.InetAddress;
 import java.util.Collection;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
 import com.google.common.collect.Iterables;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,7 +34,6 @@ import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.WriteType;
 import org.apache.cassandra.exceptions.*;
-import org.apache.cassandra.net.IAsyncCallback;
 import org.apache.cassandra.net.IAsyncCallbackWithFailure;
 import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.utils.concurrent.SimpleCondition;
@@ -42,7 +44,6 @@ public abstract class AbstractWriteResponseHandler<T> implements IAsyncCallbackW
 
     private final SimpleCondition condition = new SimpleCondition();
     protected final Keyspace keyspace;
-    protected final long start;
     protected final Collection<InetAddress> naturalEndpoints;
     public final ConsistencyLevel consistencyLevel;
     protected final Runnable callback;
@@ -51,33 +52,35 @@ public abstract class AbstractWriteResponseHandler<T> implements IAsyncCallbackW
     private static final AtomicIntegerFieldUpdater<AbstractWriteResponseHandler> failuresUpdater
         = AtomicIntegerFieldUpdater.newUpdater(AbstractWriteResponseHandler.class, "failures");
     private volatile int failures = 0;
+    private final Map<InetAddress, RequestFailureReason> failureReasonByEndpoint;
+    private final long queryStartNanoTime;
+    private volatile boolean supportsBackPressure = true;
 
     /**
      * @param callback A callback to be called when the write is successful.
+     * @param queryStartNanoTime
      */
     protected AbstractWriteResponseHandler(Keyspace keyspace,
                                            Collection<InetAddress> naturalEndpoints,
                                            Collection<InetAddress> pendingEndpoints,
                                            ConsistencyLevel consistencyLevel,
                                            Runnable callback,
-                                           WriteType writeType)
+                                           WriteType writeType,
+                                           long queryStartNanoTime)
     {
         this.keyspace = keyspace;
         this.pendingEndpoints = pendingEndpoints;
-        this.start = System.nanoTime();
         this.consistencyLevel = consistencyLevel;
         this.naturalEndpoints = naturalEndpoints;
         this.callback = callback;
         this.writeType = writeType;
+        this.failureReasonByEndpoint = new ConcurrentHashMap<>();
+        this.queryStartNanoTime = queryStartNanoTime;
     }
 
     public void get() throws WriteTimeoutException, WriteFailureException
     {
-        long requestTimeout = writeType == WriteType.COUNTER
-                            ? DatabaseDescriptor.getCounterWriteRpcTimeout()
-                            : DatabaseDescriptor.getWriteRpcTimeout();
-
-        long timeout = TimeUnit.MILLISECONDS.toNanos(requestTimeout) - (System.nanoTime() - start);
+        long timeout = currentTimeout();
 
         boolean success;
         try
@@ -103,12 +106,20 @@ public abstract class AbstractWriteResponseHandler<T> implements IAsyncCallbackW
 
         if (totalBlockFor() + failures > totalEndpoints())
         {
-            throw new WriteFailureException(consistencyLevel, ackCount(), failures, totalBlockFor(), writeType);
+            throw new WriteFailureException(consistencyLevel, ackCount(), totalBlockFor(), writeType, failureReasonByEndpoint);
         }
     }
 
-    /** 
-     * @return the minimum number of endpoints that must reply. 
+    public final long currentTimeout()
+    {
+        long requestTimeout = writeType == WriteType.COUNTER
+                              ? DatabaseDescriptor.getCounterWriteRpcTimeout()
+                              : DatabaseDescriptor.getWriteRpcTimeout();
+        return TimeUnit.MILLISECONDS.toNanos(requestTimeout) - (System.nanoTime() - queryStartNanoTime);
+    }
+
+    /**
+     * @return the minimum number of endpoints that must reply.
      */
     protected int totalBlockFor()
     {
@@ -117,8 +128,8 @@ public abstract class AbstractWriteResponseHandler<T> implements IAsyncCallbackW
         return consistencyLevel.blockFor(keyspace) + pendingEndpoints.size();
     }
 
-    /** 
-     * @return the total number of endpoints the request has been sent to. 
+    /**
+     * @return the total number of endpoints the request has been sent to.
      */
     protected int totalEndpoints()
     {
@@ -154,7 +165,7 @@ public abstract class AbstractWriteResponseHandler<T> implements IAsyncCallbackW
     }
 
     @Override
-    public void onFailure(InetAddress from)
+    public void onFailure(InetAddress from, RequestFailureReason failureReason)
     {
         logger.trace("Got failure from {}", from);
 
@@ -162,7 +173,20 @@ public abstract class AbstractWriteResponseHandler<T> implements IAsyncCallbackW
               ? failuresUpdater.incrementAndGet(this)
               : failures;
 
+        failureReasonByEndpoint.put(from, failureReason);
+
         if (totalBlockFor() + n > totalEndpoints())
             signal();
+    }
+
+    @Override
+    public boolean supportsBackPressure()
+    {
+        return supportsBackPressure;
+    }
+
+    public void setSupportsBackPressure(boolean supportsBackPressure)
+    {
+        this.supportsBackPressure = supportsBackPressure;
     }
 }

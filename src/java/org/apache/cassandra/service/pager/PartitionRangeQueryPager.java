@@ -17,18 +17,12 @@
  */
 package org.apache.cassandra.service.pager;
 
-import java.util.Optional;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.DataLimits;
 import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.dht.*;
 import org.apache.cassandra.exceptions.RequestExecutionException;
-import org.apache.cassandra.index.Index;
-import org.apache.cassandra.schema.IndexMetadata;
+import org.apache.cassandra.transport.ProtocolVersion;
 
 /**
  * Pages a PartitionRangeReadCommand.
@@ -38,12 +32,10 @@ import org.apache.cassandra.schema.IndexMetadata;
  */
 public class PartitionRangeQueryPager extends AbstractQueryPager
 {
-    private static final Logger logger = LoggerFactory.getLogger(PartitionRangeQueryPager.class);
-
     private volatile DecoratedKey lastReturnedKey;
     private volatile PagingState.RowMark lastReturnedRow;
 
-    public PartitionRangeQueryPager(PartitionRangeReadCommand command, PagingState state, int protocolVersion)
+    public PartitionRangeQueryPager(PartitionRangeReadCommand command, PagingState state, ProtocolVersion protocolVersion)
     {
         super(command, protocolVersion);
 
@@ -53,6 +45,29 @@ public class PartitionRangeQueryPager extends AbstractQueryPager
             lastReturnedRow = state.rowMark;
             restoreState(lastReturnedKey, state.remaining, state.remainingInPartition);
         }
+    }
+
+    public PartitionRangeQueryPager(ReadCommand command,
+                                    ProtocolVersion protocolVersion,
+                                    DecoratedKey lastReturnedKey,
+                                    PagingState.RowMark lastReturnedRow,
+                                    int remaining,
+                                    int remainingInPartition)
+    {
+        super(command, protocolVersion);
+        this.lastReturnedKey = lastReturnedKey;
+        this.lastReturnedRow = lastReturnedRow;
+        restoreState(lastReturnedKey, remaining, remainingInPartition);
+    }
+
+    public PartitionRangeQueryPager withUpdatedLimit(DataLimits newLimits)
+    {
+        return new PartitionRangeQueryPager(command.withUpdatedLimit(newLimits),
+                                            protocolVersion,
+                                            lastReturnedKey,
+                                            lastReturnedRow,
+                                            maxRemaining(),
+                                            remainingInPartition());
     }
 
     public PagingState state()
@@ -90,9 +105,7 @@ public class PartitionRangeQueryPager extends AbstractQueryPager
             }
         }
 
-        Index index = command.getIndex(Keyspace.openAndGetStore(command.metadata()));
-        Optional<IndexMetadata> indexMetadata = index != null ? Optional.of(index.getIndexMetadata()) : Optional.empty();
-        return new PartitionRangeReadCommand(command.metadata(), command.nowInSec(), command.columnFilter(), command.rowFilter(), limits, pageRange, indexMetadata);
+        return ((PartitionRangeReadCommand) command).withUpdatedLimitsAndDataRange(limits, pageRange);
     }
 
     protected void recordLast(DecoratedKey key, Row last)

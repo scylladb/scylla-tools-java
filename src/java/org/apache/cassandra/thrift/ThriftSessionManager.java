@@ -19,11 +19,12 @@ package org.apache.cassandra.thrift;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import io.netty.util.concurrent.FastThreadLocal;
 
 /**
  * Encapsulates the current client state (session).
@@ -36,7 +37,7 @@ public class ThriftSessionManager
     private static final Logger logger = LoggerFactory.getLogger(ThriftSessionManager.class);
     public final static ThriftSessionManager instance = new ThriftSessionManager();
 
-    private final ThreadLocal<SocketAddress> remoteSocket = new ThreadLocal<>();
+    private final FastThreadLocal<SocketAddress> remoteSocket = new FastThreadLocal<>();
     private final ConcurrentHashMap<SocketAddress, ThriftClientState> activeSocketSessions = new ConcurrentHashMap<>();
 
     /**

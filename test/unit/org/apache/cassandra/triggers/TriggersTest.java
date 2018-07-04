@@ -18,7 +18,6 @@
 package org.apache.cassandra.triggers;
 
 import java.net.InetAddress;
-import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.Collections;
 
@@ -35,7 +34,6 @@ import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.db.partitions.Partition;
-import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.RequestExecutionException;
 import org.apache.cassandra.service.StorageService;
@@ -108,7 +106,7 @@ public class TriggersTest
     {
         String cql = String.format("INSERT INTO %s.%s (k, v1) VALUES (0, 0)", ksName, cfName);
         QueryProcessor.process(cql, ConsistencyLevel.ONE);
-        assertUpdateIsAugmented(0);
+        assertUpdateIsAugmented(0, "v1", 0);
     }
 
     @Test
@@ -119,7 +117,7 @@ public class TriggersTest
                                    "APPLY BATCH",
                                    ksName, cfName);
         QueryProcessor.process(cql, ConsistencyLevel.ONE);
-        assertUpdateIsAugmented(1);
+        assertUpdateIsAugmented(1, "v1", 1);
     }
 
     @Test
@@ -135,7 +133,7 @@ public class TriggersTest
                       getColumnForInsert("v1", 2),
                       org.apache.cassandra.thrift.ConsistencyLevel.ONE);
 
-        assertUpdateIsAugmented(2);
+        assertUpdateIsAugmented(2, "v1", 2);
     }
 
     @Test
@@ -156,7 +154,7 @@ public class TriggersTest
                                                               Collections.singletonList(mutation))),
             org.apache.cassandra.thrift.ConsistencyLevel.ONE);
 
-        assertUpdateIsAugmented(3);
+        assertUpdateIsAugmented(3, "v1", 3);
     }
 
     @Test
@@ -164,7 +162,7 @@ public class TriggersTest
     {
         String cql = String.format("INSERT INTO %s.%s (k, v1) VALUES (4, 4) IF NOT EXISTS", ksName, cfName);
         QueryProcessor.process(cql, ConsistencyLevel.ONE);
-        assertUpdateIsAugmented(4);
+        assertUpdateIsAugmented(4, "v1", 4);
     }
 
     @Test
@@ -176,7 +174,7 @@ public class TriggersTest
                                    "APPLY BATCH",
                                     ksName, cfName);
         QueryProcessor.process(cql, ConsistencyLevel.ONE);
-        assertUpdateIsAugmented(5);
+        assertUpdateIsAugmented(5, "v1", 5);
     }
 
     @Test
@@ -194,12 +192,10 @@ public class TriggersTest
                    org.apache.cassandra.thrift.ConsistencyLevel.LOCAL_SERIAL,
                    org.apache.cassandra.thrift.ConsistencyLevel.ONE);
 
-        assertUpdateIsAugmented(6);
+        assertUpdateIsAugmented(6, "v1", 6);
     }
 
-    // Unfortunately, an IRE thrown from StorageProxy.cas
-    // results in a RuntimeException from QueryProcessor.process
-    @Test(expected=RuntimeException.class)
+    @Test(expected=org.apache.cassandra.exceptions.InvalidRequestException.class)
     public void onCqlUpdateWithConditionsRejectGeneratedUpdatesForDifferentPartition() throws Exception
     {
         String cf = "cf" + System.nanoTime();
@@ -215,9 +211,7 @@ public class TriggersTest
         }
     }
 
-    // Unfortunately, an IRE thrown from StorageProxy.cas
-    // results in a RuntimeException from QueryProcessor.process
-    @Test(expected=RuntimeException.class)
+    @Test(expected=org.apache.cassandra.exceptions.InvalidRequestException.class)
     public void onCqlUpdateWithConditionsRejectGeneratedUpdatesForDifferentTable() throws Exception
     {
         String cf = "cf" + System.nanoTime();
@@ -283,6 +277,27 @@ public class TriggersTest
         }
     }
 
+    @Test(expected=org.apache.cassandra.exceptions.InvalidRequestException.class)
+    public void ifTriggerThrowsErrorNoMutationsAreApplied() throws Exception
+    {
+        String cf = "cf" + System.nanoTime();
+        try
+        {
+            setupTableWithTrigger(cf, ErrorTrigger.class);
+            String cql = String.format("INSERT INTO %s.%s (k, v1) VALUES (11, 11)", ksName, cf);
+            QueryProcessor.process(cql, ConsistencyLevel.ONE);
+        }
+        catch (Exception e)
+        {
+            assertTrue(e.getMessage().equals(ErrorTrigger.MESSAGE));
+            throw e;
+        }
+        finally
+        {
+            assertUpdateNotExecuted(cf, 11);
+        }
+    }
+
     private void setupTableWithTrigger(String cf, Class<? extends ITrigger> triggerImpl)
     throws RequestExecutionException
     {
@@ -295,12 +310,18 @@ public class TriggersTest
         QueryProcessor.process(cql, ConsistencyLevel.ONE);
     }
 
-    private void assertUpdateIsAugmented(int key)
+    private void assertUpdateIsAugmented(int key, String originColumnName, Object originColumnValue)
     {
-        UntypedResultSet rs = QueryProcessor.executeInternal(
-                String.format("SELECT * FROM %s.%s WHERE k=%s", ksName, cfName, key));
-        assertTrue(String.format("Expected value (%s) for augmented cell v2 was not found", key), rs.one().has("v2"));
-        assertEquals(999, rs.one().getInt("v2"));
+        UntypedResultSet rs = QueryProcessor.process(String.format("SELECT * FROM %s.%s WHERE k=%s", ksName, cfName, key), ConsistencyLevel.ONE);
+        assertRowValue(rs.one(), key, "v2", 999); // from trigger
+        assertRowValue(rs.one(), key, originColumnName, originColumnValue); // from original update
+    }
+    
+    private void assertRowValue(UntypedResultSet.Row row, int key, String columnName, Object columnValue)
+    {
+        assertTrue(String.format("Expected value (%s) for augmented cell %s was not found", key, columnName),
+                   row.has(columnName));
+        assertEquals(columnValue, row.getInt(columnName));
     }
 
     private void assertUpdateNotExecuted(String cf, int key)
@@ -350,6 +371,15 @@ public class TriggersTest
             update.add("v2", 999);
 
             return Collections.singletonList(update.build());
+        }
+    }
+
+    public static class ErrorTrigger implements ITrigger
+    {
+        public static final String MESSAGE = "Thrown by ErrorTrigger";
+        public Collection<Mutation> augment(Partition partition)
+        {
+            throw new org.apache.cassandra.exceptions.InvalidRequestException(MESSAGE);
         }
     }
 }

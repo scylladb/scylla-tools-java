@@ -30,6 +30,7 @@ import org.apache.cassandra.db.filter.*;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
+import org.apache.cassandra.io.sstable.format.SSTableReadsListener;
 import org.apache.cassandra.io.sstable.format.SSTableWriter;
 import org.apache.cassandra.utils.FBUtilities;
 
@@ -79,7 +80,7 @@ public class SSTableWriterTest extends SSTableWriterTestBase
 
             // These checks don't work on Windows because the writer has the channel still
             // open till .abort() is called (via the builder)
-            if (!FBUtilities.isWindows())
+            if (!FBUtilities.isWindows)
             {
                 LifecycleTransaction.waitForDeletions();
                 assertFileCounts(dir.list());
@@ -128,7 +129,7 @@ public class SSTableWriterTest extends SSTableWriterTestBase
             sstable.selfRef().release();
             // These checks don't work on Windows because the writer has the channel still
             // open till .abort() is called (via the builder)
-            if (!FBUtilities.isWindows())
+            if (!FBUtilities.isWindows)
             {
                 LifecycleTransaction.waitForDeletions();
                 assertFileCounts(dir.list());
@@ -182,7 +183,7 @@ public class SSTableWriterTest extends SSTableWriterTestBase
 
             // These checks don't work on Windows because the writer has the channel still
             // open till .abort() is called (via the builder)
-            if (!FBUtilities.isWindows())
+            if (!FBUtilities.isWindows)
             {
                 LifecycleTransaction.waitForDeletions();
                 assertFileCounts(dir.list());
@@ -223,7 +224,12 @@ public class SSTableWriterTest extends SSTableWriterTestBase
             try
             {
                 DecoratedKey dk = Util.dk("large_value");
-                UnfilteredRowIterator rowIter = sstable.iterator(dk, ColumnFilter.all(cfs.metadata), false, false);
+                UnfilteredRowIterator rowIter = sstable.iterator(dk,
+                                                                 Slices.ALL,
+                                                                 ColumnFilter.all(cfs.metadata),
+                                                                 false,
+                                                                 false,
+                                                                 SSTableReadsListener.NOOP_LISTENER);
                 while (rowIter.hasNext())
                 {
                     rowIter.next();

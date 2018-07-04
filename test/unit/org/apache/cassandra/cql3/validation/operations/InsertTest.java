@@ -18,9 +18,13 @@
 
 package org.apache.cassandra.cql3.validation.operations;
 
+import org.junit.Assert;
 import org.junit.Test;
 
+import org.apache.cassandra.cql3.Attributes;
 import org.apache.cassandra.cql3.CQLTester;
+import org.apache.cassandra.cql3.UntypedResultSet;
+import org.apache.cassandra.cql3.UntypedResultSet.Row;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 
 public class InsertTest extends CQLTester
@@ -49,13 +53,24 @@ public class InsertTest extends CQLTester
     }
 
     @Test
-    public void testInsertTtlWithUnset() throws Throwable
+    public void testInsertWithTtl() throws Throwable
     {
-        createTable("CREATE TABLE %s (k int PRIMARY KEY, i int)");
-        execute("INSERT INTO %s (k, i) VALUES (1, 1) USING TTL ?", unset()); // treat as 'unlimited'
-        assertRows(execute("SELECT ttl(i) FROM %s"),
-                   row(new Object[]{ null })
-        );
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, v int)");
+
+        // test with unset
+        execute("INSERT INTO %s (k, v) VALUES (1, 1) USING TTL ?", unset()); // treat as 'unlimited'
+        assertRows(execute("SELECT ttl(v) FROM %s"), row(new Object[]{ null }));
+
+        // test with null
+        execute("INSERT INTO %s (k, v) VALUES (?, ?) USING TTL ?", 1, 1, null);
+        assertRows(execute("SELECT k, v, TTL(v) FROM %s"), row(1, 1, null));
+
+        // test error handling
+        assertInvalidMessage("A TTL must be greater or equal to 0, but was -5",
+                             "INSERT INTO %s (k, v) VALUES (?, ?) USING TTL ?", 1, 1, -5);
+
+        assertInvalidMessage("ttl is too large.",
+                             "INSERT INTO %s (k, v) VALUES (?, ?) USING TTL ?", 1, 1, Attributes.MAX_TTL + 1);
     }
 
     @Test
@@ -95,10 +110,10 @@ public class InsertTest extends CQLTester
                              "INSERT INTO %s (partitionKey, clustering, clustering, value) VALUES (0, 0, 0, 2)");
 
         // unknown identifiers
-        assertInvalidMessage("Unknown identifier clusteringx",
+        assertInvalidMessage("Undefined column name clusteringx",
                              "INSERT INTO %s (partitionKey, clusteringx, value) VALUES (0, 0, 2)");
 
-        assertInvalidMessage("Unknown identifier valuex",
+        assertInvalidMessage("Undefined column name valuex",
                              "INSERT INTO %s (partitionKey, clustering, valuex) VALUES (0, 0, 2)");
     }
 
@@ -143,10 +158,10 @@ public class InsertTest extends CQLTester
                              "INSERT INTO %s (partitionKey, clustering, clustering, value) VALUES (0, 0, 0, 2)");
 
         // unknown identifiers
-        assertInvalidMessage("Unknown identifier clusteringx",
+        assertInvalidMessage("Undefined column name clusteringx",
                              "INSERT INTO %s (partitionKey, clusteringx, value) VALUES (0, 0, 2)");
 
-        assertInvalidMessage("Unknown identifier valuex",
+        assertInvalidMessage("Undefined column name valuex",
                              "INSERT INTO %s (partitionKey, clustering, valuex) VALUES (0, 0, 2)");
     }
 
@@ -188,10 +203,10 @@ public class InsertTest extends CQLTester
                              "INSERT INTO %s (partitionKey, clustering_1, clustering_1, clustering_2, value) VALUES (0, 0, 0, 0, 2)");
 
         // unknown identifiers
-        assertInvalidMessage("Unknown identifier clustering_1x",
+        assertInvalidMessage("Undefined column name clustering_1x",
                              "INSERT INTO %s (partitionKey, clustering_1x, clustering_2, value) VALUES (0, 0, 0, 2)");
 
-        assertInvalidMessage("Unknown identifier valuex",
+        assertInvalidMessage("Undefined column name valuex",
                              "INSERT INTO %s (partitionKey, clustering_1, clustering_2, valuex) VALUES (0, 0, 0, 2)");
     }
 
@@ -241,10 +256,10 @@ public class InsertTest extends CQLTester
                              "INSERT INTO %s (partitionKey, clustering_1, clustering_1, clustering_2, value) VALUES (0, 0, 0, 0, 2)");
 
         // unknown identifiers
-        assertInvalidMessage("Unknown identifier clustering_1x",
+        assertInvalidMessage("Undefined column name clustering_1x",
                              "INSERT INTO %s (partitionKey, clustering_1x, clustering_2, value) VALUES (0, 0, 0, 2)");
 
-        assertInvalidMessage("Unknown identifier valuex",
+        assertInvalidMessage("Undefined column name valuex",
                              "INSERT INTO %s (partitionKey, clustering_1, clustering_2, valuex) VALUES (0, 0, 0, 2)");
     }
 
@@ -285,10 +300,35 @@ public class InsertTest extends CQLTester
                              "INSERT INTO %s (partitionKey, clustering_2, staticValue) VALUES (0, 0, 'A')");
     }
 
-    private void flush(boolean forceFlush)
+    @Test
+    public void testInsertWithDefaultTtl() throws Throwable
     {
-        if (forceFlush)
-            flush();
+        final int secondsPerMinute = 60;
+        createTable("CREATE TABLE %s (a int PRIMARY KEY, b int) WITH default_time_to_live = " + (10 * secondsPerMinute));
+
+        execute("INSERT INTO %s (a, b) VALUES (1, 1)");
+        UntypedResultSet resultSet = execute("SELECT ttl(b) FROM %s WHERE a = 1");
+        Assert.assertEquals(1, resultSet.size());
+        Row row = resultSet.one();
+        Assert.assertTrue(row.getInt("ttl(b)") >= (9 * secondsPerMinute));
+
+        execute("INSERT INTO %s (a, b) VALUES (2, 2) USING TTL ?", (5 * secondsPerMinute));
+        resultSet = execute("SELECT ttl(b) FROM %s WHERE a = 2");
+        Assert.assertEquals(1, resultSet.size());
+        row = resultSet.one();
+        Assert.assertTrue(row.getInt("ttl(b)") <= (5 * secondsPerMinute));
+
+        execute("INSERT INTO %s (a, b) VALUES (3, 3) USING TTL ?", 0);
+        assertRows(execute("SELECT ttl(b) FROM %s WHERE a = 3"), row(new Object[]{null}));
+
+        execute("INSERT INTO %s (a, b) VALUES (4, 4) USING TTL ?", unset());
+        resultSet = execute("SELECT ttl(b) FROM %s WHERE a = 4");
+        Assert.assertEquals(1, resultSet.size());
+        row = resultSet.one();
+        Assert.assertTrue(row.getInt("ttl(b)") >= (9 * secondsPerMinute));
+
+        execute("INSERT INTO %s (a, b) VALUES (?, ?) USING TTL ?", 4, 4, null);
+        assertRows(execute("SELECT ttl(b) FROM %s WHERE a = 4"), row(new Object[]{null}));
     }
 
     @Test

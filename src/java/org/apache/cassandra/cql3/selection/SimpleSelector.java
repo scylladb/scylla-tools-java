@@ -21,9 +21,11 @@ import java.nio.ByteBuffer;
 
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.ColumnSpecification;
+import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.cql3.selection.Selection.ResultSetBuilder;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.transport.ProtocolVersion;
 
 public final class SimpleSelector extends Selector
 {
@@ -55,7 +57,7 @@ public final class SimpleSelector extends Selector
             }
 
             @Override
-            public Selector newInstance()
+            public Selector newInstance(QueryOptions options)
             {
                 return new SimpleSelector(def.name.toString(), idx, def.type);
             }
@@ -69,7 +71,7 @@ public final class SimpleSelector extends Selector
     }
 
     @Override
-    public void addInput(int protocolVersion, ResultSetBuilder rs) throws InvalidRequestException
+    public void addInput(ProtocolVersion protocolVersion, ResultSetBuilder rs) throws InvalidRequestException
     {
         if (!isSet)
         {
@@ -79,7 +81,7 @@ public final class SimpleSelector extends Selector
     }
 
     @Override
-    public ByteBuffer getOutput(int protocolVersion) throws InvalidRequestException
+    public ByteBuffer getOutput(ProtocolVersion protocolVersion) throws InvalidRequestException
     {
         return current;
     }

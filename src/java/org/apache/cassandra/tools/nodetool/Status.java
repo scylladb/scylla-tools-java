@@ -65,7 +65,7 @@ public class Status extends NodeToolCmd
         hostIDMap = probe.getHostIdMap();
         epSnitchInfo = probe.getEndpointSnitchInfoProxy();
 
-        StringBuffer errors = new StringBuffer();
+        StringBuilder errors = new StringBuilder();
 
         Map<InetAddress, Float> ownerships = null;
         boolean hasEffectiveOwns = false;
@@ -77,11 +77,11 @@ public class Status extends NodeToolCmd
         catch (IllegalStateException e)
         {
             ownerships = probe.getOwnership();
-            errors.append("Note: " + e.getMessage() + "%n");
+            errors.append("Note: ").append(e.getMessage()).append("%n");
         }
         catch (IllegalArgumentException ex)
         {
-            System.out.printf("%nError: " + ex.getMessage() + "%n");
+            System.out.printf("%nError: %s%n", ex.getMessage());
             System.exit(1);
         }
 

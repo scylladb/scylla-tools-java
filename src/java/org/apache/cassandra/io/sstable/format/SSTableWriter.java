@@ -18,20 +18,22 @@
 
 package org.apache.cassandra.io.sstable.format;
 
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Sets;
 
 import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.RowIndexEntry;
 import org.apache.cassandra.db.SerializationHeader;
+import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
+import org.apache.cassandra.index.Index;
+import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.SSTable;
@@ -58,6 +60,7 @@ public abstract class SSTableWriter extends SSTable implements Transactional
     protected final RowIndexEntry.IndexSerializer rowIndexEntrySerializer;
     protected final SerializationHeader header;
     protected final TransactionalProxy txnProxy = txnProxy();
+    protected final Collection<SSTableFlushObserver> observers;
 
     protected abstract TransactionalProxy txnProxy();
 
@@ -69,19 +72,21 @@ public abstract class SSTableWriter extends SSTable implements Transactional
         protected boolean openResult;
     }
 
-    protected SSTableWriter(Descriptor descriptor, 
-                            long keyCount, 
-                            long repairedAt, 
-                            CFMetaData metadata, 
-                            MetadataCollector metadataCollector, 
-                            SerializationHeader header)
+    protected SSTableWriter(Descriptor descriptor,
+                            long keyCount,
+                            long repairedAt,
+                            CFMetaData metadata,
+                            MetadataCollector metadataCollector,
+                            SerializationHeader header,
+                            Collection<SSTableFlushObserver> observers)
     {
-        super(descriptor, components(metadata), metadata);
+        super(descriptor, components(metadata), metadata, DatabaseDescriptor.getDiskOptimizationStrategy());
         this.keyCount = keyCount;
         this.repairedAt = repairedAt;
         this.metadataCollector = metadataCollector;
         this.header = header != null ? header : SerializationHeader.makeWithoutStats(metadata); //null header indicates streaming from pre-3.0 sstable
         this.rowIndexEntrySerializer = descriptor.version.getSSTableFormat().getIndexSerializer(metadata, descriptor.version, header);
+        this.observers = observers == null ? Collections.emptySet() : observers;
     }
 
     public static SSTableWriter create(Descriptor descriptor,
@@ -90,16 +95,23 @@ public abstract class SSTableWriter extends SSTable implements Transactional
                                        CFMetaData metadata,
                                        MetadataCollector metadataCollector,
                                        SerializationHeader header,
+                                       Collection<Index> indexes,
                                        LifecycleTransaction txn)
     {
         Factory writerFactory = descriptor.getFormat().getWriterFactory();
-        return writerFactory.open(descriptor, keyCount, repairedAt, metadata, metadataCollector, header, txn);
+        return writerFactory.open(descriptor, keyCount, repairedAt, metadata, metadataCollector, header, observers(descriptor, indexes, txn.opType()), txn);
     }
 
-    public static SSTableWriter create(Descriptor descriptor, long keyCount, long repairedAt, int sstableLevel, SerializationHeader header, LifecycleTransaction txn)
+    public static SSTableWriter create(Descriptor descriptor,
+                                       long keyCount,
+                                       long repairedAt,
+                                       int sstableLevel,
+                                       SerializationHeader header,
+                                       Collection<Index> indexes,
+                                       LifecycleTransaction txn)
     {
         CFMetaData metadata = Schema.instance.getCFMetaData(descriptor);
-        return create(metadata, descriptor, keyCount, repairedAt, sstableLevel, header, txn);
+        return create(metadata, descriptor, keyCount, repairedAt, sstableLevel, header, indexes, txn);
     }
 
     public static SSTableWriter create(CFMetaData metadata,
@@ -108,21 +120,34 @@ public abstract class SSTableWriter extends SSTable implements Transactional
                                        long repairedAt,
                                        int sstableLevel,
                                        SerializationHeader header,
+                                       Collection<Index> indexes,
                                        LifecycleTransaction txn)
     {
         MetadataCollector collector = new MetadataCollector(metadata.comparator).sstableLevel(sstableLevel);
-        return create(descriptor, keyCount, repairedAt, metadata, collector, header, txn);
+        return create(descriptor, keyCount, repairedAt, metadata, collector, header, indexes, txn);
     }
 
-    public static SSTableWriter create(String filename, long keyCount, long repairedAt, int sstableLevel, SerializationHeader header,LifecycleTransaction txn)
+    public static SSTableWriter create(String filename,
+                                       long keyCount,
+                                       long repairedAt,
+                                       int sstableLevel,
+                                       SerializationHeader header,
+                                       Collection<Index> indexes,
+                                       LifecycleTransaction txn)
     {
-        return create(Descriptor.fromFilename(filename), keyCount, repairedAt, sstableLevel, header, txn);
+        return create(Descriptor.fromFilename(filename), keyCount, repairedAt, sstableLevel, header, indexes, txn);
     }
 
     @VisibleForTesting
-    public static SSTableWriter create(String filename, long keyCount, long repairedAt, SerializationHeader header, LifecycleTransaction txn)
+    public static SSTableWriter create(String filename,
+                                       long keyCount,
+                                       long repairedAt,
+                                       SerializationHeader header,
+                                       Collection<Index> indexes,
+                                       LifecycleTransaction txn)
     {
-        return create(Descriptor.fromFilename(filename), keyCount, repairedAt, 0, header, txn);
+        Descriptor descriptor = Descriptor.fromFilename(filename);
+        return create(descriptor, keyCount, repairedAt, 0, header, indexes, txn);
     }
 
     private static Set<Component> components(CFMetaData metadata)
@@ -150,6 +175,27 @@ public abstract class SSTableWriter extends SSTable implements Transactional
         return components;
     }
 
+    private static Collection<SSTableFlushObserver> observers(Descriptor descriptor,
+                                                              Collection<Index> indexes,
+                                                              OperationType operationType)
+    {
+        if (indexes == null)
+            return Collections.emptyList();
+
+        List<SSTableFlushObserver> observers = new ArrayList<>(indexes.size());
+        for (Index index : indexes)
+        {
+            SSTableFlushObserver observer = index.getFlushObserver(descriptor, operationType);
+            if (observer != null)
+            {
+                observer.begin();
+                observers.add(observer);
+            }
+        }
+
+        return ImmutableList.copyOf(observers);
+    }
+
     public abstract void mark();
 
     /**
@@ -166,6 +212,11 @@ public abstract class SSTableWriter extends SSTable implements Transactional
     public abstract long getFilePointer();
 
     public abstract long getOnDiskFilePointer();
+
+    public long getEstimatedOnDiskBytesWritten()
+    {
+        return getOnDiskFilePointer();
+    }
 
     public abstract void resetAndTruncate();
 
@@ -211,6 +262,7 @@ public abstract class SSTableWriter extends SSTable implements Transactional
     {
         setOpenResult(openResult);
         txnProxy.finish();
+        observers.forEach(SSTableFlushObserver::complete);
         return finished();
     }
 
@@ -231,7 +283,14 @@ public abstract class SSTableWriter extends SSTable implements Transactional
 
     public final Throwable commit(Throwable accumulate)
     {
-        return txnProxy.commit(accumulate);
+        try
+        {
+            return txnProxy.commit(accumulate);
+        }
+        finally
+        {
+            observers.forEach(SSTableFlushObserver::complete);
+        }
     }
 
     public final Throwable abort(Throwable accumulate)
@@ -285,6 +344,7 @@ public abstract class SSTableWriter extends SSTable implements Transactional
                                            CFMetaData metadata,
                                            MetadataCollector metadataCollector,
                                            SerializationHeader header,
+                                           Collection<SSTableFlushObserver> observers,
                                            LifecycleTransaction txn);
     }
 }

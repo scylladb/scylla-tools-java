@@ -94,11 +94,6 @@ public class ClusteringIndexSliceFilter extends AbstractClusteringIndexFilter
         // the range extend) and it's harmless to leave them.
         class FilterNotIndexed extends Transformation
         {
-            public boolean isDoneForPartition()
-            {
-                return tester.isDone();
-            }
-
             @Override
             public Row applyToRow(Row row)
             {
@@ -114,11 +109,9 @@ public class ClusteringIndexSliceFilter extends AbstractClusteringIndexFilter
         return Transformation.apply(iterator, new FilterNotIndexed());
     }
 
-    public UnfilteredRowIterator filter(SliceableUnfilteredRowIterator iterator)
+    public Slices getSlices(CFMetaData metadata)
     {
-        // Please note that this method assumes that rows from 'iter' already have their columns filtered, i.e. that
-        // they only include columns that we select.
-        return slices.makeSliceIterator(iterator);
+        return slices;
     }
 
     public UnfilteredRowIterator getUnfilteredRowIterator(ColumnFilter columnFilter, Partition partition)

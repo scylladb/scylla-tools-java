@@ -21,22 +21,22 @@ import java.nio.ByteBuffer;
 import java.util.List;
 
 import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.cql3.AssignmentTestable;
 import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.cql3.ColumnSpecification;
+import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.cql3.functions.Function;
 import org.apache.cassandra.cql3.selection.Selection.ResultSetBuilder;
 import org.apache.cassandra.db.marshal.AbstractType;
-import org.apache.cassandra.db.marshal.ReversedType;
 import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.transport.ProtocolVersion;
 
 /**
- * A <code>Selector</code> is used to convert the data returned by the storage engine into the data requested by the 
+ * A <code>Selector</code> is used to convert the data returned by the storage engine into the data requested by the
  * user. They correspond to the &lt;selector&gt; elements from the select clause.
- * <p>Since the introduction of aggregation, <code>Selector</code>s cannot be called anymore by multiple threads 
+ * <p>Since the introduction of aggregation, <code>Selector</code>s cannot be called anymore by multiple threads
  * as they have an internal state.</p>
  */
-public abstract class Selector implements AssignmentTestable
+public abstract class Selector
 {
     /**
      * A factory for <code>Selector</code> instances.
@@ -58,16 +58,19 @@ public abstract class Selector implements AssignmentTestable
         {
             return new ColumnSpecification(cfm.ksName,
                                            cfm.cfName,
-                                           ColumnIdentifier.getInterned(getColumnName(), true),
+                                           new ColumnIdentifier(getColumnName(), true), // note that the name is not necessarily
+                                                                                        // a true column name so we shouldn't intern it
                                            getReturnType());
         }
 
         /**
          * Creates a new <code>Selector</code> instance.
          *
+         * @param options the options of the query for which the instance is created (some selector
+         * depends on the bound values in particular).
          * @return a new <code>Selector</code> instance
          */
-        public abstract Selector newInstance() throws InvalidRequestException;
+        public abstract Selector newInstance(QueryOptions options) throws InvalidRequestException;
 
         /**
          * Checks if this factory creates selectors instances that creates aggregates.
@@ -150,7 +153,7 @@ public abstract class Selector implements AssignmentTestable
      * @param rs the <code>ResultSetBuilder</code>
      * @throws InvalidRequestException if a problem occurs while add the input value
      */
-    public abstract void addInput(int protocolVersion, ResultSetBuilder rs) throws InvalidRequestException;
+    public abstract void addInput(ProtocolVersion protocolVersion, ResultSetBuilder rs) throws InvalidRequestException;
 
     /**
      * Returns the selector output.
@@ -159,7 +162,7 @@ public abstract class Selector implements AssignmentTestable
      * @return the selector output
      * @throws InvalidRequestException if a problem occurs while computing the output value
      */
-    public abstract ByteBuffer getOutput(int protocolVersion) throws InvalidRequestException;
+    public abstract ByteBuffer getOutput(ProtocolVersion protocolVersion) throws InvalidRequestException;
 
     /**
      * Returns the <code>Selector</code> output type.
@@ -183,24 +186,4 @@ public abstract class Selector implements AssignmentTestable
      * Reset the internal state of this <code>Selector</code>.
      */
     public abstract void reset();
-
-    public final AssignmentTestable.TestResult testAssignment(String keyspace, ColumnSpecification receiver)
-    {
-        // We should ignore the fact that the output type is frozen in our comparison as functions do not support
-        // frozen types for arguments
-        AbstractType<?> receiverType = receiver.type;
-        if (getType().isFrozenCollection())
-            receiverType = receiverType.freeze();
-
-        if (getType().isReversed())
-            receiverType = ReversedType.getInstance(receiverType);
-
-        if (receiverType.equals(getType()))
-            return AssignmentTestable.TestResult.EXACT_MATCH;
-
-        if (receiverType.isValueCompatibleWith(getType()))
-            return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
-
-        return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
-    }
 }

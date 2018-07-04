@@ -27,7 +27,7 @@ import java.util.*;
 import com.google.common.base.Splitter;
 
 import org.apache.cassandra.auth.PasswordAuthenticator;
-import org.apache.cassandra.config.Config;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.marshal.Int32Type;
@@ -43,7 +43,7 @@ public class Client extends SimpleClient
 {
     private final SimpleEventHandler eventHandler = new SimpleEventHandler();
 
-    public Client(String host, int port, int version, ClientEncryptionOptions encryptionOptions)
+    public Client(String host, int port, ProtocolVersion version, ClientEncryptionOptions encryptionOptions)
     {
         super(host, port, version, encryptionOptions);
         setEventHandler(eventHandler);
@@ -69,7 +69,8 @@ public class Client extends SimpleClient
             System.out.print(">> ");
             System.out.flush();
             String line = in.readLine();
-            if (line == null) {
+            if (line == null)
+            {
                 break;
             }
             Message.Request req = parseLine(line.trim());
@@ -135,7 +136,7 @@ public class Client extends SimpleClient
                     return null;
                 }
             }
-            return new QueryMessage(query, QueryOptions.create(ConsistencyLevel.ONE, Collections.<ByteBuffer>emptyList(), false, pageSize, null, null));
+            return new QueryMessage(query, QueryOptions.create(ConsistencyLevel.ONE, Collections.<ByteBuffer>emptyList(), false, pageSize, null, null, version));
         }
         else if (msgType.equals("PREPARE"))
         {
@@ -238,7 +239,7 @@ public class Client extends SimpleClient
 
     public static void main(String[] args) throws Exception
     {
-        Config.setClientMode(true);
+        DatabaseDescriptor.clientInitialization();
 
         // Print usage if no argument is specified.
         if (args.length < 2 || args.length > 3)
@@ -250,7 +251,7 @@ public class Client extends SimpleClient
         // Parse options.
         String host = args[0];
         int port = Integer.parseInt(args[1]);
-        int version = args.length == 3 ? Integer.parseInt(args[2]) : Server.CURRENT_VERSION;
+        ProtocolVersion version = args.length == 3 ? ProtocolVersion.decode(Integer.parseInt(args[2])) : ProtocolVersion.CURRENT;
 
         ClientEncryptionOptions encryptionOptions = new ClientEncryptionOptions();
         System.out.println("CQL binary protocol console " + host + "@" + port + " using native protocol version " + version);

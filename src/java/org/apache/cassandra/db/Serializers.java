@@ -20,10 +20,15 @@ package org.apache.cassandra.db;
 import java.io.*;
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.CompositeType;
 import org.apache.cassandra.io.ISerializer;
+import org.apache.cassandra.io.sstable.IndexInfo;
+import org.apache.cassandra.io.sstable.format.big.BigFormat;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.io.sstable.format.Version;
@@ -36,36 +41,66 @@ public class Serializers
 {
     private final CFMetaData metadata;
 
+    private Map<Version, IndexInfo.Serializer> otherVersionClusteringSerializers;
+
+    private final IndexInfo.Serializer latestVersionIndexSerializer;
+
     public Serializers(CFMetaData metadata)
     {
         this.metadata = metadata;
+        this.latestVersionIndexSerializer = new IndexInfo.Serializer(BigFormat.latestVersion,
+                                                                     indexEntryClusteringPrefixSerializer(BigFormat.latestVersion, SerializationHeader.makeWithoutStats(metadata)));
+    }
+
+    IndexInfo.Serializer indexInfoSerializer(Version version, SerializationHeader header)
+    {
+        // null header indicates streaming from pre-3.0 sstables
+        if (version.equals(BigFormat.latestVersion) && header != null)
+            return latestVersionIndexSerializer;
+
+        if (otherVersionClusteringSerializers == null)
+            otherVersionClusteringSerializers = new ConcurrentHashMap<>();
+        IndexInfo.Serializer serializer = otherVersionClusteringSerializers.get(version);
+        if (serializer == null)
+        {
+            serializer = new IndexInfo.Serializer(version,
+                                                  indexEntryClusteringPrefixSerializer(version, header));
+            otherVersionClusteringSerializers.put(version, serializer);
+        }
+        return serializer;
     }
 
     // TODO: Once we drop support for old (pre-3.0) sstables, we can drop this method and inline the calls to
-    // ClusteringPrefix.serializer in IndexHelper directly. At which point this whole class probably becomes
+    // ClusteringPrefix.serializer directly. At which point this whole class probably becomes
     // unecessary (since IndexInfo.Serializer won't depend on the metadata either).
-    public ISerializer<ClusteringPrefix> indexEntryClusteringPrefixSerializer(final Version version, final SerializationHeader header)
+    private ISerializer<ClusteringPrefix> indexEntryClusteringPrefixSerializer(Version version, SerializationHeader header)
     {
         if (!version.storeRows() || header ==  null) //null header indicates streaming from pre-3.0 sstables
         {
             return oldFormatSerializer(version);
         }
 
-        return newFormatSerializer(version, header);
+        return new NewFormatSerializer(version, header.clusteringTypes());
     }
 
-    private ISerializer<ClusteringPrefix> oldFormatSerializer(final Version version)
+    private ISerializer<ClusteringPrefix> oldFormatSerializer(Version version)
     {
         return new ISerializer<ClusteringPrefix>()
         {
-            SerializationHeader newHeader = SerializationHeader.makeWithoutStats(metadata);
+            List<AbstractType<?>> clusteringTypes = SerializationHeader.makeWithoutStats(metadata).clusteringTypes();
 
             public void serialize(ClusteringPrefix clustering, DataOutputPlus out) throws IOException
             {
                 //we deserialize in the old format and serialize in the new format
                 ClusteringPrefix.serializer.serialize(clustering, out,
                                                       version.correspondingMessagingVersion(),
-                                                      newHeader.clusteringTypes());
+                                                      clusteringTypes);
+            }
+
+            @Override
+            public void skip(DataInputPlus in) throws IOException
+            {
+                ByteBufferUtil.skipShortLength(in);
             }
 
             public ClusteringPrefix deserialize(DataInputPlus in) throws IOException
@@ -80,7 +115,7 @@ public class Serializers
                     return Clustering.EMPTY;
 
                 if (!metadata.isCompound())
-                    return new Clustering(bb);
+                    return Clustering.make(bb);
 
                 List<ByteBuffer> components = CompositeType.splitName(bb);
                 byte eoc = CompositeType.lastEOC(bb);
@@ -91,48 +126,58 @@ public class Serializers
                     if (components.size() > clusteringSize)
                         components = components.subList(0, clusteringSize);
 
-                    return new Clustering(components.toArray(new ByteBuffer[clusteringSize]));
+                    return Clustering.make(components.toArray(new ByteBuffer[clusteringSize]));
                 }
                 else
                 {
                     // It's a range tombstone bound. It is a start since that's the only part we've ever included
                     // in the index entries.
-                    Slice.Bound.Kind boundKind = eoc > 0
-                                                 ? Slice.Bound.Kind.EXCL_START_BOUND
-                                                 : Slice.Bound.Kind.INCL_START_BOUND;
+                    ClusteringPrefix.Kind boundKind = eoc > 0
+                                                 ? ClusteringPrefix.Kind.EXCL_START_BOUND
+                                                 : ClusteringPrefix.Kind.INCL_START_BOUND;
 
-                    return Slice.Bound.create(boundKind, components.toArray(new ByteBuffer[components.size()]));
+                    return ClusteringBound.create(boundKind, components.toArray(new ByteBuffer[components.size()]));
                 }
             }
 
             public long serializedSize(ClusteringPrefix clustering)
             {
                 return ClusteringPrefix.serializer.serializedSize(clustering, version.correspondingMessagingVersion(),
-                                                                  newHeader.clusteringTypes());
+                                                                  clusteringTypes);
             }
         };
     }
 
-
-    private ISerializer<ClusteringPrefix> newFormatSerializer(final Version version, final SerializationHeader header)
+    private static class NewFormatSerializer implements ISerializer<ClusteringPrefix>
     {
-        return new ISerializer<ClusteringPrefix>() //Reading and writing from/to the new sstable format
+        private final Version version;
+        private final List<AbstractType<?>> clusteringTypes;
+
+        NewFormatSerializer(Version version, List<AbstractType<?>> clusteringTypes)
         {
-            public void serialize(ClusteringPrefix clustering, DataOutputPlus out) throws IOException
-            {
-                ClusteringPrefix.serializer.serialize(clustering, out, version.correspondingMessagingVersion(), header.clusteringTypes());
-            }
+            this.version = version;
+            this.clusteringTypes = clusteringTypes;
+        }
 
-            public ClusteringPrefix deserialize(DataInputPlus in) throws IOException
-            {
-                return ClusteringPrefix.serializer.deserialize(in, version.correspondingMessagingVersion(), header.clusteringTypes());
-            }
+        public void serialize(ClusteringPrefix clustering, DataOutputPlus out) throws IOException
+        {
+            ClusteringPrefix.serializer.serialize(clustering, out, version.correspondingMessagingVersion(), clusteringTypes);
+        }
 
-            public long serializedSize(ClusteringPrefix clustering)
-            {
-                return ClusteringPrefix.serializer.serializedSize(clustering, version.correspondingMessagingVersion(), header.clusteringTypes());
-            }
-        };
+        @Override
+        public void skip(DataInputPlus in) throws IOException
+        {
+            ClusteringPrefix.serializer.skip(in, version.correspondingMessagingVersion(), clusteringTypes);
+        }
+
+        public ClusteringPrefix deserialize(DataInputPlus in) throws IOException
+        {
+            return ClusteringPrefix.serializer.deserialize(in, version.correspondingMessagingVersion(), clusteringTypes);
+        }
+
+        public long serializedSize(ClusteringPrefix clustering)
+        {
+            return ClusteringPrefix.serializer.serializedSize(clustering, version.correspondingMessagingVersion(), clusteringTypes);
+        }
     }
-
 }

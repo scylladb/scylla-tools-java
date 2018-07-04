@@ -18,22 +18,24 @@
 package org.apache.cassandra.db.columniterator;
 
 import java.io.IOException;
-import java.util.Collections;
+import java.util.Comparator;
 import java.util.Iterator;
-import java.util.List;
+import java.util.NoSuchElementException;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.rows.*;
+import org.apache.cassandra.io.sstable.IndexInfo;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.sstable.CorruptSSTableException;
-import org.apache.cassandra.io.sstable.IndexHelper;
+import org.apache.cassandra.io.sstable.format.Version;
 import org.apache.cassandra.io.util.FileDataInput;
 import org.apache.cassandra.io.util.DataPosition;
+import org.apache.cassandra.io.util.FileHandle;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
-abstract class AbstractSSTableIterator implements SliceableUnfilteredRowIterator
+public abstract class AbstractSSTableIterator implements UnfilteredRowIterator
 {
     protected final SSTableReader sstable;
     protected final DecoratedKey key;
@@ -46,7 +48,11 @@ abstract class AbstractSSTableIterator implements SliceableUnfilteredRowIterator
 
     private final boolean isForThrift;
 
+    protected final FileHandle ifile;
+
     private boolean isClosed;
+
+    protected final Slices slices;
 
     @SuppressWarnings("resource") // We need this because the analysis is not able to determine that we do close
                                   // file on every path where we created it.
@@ -54,12 +60,16 @@ abstract class AbstractSSTableIterator implements SliceableUnfilteredRowIterator
                                       FileDataInput file,
                                       DecoratedKey key,
                                       RowIndexEntry indexEntry,
+                                      Slices slices,
                                       ColumnFilter columnFilter,
-                                      boolean isForThrift)
+                                      boolean isForThrift,
+                                      FileHandle ifile)
     {
         this.sstable = sstable;
+        this.ifile = ifile;
         this.key = key;
         this.columns = columnFilter;
+        this.slices = slices;
         this.helper = new SerializationHelper(sstable.metadata, sstable.descriptor.version.correspondingMessagingVersion(), SerializationHelper.Flag.LOCAL, columnFilter);
         this.isForThrift = isForThrift;
 
@@ -109,6 +119,9 @@ abstract class AbstractSSTableIterator implements SliceableUnfilteredRowIterator
                     this.reader = needsReader ? createReader(indexEntry, file, shouldCloseFile) : null;
                 }
 
+                if (reader != null && !slices.isEmpty())
+                    reader.setForSlice(nextSlice());
+
                 if (reader == null && file != null && shouldCloseFile)
                     file.close();
             }
@@ -131,6 +144,23 @@ abstract class AbstractSSTableIterator implements SliceableUnfilteredRowIterator
             }
         }
     }
+
+    private Slice nextSlice()
+    {
+        return slices.get(nextSliceIndex());
+    }
+
+    /**
+     * Returns the index of the next slice to process.
+     * @return the index of the next slice to process
+     */
+    protected abstract int nextSliceIndex();
+
+    /**
+     * Checks if there are more slice to process.
+     * @return {@code true} if there are more slice to process, {@code false} otherwise.
+     */
+    protected abstract boolean hasMoreSlices();
 
     private static Row readStaticRow(SSTableReader sstable,
                                      FileDataInput file,
@@ -180,7 +210,13 @@ abstract class AbstractSSTableIterator implements SliceableUnfilteredRowIterator
         }
     }
 
-    protected abstract Reader createReader(RowIndexEntry indexEntry, FileDataInput file, boolean shouldCloseFile);
+    protected abstract Reader createReaderInternal(RowIndexEntry indexEntry, FileDataInput file, boolean shouldCloseFile);
+
+    private Reader createReader(RowIndexEntry indexEntry, FileDataInput file, boolean shouldCloseFile)
+    {
+        return slices.isEmpty() ? new NoRowsReader(file, shouldCloseFile)
+                                : createReaderInternal(indexEntry, file, shouldCloseFile);
+    };
 
     public CFMetaData metadata()
     {
@@ -209,14 +245,24 @@ abstract class AbstractSSTableIterator implements SliceableUnfilteredRowIterator
 
     public EncodingStats stats()
     {
-        // We could return sstable.header.stats(), but this may not be as accurate than the actual sstable stats (see
-        // SerializationHeader.make() for details) so we use the latter instead.
-        return new EncodingStats(sstable.getMinTimestamp(), sstable.getMinLocalDeletionTime(), sstable.getMinTTL());
+        return sstable.stats();
     }
 
     public boolean hasNext()
     {
-        return reader != null && reader.hasNext();
+        while (true)
+        {
+            if (reader == null)
+                return false;
+
+            if (reader.hasNext())
+                return true;
+
+            if (!hasMoreSlices())
+                return false;
+
+            slice(nextSlice());
+        }
     }
 
     public Unfiltered next()
@@ -225,15 +271,12 @@ abstract class AbstractSSTableIterator implements SliceableUnfilteredRowIterator
         return reader.next();
     }
 
-    public Iterator<Unfiltered> slice(Slice slice)
+    private void slice(Slice slice)
     {
         try
         {
-            if (reader == null)
-                return Collections.emptyIterator();
-
-            reader.setForSlice(slice);
-            return reader;
+            if (reader != null)
+                reader.setForSlice(slice);
         }
         catch (IOException e)
         {
@@ -285,6 +328,7 @@ abstract class AbstractSSTableIterator implements SliceableUnfilteredRowIterator
     {
         private final boolean shouldCloseFile;
         public FileDataInput file;
+        public final Version version;
 
         protected UnfilteredDeserializer deserializer;
 
@@ -295,6 +339,7 @@ abstract class AbstractSSTableIterator implements SliceableUnfilteredRowIterator
         {
             this.file = file;
             this.shouldCloseFile = shouldCloseFile;
+            this.version = sstable.descriptor.version;
 
             if (file != null)
                 createDeserializer();
@@ -326,14 +371,7 @@ abstract class AbstractSSTableIterator implements SliceableUnfilteredRowIterator
             openMarker = marker.isOpen(false) ? marker.openDeletionTime(false) : null;
         }
 
-        protected DeletionTime getAndClearOpenMarker()
-        {
-            DeletionTime toReturn = openMarker;
-            openMarker = null;
-            return toReturn;
-        }
-
-        public boolean hasNext() 
+        public boolean hasNext()
         {
             try
             {
@@ -388,14 +426,38 @@ abstract class AbstractSSTableIterator implements SliceableUnfilteredRowIterator
         }
     }
 
+    // Reader for when we have Slices.NONE but need to read static row or partition level deletion
+    private class NoRowsReader extends AbstractSSTableIterator.Reader
+    {
+        private NoRowsReader(FileDataInput file, boolean shouldCloseFile)
+        {
+            super(file, shouldCloseFile);
+        }
+
+        public void setForSlice(Slice slice) throws IOException
+        {
+            return;
+        }
+
+        protected boolean hasNextInternal() throws IOException
+        {
+            return false;
+        }
+
+        protected Unfiltered nextInternal() throws IOException
+        {
+            throw new NoSuchElementException();
+        }
+    }
+
     // Used by indexed readers to store where they are of the index.
-    protected static class IndexState
+    public static class IndexState implements AutoCloseable
     {
         private final Reader reader;
         private final ClusteringComparator comparator;
 
         private final RowIndexEntry indexEntry;
-        private final List<IndexHelper.IndexInfo> indexes;
+        private final RowIndexEntry.IndexInfoRetriever indexInfoRetriever;
         private final boolean reversed;
 
         private int currentIndexIdx;
@@ -403,43 +465,56 @@ abstract class AbstractSSTableIterator implements SliceableUnfilteredRowIterator
         // Marks the beginning of the block corresponding to currentIndexIdx.
         private DataPosition mark;
 
-        public IndexState(Reader reader, ClusteringComparator comparator, RowIndexEntry indexEntry, boolean reversed)
+        public IndexState(Reader reader, ClusteringComparator comparator, RowIndexEntry indexEntry, boolean reversed, FileHandle indexFile)
         {
             this.reader = reader;
             this.comparator = comparator;
             this.indexEntry = indexEntry;
-            this.indexes = indexEntry.columnsIndex();
+            this.indexInfoRetriever = indexEntry.openWithIndex(indexFile);
             this.reversed = reversed;
-            this.currentIndexIdx = reversed ? indexEntry.columnsIndex().size() : -1;
+            this.currentIndexIdx = reversed ? indexEntry.columnsIndexCount() : -1;
         }
 
         public boolean isDone()
         {
-            return reversed ? currentIndexIdx < 0 : currentIndexIdx >= indexes.size();
+            return reversed ? currentIndexIdx < 0 : currentIndexIdx >= indexEntry.columnsIndexCount();
         }
 
         // Sets the reader to the beginning of blockIdx.
         public void setToBlock(int blockIdx) throws IOException
         {
-            if (blockIdx >= 0 && blockIdx < indexes.size())
+            if (blockIdx >= 0 && blockIdx < indexEntry.columnsIndexCount())
             {
                 reader.seekToPosition(columnOffset(blockIdx));
+                mark = reader.file.mark();
                 reader.deserializer.clearState();
             }
 
             currentIndexIdx = blockIdx;
-            reader.openMarker = blockIdx > 0 ? indexes.get(blockIdx - 1).endOpenMarker : null;
-            mark = reader.file.mark();
+            reader.openMarker = blockIdx > 0 ? index(blockIdx - 1).endOpenMarker : null;
+
+            // If we're reading an old format file and we move to the first block in the index (i.e. the
+            // head of the partition), we skip the static row as it's already been read when we first opened
+            // the iterator. If we don't do this and a static row is present, we'll re-read it but treat it
+            // as a regular row, causing deserialization to blow up later as that row's flags will be invalid
+            // see CASSANDRA-12088 & CASSANDRA-13236
+            if (!reader.version.storeRows()
+                && blockIdx == 0
+                && reader.deserializer.hasNext()
+                && reader.deserializer.nextIsStatic())
+            {
+                reader.deserializer.skipNext();
+            }
         }
 
-        private long columnOffset(int i)
+        private long columnOffset(int i) throws IOException
         {
-            return indexEntry.position + indexes.get(i).offset;
+            return indexEntry.position + index(i).offset;
         }
 
         public int blocksCount()
         {
-            return indexes.size();
+            return indexEntry.columnsIndexCount();
         }
 
         // Update the block idx based on the current reader position if we're past the current block.
@@ -458,7 +533,7 @@ abstract class AbstractSSTableIterator implements SliceableUnfilteredRowIterator
                 return;
             }
 
-            while (currentIndexIdx + 1 < indexes.size() && isPastCurrentBlock())
+            while (currentIndexIdx + 1 < indexEntry.columnsIndexCount() && isPastCurrentBlock())
             {
                 reader.openMarker = currentIndex().endOpenMarker;
                 ++currentIndexIdx;
@@ -481,7 +556,7 @@ abstract class AbstractSSTableIterator implements SliceableUnfilteredRowIterator
         }
 
         // Check if we've crossed an index boundary (based on the mark on the beginning of the index block).
-        public boolean isPastCurrentBlock()
+        public boolean isPastCurrentBlock() throws IOException
         {
             assert reader.deserializer != null;
             long correction = reader.deserializer.bytesReadForUnconsumedData();
@@ -493,32 +568,94 @@ abstract class AbstractSSTableIterator implements SliceableUnfilteredRowIterator
             return currentIndexIdx;
         }
 
-        public IndexHelper.IndexInfo currentIndex()
+        public IndexInfo currentIndex() throws IOException
         {
             return index(currentIndexIdx);
         }
 
-        public IndexHelper.IndexInfo index(int i)
+        public IndexInfo index(int i) throws IOException
         {
-            return indexes.get(i);
+            return indexInfoRetriever.columnsIndex(i);
         }
 
         // Finds the index of the first block containing the provided bound, starting at the provided index.
         // Will be -1 if the bound is before any block, and blocksCount() if it is after every block.
-        public int findBlockIndex(Slice.Bound bound, int fromIdx)
+        public int findBlockIndex(ClusteringBound bound, int fromIdx) throws IOException
         {
-            if (bound == Slice.Bound.BOTTOM)
+            if (bound == ClusteringBound.BOTTOM)
                 return -1;
-            if (bound == Slice.Bound.TOP)
+            if (bound == ClusteringBound.TOP)
                 return blocksCount();
 
-            return IndexHelper.indexFor(bound, indexes, comparator, reversed, fromIdx);
+            return indexFor(bound, fromIdx);
+        }
+
+        public int indexFor(ClusteringPrefix name, int lastIndex) throws IOException
+        {
+            IndexInfo target = new IndexInfo(name, name, 0, 0, null);
+            /*
+            Take the example from the unit test, and say your index looks like this:
+            [0..5][10..15][20..25]
+            and you look for the slice [13..17].
+
+            When doing forward slice, we are doing a binary search comparing 13 (the start of the query)
+            to the lastName part of the index slot. You'll end up with the "first" slot, going from left to right,
+            that may contain the start.
+
+            When doing a reverse slice, we do the same thing, only using as a start column the end of the query,
+            i.e. 17 in this example, compared to the firstName part of the index slots.  bsearch will give us the
+            first slot where firstName > start ([20..25] here), so we subtract an extra one to get the slot just before.
+            */
+            int startIdx = 0;
+            int endIdx = indexEntry.columnsIndexCount() - 1;
+
+            if (reversed)
+            {
+                if (lastIndex < endIdx)
+                {
+                    endIdx = lastIndex;
+                }
+            }
+            else
+            {
+                if (lastIndex > 0)
+                {
+                    startIdx = lastIndex;
+                }
+            }
+
+            int index = binarySearch(target, comparator.indexComparator(reversed), startIdx, endIdx);
+            return (index < 0 ? -index - (reversed ? 2 : 1) : index);
+        }
+
+        private int binarySearch(IndexInfo key, Comparator<IndexInfo> c, int low, int high) throws IOException
+        {
+            while (low <= high)
+            {
+                int mid = (low + high) >>> 1;
+                IndexInfo midVal = index(mid);
+                int cmp = c.compare(midVal, key);
+
+                if (cmp < 0)
+                    low = mid + 1;
+                else if (cmp > 0)
+                    high = mid - 1;
+                else
+                    return mid;
+            }
+            return -(low + 1);
         }
 
         @Override
         public String toString()
         {
-            return String.format("IndexState(indexSize=%d, currentBlock=%d, reversed=%b)", indexes.size(), currentIndexIdx, reversed);
+            return String.format("IndexState(indexSize=%d, currentBlock=%d, reversed=%b)", indexEntry.columnsIndexCount(), currentIndexIdx, reversed);
+        }
+
+        @Override
+        public void close() throws IOException
+        {
+            indexInfoRetriever.close();
         }
     }
 }

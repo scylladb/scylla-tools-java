@@ -17,67 +17,43 @@
  */
 package org.apache.cassandra.tools;
 
-import java.io.File;
 import java.io.IOException;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.InvocationTargetException;
 import java.net.InetAddress;
-import java.net.MalformedURLException;
-import java.net.UnknownHostException;
-import java.util.*;
-
-import com.google.common.collect.HashMultimap;
-import com.google.common.collect.Multimap;
-import org.apache.commons.cli.*;
+import java.util.Set;
+import javax.net.ssl.SSLContext;
 
 import com.datastax.driver.core.AuthProvider;
 import com.datastax.driver.core.JdkSSLOptions;
-import com.datastax.driver.core.PlainTextAuthProvider;
 import com.datastax.driver.core.SSLOptions;
-import javax.net.ssl.SSLContext;
-import org.apache.cassandra.config.*;
-import org.apache.cassandra.exceptions.ConfigurationException;
+import com.google.common.collect.HashMultimap;
+import com.google.common.collect.Multimap;
+import org.apache.commons.cli.Option;
+import org.apache.commons.cli.Options;
+
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.EncryptionOptions;
 import org.apache.cassandra.io.sstable.SSTableLoader;
 import org.apache.cassandra.security.SSLFactory;
 import org.apache.cassandra.streaming.*;
+import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.NativeSSTableLoaderClient;
 import org.apache.cassandra.utils.OutputHandler;
 
 public class BulkLoader
 {
-    private static final String TOOL_NAME = "sstableloader";
-    private static final String VERBOSE_OPTION  = "verbose";
-    private static final String HELP_OPTION  = "help";
-    private static final String NOPROGRESS_OPTION  = "no-progress";
-    private static final String IGNORE_NODES_OPTION  = "ignore";
-    private static final String INITIAL_HOST_ADDRESS_OPTION = "nodes";
-    private static final String NATIVE_PORT_OPTION = "port";
-    private static final String USER_OPTION = "username";
-    private static final String PASSWD_OPTION = "password";
-    private static final String AUTH_PROVIDER_OPTION = "auth-provider";
-    private static final String THROTTLE_MBITS = "throttle";
-    private static final String INTER_DC_THROTTLE_MBITS = "inter-dc-throttle";
-
-    /* client encryption options */
-    private static final String SSL_TRUSTSTORE = "truststore";
-    private static final String SSL_TRUSTSTORE_PW = "truststore-password";
-    private static final String SSL_KEYSTORE = "keystore";
-    private static final String SSL_KEYSTORE_PW = "keystore-password";
-    private static final String SSL_PROTOCOL = "ssl-protocol";
-    private static final String SSL_ALGORITHM = "ssl-alg";
-    private static final String SSL_STORE_TYPE = "store-type";
-    private static final String SSL_CIPHER_SUITES = "ssl-ciphers";
-    private static final String CONNECTIONS_PER_HOST = "connections-per-host";
-    private static final String CONFIG_PATH = "conf-path";
-
-    public static void main(String args[])
+    public static void main(String args[]) throws BulkLoadException
     {
-        Config.setClientMode(true);
-        LoaderOptions options = LoaderOptions.parseArgs(args).validateArguments();
+        LoaderOptions options = LoaderOptions.builder().parseArgs(args).build();
+        load(options);
+    }
+
+    public static void load(LoaderOptions options) throws BulkLoadException
+    {
+        DatabaseDescriptor.toolInitialization();
         OutputHandler handler = new OutputHandler.SystemOutput(options.verbose, options.debug);
         SSTableLoader loader = new SSTableLoader(
-                options.directory,
+                options.directory.getAbsoluteFile(),
                 new ExternalClient(
                         options.hosts,
                         options.nativePort,
@@ -86,8 +62,8 @@ public class BulkLoader
                         options.sslStoragePort,
                         options.serverEncOptions,
                         buildSSLOptions(options.clientEncOptions)),
-                handler,
-                options.connectionsPerHost);
+                        handler,
+                        options.connectionsPerHost);
         DatabaseDescriptor.setStreamThroughputOutboundMegabitsPerSec(options.throttle);
         DatabaseDescriptor.setInterDCStreamThroughputOutboundMegabitsPerSec(options.interDcThrottle);
         StreamResultFuture future = null;
@@ -110,9 +86,11 @@ public class BulkLoader
             JVMStabilityInspector.inspectThrowable(e);
             System.err.println(e.getMessage());
             if (e.getCause() != null)
+            {
                 System.err.println(e.getCause());
+            }
             e.printStackTrace(System.err);
-            System.exit(1);
+            throw new BulkLoadException(e);
         }
 
         try
@@ -120,18 +98,20 @@ public class BulkLoader
             future.get();
 
             if (!options.noProgress)
+            {
                 indicator.printSummary(options.connectionsPerHost);
+            }
 
             // Give sockets time to gracefully close
             Thread.sleep(1000);
-            System.exit(0); // We need that to stop non daemonized threads
+            // System.exit(0); // We need that to stop non daemonized threads
         }
         catch (Exception e)
         {
             System.err.println("Streaming to the following hosts failed:");
             System.err.println(loader.getFailedHosts());
             e.printStackTrace(System.err);
-            System.exit(1);
+            throw new BulkLoadException(e);
         }
     }
 
@@ -142,7 +122,7 @@ public class BulkLoader
         private long lastProgress;
         private long lastTime;
 
-        private int peak = 0;
+        private long peak = 0;
         private int totalFiles = 0;
 
         private final Multimap<InetAddress, SessionInfo> sessionsByHost = HashMultimap.create();
@@ -196,14 +176,16 @@ public class BulkLoader
                         long current = 0;
                         int completed = 0;
 
-                        if (progressInfo != null && session.peer.equals(progressInfo.peer) && (session.sessionIndex == progressInfo.sessionIndex))
+                        if (progressInfo != null && session.peer.equals(progressInfo.peer) && session.sessionIndex == progressInfo.sessionIndex)
                         {
                             session.updateProgress(progressInfo);
                         }
                         for (ProgressInfo progress : session.getSendingFiles())
                         {
                             if (progress.isCompleted())
+                            {
                                 completed++;
+                            }
                             current += progress.currentBytes;
                         }
                         totalProgress += current;
@@ -215,7 +197,9 @@ public class BulkLoader
                         sb.append(" ").append(String.format("%-3d", size == 0 ? 100L : current * 100L / size)).append("% ");
 
                         if (updateTotalFiles)
+                        {
                             totalFiles += session.getTotalFilesToSend();
+                        }
                     }
                 }
 
@@ -224,35 +208,37 @@ public class BulkLoader
                 lastProgress = totalProgress;
 
                 sb.append("total: ").append(totalSize == 0 ? 100L : totalProgress * 100L / totalSize).append("% ");
-                sb.append(String.format("%-3d", mbPerSec(deltaProgress, deltaTime))).append("MB/s");
-                int average = mbPerSec(totalProgress, (time - start));
-                if (average > peak)
-                    peak = average;
-                sb.append("(avg: ").append(average).append(" MB/s)");
+                sb.append(FBUtilities.prettyPrintMemoryPerSecond(deltaProgress, deltaTime));
+                long average = bytesPerSecond(totalProgress, time - start);
 
-                System.out.print(sb.toString());
+                if (average > peak)
+                {
+                    peak = average;
+                }
+                sb.append(" (avg: ").append(FBUtilities.prettyPrintMemoryPerSecond(totalProgress, time - start)).append(")");
+
+                System.out.println(sb.toString());
             }
         }
 
-        private int mbPerSec(long bytes, long timeInNano)
+        private long bytesPerSecond(long bytes, long timeInNano)
         {
-            double bytesPerNano = ((double)bytes) / timeInNano;
-            return (int)((bytesPerNano * 1000 * 1000 * 1000) / (1024 * 1024));
+            return timeInNano != 0 ? (long) (((double) bytes / timeInNano) * 1000 * 1000 * 1000) : 0;
         }
 
         private void printSummary(int connectionsPerHost)
         {
             long end = System.nanoTime();
             long durationMS = ((end - start) / (1000000));
-            int average = mbPerSec(lastProgress, (end - start));
+
             StringBuilder sb = new StringBuilder();
             sb.append("\nSummary statistics: \n");
-            sb.append(String.format("   %-30s: %-10d%n", "Connections per host: ", connectionsPerHost));
-            sb.append(String.format("   %-30s: %-10d%n", "Total files transferred: ", totalFiles));
-            sb.append(String.format("   %-30s: %-10d%n", "Total bytes transferred: ", lastProgress));
-            sb.append(String.format("   %-30s: %-10d%n", "Total duration (ms): ", durationMS));
-            sb.append(String.format("   %-30s: %-10d%n", "Average transfer rate (MB/s): ", + average));
-            sb.append(String.format("   %-30s: %-10d%n", "Peak transfer rate (MB/s): ", + peak));
+            sb.append(String.format("   %-24s: %-10d%n", "Connections per host ", connectionsPerHost));
+            sb.append(String.format("   %-24s: %-10d%n", "Total files transferred ", totalFiles));
+            sb.append(String.format("   %-24s: %-10s%n", "Total bytes transferred ", FBUtilities.prettyPrintMemory(lastProgress)));
+            sb.append(String.format("   %-24s: %-10s%n", "Total duration ", durationMS + " ms"));
+            sb.append(String.format("   %-24s: %-10s%n", "Average transfer rate ", FBUtilities.prettyPrintMemoryPerSecond(lastProgress, end - start)));
+            sb.append(String.format("   %-24s: %-10s%n", "Peak transfer rate ",  FBUtilities.prettyPrintMemoryPerSecond(peak)));
             System.out.println(sb.toString());
         }
     }
@@ -261,7 +247,9 @@ public class BulkLoader
     {
 
         if (!clientEncryptionOptions.enabled)
+        {
             return null;
+        }
 
         SSLContext sslContext;
         try
@@ -296,340 +284,13 @@ public class BulkLoader
             super(hosts, port, authProvider, sslOptions);
             this.storagePort = storagePort;
             this.sslStoragePort = sslStoragePort;
-            this.serverEncOptions = serverEncryptionOptions;
+            serverEncOptions = serverEncryptionOptions;
         }
 
         @Override
         public StreamConnectionFactory getConnectionFactory()
         {
             return new BulkLoadConnectionFactory(storagePort, sslStoragePort, serverEncOptions, false);
-        }
-    }
-
-    static class LoaderOptions
-    {
-        public final File directory;
-
-        public boolean debug;
-        public boolean verbose;
-        public boolean noProgress;
-        public int nativePort = 9042;
-        public String user;
-        public String passwd;
-        public String authProviderName;
-        public AuthProvider authProvider;
-        public int throttle = 0;
-        public int interDcThrottle = 0;
-        public int storagePort;
-        public int sslStoragePort;
-        public EncryptionOptions.ClientEncryptionOptions clientEncOptions = new EncryptionOptions.ClientEncryptionOptions();
-        public int connectionsPerHost = 1;
-        public EncryptionOptions.ServerEncryptionOptions serverEncOptions = new EncryptionOptions.ServerEncryptionOptions();
-
-        public final Set<InetAddress> hosts = new HashSet<>();
-        public final Set<InetAddress> ignores = new HashSet<>();
-
-        LoaderOptions(File directory)
-        {
-            this.directory = directory;
-        }
-
-        public static LoaderOptions parseArgs(String cmdArgs[])
-        {
-            CommandLineParser parser = new GnuParser();
-            CmdLineOptions options = getCmdLineOptions();
-            try
-            {
-                CommandLine cmd = parser.parse(options, cmdArgs, false);
-
-                if (cmd.hasOption(HELP_OPTION))
-                {
-                    printUsage(options);
-                    System.exit(0);
-                }
-
-                String[] args = cmd.getArgs();
-                if (args.length == 0)
-                {
-                    System.err.println("Missing sstable directory argument");
-                    printUsage(options);
-                    System.exit(1);
-                }
-
-                if (args.length > 1)
-                {
-                    System.err.println("Too many arguments");
-                    printUsage(options);
-                    System.exit(1);
-                }
-
-                String dirname = args[0];
-                File dir = new File(dirname);
-
-                if (!dir.exists())
-                    errorMsg("Unknown directory: " + dirname, options);
-
-                if (!dir.isDirectory())
-                    errorMsg(dirname + " is not a directory", options);
-
-                LoaderOptions opts = new LoaderOptions(dir);
-
-                opts.verbose = cmd.hasOption(VERBOSE_OPTION);
-                opts.noProgress = cmd.hasOption(NOPROGRESS_OPTION);
-
-                if (cmd.hasOption(NATIVE_PORT_OPTION))
-                    opts.nativePort = Integer.parseInt(cmd.getOptionValue(NATIVE_PORT_OPTION));
-
-                if (cmd.hasOption(USER_OPTION))
-                    opts.user = cmd.getOptionValue(USER_OPTION);
-
-                if (cmd.hasOption(PASSWD_OPTION))
-                    opts.passwd = cmd.getOptionValue(PASSWD_OPTION);
-
-                if (cmd.hasOption(AUTH_PROVIDER_OPTION))
-                    opts.authProviderName = cmd.getOptionValue(AUTH_PROVIDER_OPTION);
-
-                if (cmd.hasOption(INITIAL_HOST_ADDRESS_OPTION))
-                {
-                    String[] nodes = cmd.getOptionValue(INITIAL_HOST_ADDRESS_OPTION).split(",");
-                    try
-                    {
-                        for (String node : nodes)
-                        {
-                            opts.hosts.add(InetAddress.getByName(node.trim()));
-                        }
-                    }
-                    catch (UnknownHostException e)
-                    {
-                        errorMsg("Unknown host: " + e.getMessage(), options);
-                    }
-
-                }
-                else
-                {
-                    System.err.println("Initial hosts must be specified (-d)");
-                    printUsage(options);
-                    System.exit(1);
-                }
-
-                if (cmd.hasOption(IGNORE_NODES_OPTION))
-                {
-                    String[] nodes = cmd.getOptionValue(IGNORE_NODES_OPTION).split(",");
-                    try
-                    {
-                        for (String node : nodes)
-                        {
-                            opts.ignores.add(InetAddress.getByName(node.trim()));
-                        }
-                    }
-                    catch (UnknownHostException e)
-                    {
-                        errorMsg("Unknown host: " + e.getMessage(), options);
-                    }
-                }
-
-                if (cmd.hasOption(CONNECTIONS_PER_HOST))
-                    opts.connectionsPerHost = Integer.parseInt(cmd.getOptionValue(CONNECTIONS_PER_HOST));
-
-                // try to load config file first, so that values can be rewritten with other option values.
-                // otherwise use default config.
-                Config config;
-                if (cmd.hasOption(CONFIG_PATH))
-                {
-                    File configFile = new File(cmd.getOptionValue(CONFIG_PATH));
-                    if (!configFile.exists())
-                    {
-                        errorMsg("Config file not found", options);
-                    }
-                    config = new YamlConfigurationLoader().loadConfig(configFile.toURI().toURL());
-                }
-                else
-                {
-                    config = new Config();
-                    // unthrottle stream by default
-                    config.stream_throughput_outbound_megabits_per_sec = 0;
-                    config.inter_dc_stream_throughput_outbound_megabits_per_sec = 0;
-                }
-                opts.storagePort = config.storage_port;
-                opts.sslStoragePort = config.ssl_storage_port;
-                opts.throttle = config.stream_throughput_outbound_megabits_per_sec;
-                opts.interDcThrottle = config.inter_dc_stream_throughput_outbound_megabits_per_sec;
-                opts.clientEncOptions = config.client_encryption_options;
-                opts.serverEncOptions = config.server_encryption_options;
-
-                if (cmd.hasOption(THROTTLE_MBITS))
-                {
-                    opts.throttle = Integer.parseInt(cmd.getOptionValue(THROTTLE_MBITS));
-                }
-
-                if (cmd.hasOption(INTER_DC_THROTTLE_MBITS))
-                {
-                    opts.interDcThrottle = Integer.parseInt(cmd.getOptionValue(INTER_DC_THROTTLE_MBITS));
-                }
-
-                if (cmd.hasOption(SSL_TRUSTSTORE) || cmd.hasOption(SSL_TRUSTSTORE_PW) ||
-                    cmd.hasOption(SSL_KEYSTORE) || cmd.hasOption(SSL_KEYSTORE_PW))
-                {
-                    opts.clientEncOptions.enabled = true;
-                }
-
-                if (cmd.hasOption(SSL_TRUSTSTORE))
-                {
-                    opts.clientEncOptions.truststore = cmd.getOptionValue(SSL_TRUSTSTORE);
-                }
-
-                if (cmd.hasOption(SSL_TRUSTSTORE_PW))
-                {
-                    opts.clientEncOptions.truststore_password = cmd.getOptionValue(SSL_TRUSTSTORE_PW);
-                }
-
-                if (cmd.hasOption(SSL_KEYSTORE))
-                {
-                    opts.clientEncOptions.keystore = cmd.getOptionValue(SSL_KEYSTORE);
-                    // if a keystore was provided, lets assume we'll need to use it
-                    opts.clientEncOptions.require_client_auth = true;
-                }
-
-                if (cmd.hasOption(SSL_KEYSTORE_PW))
-                {
-                    opts.clientEncOptions.keystore_password = cmd.getOptionValue(SSL_KEYSTORE_PW);
-                }
-
-                if (cmd.hasOption(SSL_PROTOCOL))
-                {
-                    opts.clientEncOptions.protocol = cmd.getOptionValue(SSL_PROTOCOL);
-                }
-
-                if (cmd.hasOption(SSL_ALGORITHM))
-                {
-                    opts.clientEncOptions.algorithm = cmd.getOptionValue(SSL_ALGORITHM);
-                }
-
-                if (cmd.hasOption(SSL_STORE_TYPE))
-                {
-                    opts.clientEncOptions.store_type = cmd.getOptionValue(SSL_STORE_TYPE);
-                }
-
-                if (cmd.hasOption(SSL_CIPHER_SUITES))
-                {
-                    opts.clientEncOptions.cipher_suites = cmd.getOptionValue(SSL_CIPHER_SUITES).split(",");
-                }
-
-                return opts;
-            }
-            catch (ParseException | ConfigurationException | MalformedURLException e)
-            {
-                errorMsg(e.getMessage(), options);
-                return null;
-            }
-        }
-
-        public LoaderOptions validateArguments()
-        {
-            // Both username and password need to be provided
-            if ((user != null) != (passwd != null))
-                errorMsg("Username and password must both be provided", getCmdLineOptions());
-
-            if (user != null)
-            {
-                // Support for 3rd party auth providers that support plain text credentials.
-                // In this case the auth provider must provide a constructor of the form:
-                //
-                // public MyAuthProvider(String username, String password)
-                if (authProviderName != null)
-                {
-                    try
-                    {
-                        Class authProviderClass = Class.forName(authProviderName);
-                        Constructor constructor = authProviderClass.getConstructor(String.class, String.class);
-                        authProvider = (AuthProvider)constructor.newInstance(user, passwd);
-                    }
-                    catch (ClassNotFoundException e)
-                    {
-                        errorMsg("Unknown auth provider: " + e.getMessage(), getCmdLineOptions());
-                    }
-                    catch (NoSuchMethodException e)
-                    {
-                        errorMsg("Auth provider does not support plain text credentials: " + e.getMessage(), getCmdLineOptions());
-                    }
-                    catch (InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException e)
-                    {
-                        errorMsg("Could not create auth provider with plain text credentials: " + e.getMessage(), getCmdLineOptions());
-                    }
-                }
-                else
-                {
-                    // If a 3rd party auth provider wasn't provided use the driver plain text provider
-                    authProvider = new PlainTextAuthProvider(user, passwd);
-                }
-            }
-            // Alternate support for 3rd party auth providers that don't use plain text credentials.
-            // In this case the auth provider must provide a nullary constructor of the form:
-            //
-            // public MyAuthProvider()
-            else if (authProviderName != null)
-            {
-                try
-                {
-                    authProvider = (AuthProvider)Class.forName(authProviderName).newInstance();
-                }
-                catch (ClassNotFoundException | InstantiationException | IllegalAccessException e)
-                {
-                    errorMsg("Unknown auth provider" + e.getMessage(), getCmdLineOptions());
-                }
-            }
-
-            return this;
-        }
-
-        private static void errorMsg(String msg, CmdLineOptions options)
-        {
-            System.err.println(msg);
-            printUsage(options);
-            System.exit(1);
-        }
-
-        private static CmdLineOptions getCmdLineOptions()
-        {
-            CmdLineOptions options = new CmdLineOptions();
-            options.addOption("v",  VERBOSE_OPTION,      "verbose output");
-            options.addOption("h",  HELP_OPTION,         "display this help message");
-            options.addOption(null, NOPROGRESS_OPTION,   "don't display progress");
-            options.addOption("i",  IGNORE_NODES_OPTION, "NODES", "don't stream to this (comma separated) list of nodes");
-            options.addOption("d",  INITIAL_HOST_ADDRESS_OPTION, "initial hosts", "Required. try to connect to these hosts (comma separated) initially for ring information");
-            options.addOption("p",  NATIVE_PORT_OPTION, "rpc port", "port used for native connection (default 9042)");
-            options.addOption("t",  THROTTLE_MBITS, "throttle", "throttle speed in Mbits (default unlimited)");
-            options.addOption("idct",  INTER_DC_THROTTLE_MBITS, "inter-dc-throttle", "inter-datacenter throttle speed in Mbits (default unlimited)");
-            options.addOption("u",  USER_OPTION, "username", "username for cassandra authentication");
-            options.addOption("pw", PASSWD_OPTION, "password", "password for cassandra authentication");
-            options.addOption("ap", AUTH_PROVIDER_OPTION, "auth provider", "custom AuthProvider class name for cassandra authentication");
-            options.addOption("cph", CONNECTIONS_PER_HOST, "connectionsPerHost", "number of concurrent connections-per-host.");
-            // ssl connection-related options
-            options.addOption("ts", SSL_TRUSTSTORE, "TRUSTSTORE", "Client SSL: full path to truststore");
-            options.addOption("tspw", SSL_TRUSTSTORE_PW, "TRUSTSTORE-PASSWORD", "Client SSL: password of the truststore");
-            options.addOption("ks", SSL_KEYSTORE, "KEYSTORE", "Client SSL: full path to keystore");
-            options.addOption("kspw", SSL_KEYSTORE_PW, "KEYSTORE-PASSWORD", "Client SSL: password of the keystore");
-            options.addOption("prtcl", SSL_PROTOCOL, "PROTOCOL", "Client SSL: connections protocol to use (default: TLS)");
-            options.addOption("alg", SSL_ALGORITHM, "ALGORITHM", "Client SSL: algorithm (default: SunX509)");
-            options.addOption("st", SSL_STORE_TYPE, "STORE-TYPE", "Client SSL: type of store");
-            options.addOption("ciphers", SSL_CIPHER_SUITES, "CIPHER-SUITES", "Client SSL: comma-separated list of encryption suites to use");
-            options.addOption("f", CONFIG_PATH, "path to config file", "cassandra.yaml file path for streaming throughput and client/server SSL.");
-            return options;
-        }
-
-        public static void printUsage(Options options)
-        {
-            String usage = String.format("%s [options] <dir_path>", TOOL_NAME);
-            String header = System.lineSeparator() +
-                            "Bulk load the sstables found in the directory <dir_path> to the configured cluster." +
-                            "The parent directories of <dir_path> are used as the target keyspace/table name. " +
-                            "So for instance, to load an sstable named Standard1-g-1-Data.db into Keyspace1/Standard1, " +
-                            "you will need to have the files Standard1-g-1-Data.db and Standard1-g-1-Index.db into a directory /path/to/Keyspace1/Standard1/.";
-            String footer = System.lineSeparator() +
-                            "You can provide cassandra.yaml file with -f command line option to set up streaming throughput, client and server encryption options. " +
-                            "Only stream_throughput_outbound_megabits_per_sec, inter_dc_stream_throughput_outbound_megabits_per_sec, server_encryption_options and client_encryption_options are read from yaml. " +
-                            "You can override options read from cassandra.yaml with corresponding command line options.";
-            new HelpFormatter().printHelp(usage, header, options, footer);
         }
     }
 

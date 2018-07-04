@@ -33,12 +33,12 @@ import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.rows.BTreeRow;
 import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.lifecycle.SSTableSet;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
+import org.apache.cassandra.io.sstable.format.SSTableReadsListener;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
 import org.apache.cassandra.schema.KeyspaceParams;
@@ -57,7 +57,11 @@ public class TTLExpiryTest
     @BeforeClass
     public static void defineSchema() throws ConfigurationException
     {
+        // Disable tombstone histogram rounding for tests
+        System.setProperty("cassandra.streaminghistogram.roundseconds", "1");
+
         SchemaLoader.prepareServer();
+
         SchemaLoader.createKeyspace(KEYSPACE1,
                                     KeyspaceParams.simple(1),
                                     CFMetaData.Builder.create(KEYSPACE1, CF_STANDARD1)
@@ -172,7 +176,7 @@ public class TTLExpiryTest
 
         new RowUpdateBuilder(cfs.metadata, timestamp, 1, key)
             .add("col2", ByteBufferUtil.EMPTY_BYTE_BUFFER)
-            .addMapEntry("col8", "bar", "foo")
+            .add("col8", Collections.singletonMap("bar", "foo"))
             .delete("col1")
             .build()
             .applyUnsafe();
@@ -239,7 +243,10 @@ public class TTLExpiryTest
         cfs.enableAutoCompaction(true);
         assertEquals(1, cfs.getLiveSSTables().size());
         SSTableReader sstable = cfs.getLiveSSTables().iterator().next();
-        ISSTableScanner scanner = sstable.getScanner(ColumnFilter.all(sstable.metadata), DataRange.allData(cfs.getPartitioner()), false);
+        ISSTableScanner scanner = sstable.getScanner(ColumnFilter.all(sstable.metadata),
+                                                     DataRange.allData(cfs.getPartitioner()),
+                                                     false,
+                                                     SSTableReadsListener.NOOP_LISTENER);
         assertTrue(scanner.hasNext());
         while(scanner.hasNext())
         {

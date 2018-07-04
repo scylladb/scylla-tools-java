@@ -39,11 +39,11 @@ public abstract class CellPath
     public abstract int size();
     public abstract ByteBuffer get(int i);
 
-    // The only complex we currently have are collections that have only one value.
+    // The only complex paths we currently have are collections and UDTs, which both have a depth of one
     public static CellPath create(ByteBuffer value)
     {
         assert value != null;
-        return new CollectionCellPath(value);
+        return new SingleItemCellPath(value);
     }
 
     public int dataSize()
@@ -98,13 +98,13 @@ public abstract class CellPath
         public void skip(DataInputPlus in) throws IOException;
     }
 
-    private static class CollectionCellPath extends CellPath
+    private static class SingleItemCellPath extends CellPath
     {
-        private static final long EMPTY_SIZE = ObjectSizes.measure(new CollectionCellPath(ByteBufferUtil.EMPTY_BYTE_BUFFER));
+        private static final long EMPTY_SIZE = ObjectSizes.measure(new SingleItemCellPath(ByteBufferUtil.EMPTY_BYTE_BUFFER));
 
         protected final ByteBuffer value;
 
-        private CollectionCellPath(ByteBuffer value)
+        private SingleItemCellPath(ByteBuffer value)
         {
             this.value = value;
         }
@@ -122,7 +122,7 @@ public abstract class CellPath
 
         public CellPath copy(AbstractAllocator allocator)
         {
-            return new CollectionCellPath(allocator.clone(value));
+            return new SingleItemCellPath(allocator.clone(value));
         }
 
         public long unsharedHeapSizeExcludingData()

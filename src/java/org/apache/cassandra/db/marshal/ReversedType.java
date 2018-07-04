@@ -28,6 +28,7 @@ import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.serializers.TypeSerializer;
+import org.apache.cassandra.transport.ProtocolVersion;
 
 public class ReversedType<T> extends AbstractType<T>
 {
@@ -68,16 +69,6 @@ public class ReversedType<T> extends AbstractType<T>
 
     public int compareCustom(ByteBuffer o1, ByteBuffer o2)
     {
-        // An empty byte buffer is always smaller
-        if (o1.remaining() == 0)
-        {
-            return o2.remaining() == 0 ? 0 : -1;
-        }
-        if (o2.remaining() == 0)
-        {
-            return 1;
-        }
-
         return baseType.compare(o2, o1);
     }
 
@@ -104,7 +95,7 @@ public class ReversedType<T> extends AbstractType<T>
     }
 
     @Override
-    public String toJSONString(ByteBuffer buffer, int protocolVersion)
+    public String toJSONString(ByteBuffer buffer, ProtocolVersion protocolVersion)
     {
         return baseType.toJSONString(buffer, protocolVersion);
     }
