@@ -73,9 +73,17 @@ SCYLLA_VERSION=$(cat build/SCYLLA-VERSION-FILE)
 SCYLLA_RELEASE=$(cat build/SCYLLA-RELEASE-FILE)
 git archive --format=tar --prefix=scylla-tools-$SCYLLA_VERSION/ HEAD -o build/scylla-tools-$VERSION.tar
 pystache dist/redhat/scylla-tools.spec.mustache "{ \"version\": \"$SCYLLA_VERSION\", \"release\": \"$SCYLLA_RELEASE\" }" > build/scylla-tools.spec
+
+# mock generates files owned by root, fix this up
+fix_ownership() {
+    sudo chown "$(id -u):$(id -g)" -R "$@"
+}
+
 sudo mock --buildsrpm --root=$TARGET --resultdir=`pwd`/build/srpms --spec=build/scylla-tools.spec --sources=build/scylla-tools-$VERSION.tar
+fix_ownership build/srpms
 if [[ "$TARGET" =~ ^epel-7- ]]; then
     TARGET=scylla-tools-$TARGET
     RPM_OPTS="$RPM_OPTS --configdir=dist/redhat/mock"
 fi
 sudo mock --rebuild --root=$TARGET --resultdir=`pwd`/build/rpms $RPM_OPTS build/srpms/scylla-tools-$VERSION*.src.rpm
+fix_ownership build/rpms
