@@ -939,10 +939,6 @@ public class BulkLoader {
                     opts.encOptions.cipher_suites = cmd.getOptionValue(SSL_CIPHER_SUITES).split(",");
                 }
 
-                if (cmd.hasOption(USE_PREPARED) && cmd.hasOption(USE_BATCH)) {
-                    errorMsg("Cannot use batch and prepared statement at the same time", options);
-                }
-
                 if (cmd.hasOption(USE_PREPARED)) {
                     opts.prepare = true;
                 }
