@@ -34,6 +34,11 @@ import java.io.FilenameFilter;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
+import java.security.KeyManagementException;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
+import java.security.UnrecoverableKeyException;
+import java.security.cert.CertificateException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -43,7 +48,12 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
+
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
@@ -76,7 +86,6 @@ import org.apache.cassandra.io.sstable.ISSTableScanner;
 import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.utils.Pair;
-import org.apache.cassandra.utils.UUIDGen;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -918,43 +927,56 @@ public class SSTableToCQL {
         }
     }
 
-    public void stream(File directoryOrSStable) throws IOException, ConfigurationException {
-        RowBuilder builder = new RowBuilder(client);
+    private static final int THREADS_COUNT = 16;
 
-        logger.info("Opening sstables and calculating sections to stream");
-
+    public void stream(File directoryOrSStable) throws IOException, ConfigurationException, UnrecoverableKeyException, KeyManagementException, NoSuchAlgorithmException, KeyStoreException, CertificateException, InterruptedException {
+        List<Client> clients = new ArrayList<>(THREADS_COUNT);
+        clients.add(client);
+        for (int i = 1; i < THREADS_COUNT; ++i) {
+            clients.add(client.copy());
+        }
         // Hack. Must do because Range mangling code in cassandra is
         // broken, and does not preserve input range objects internal
         // "partitioner" field.
-        DatabaseDescriptor.setPartitionerUnsafe(client.getPartitioner());        
-        
-        Map<InetAddress, Collection<Range<Token>>> ranges = client.getEndpointRanges();
-        Collection<SSTableReader> sstables = openSSTables(directoryOrSStable);
+        DatabaseDescriptor.setPartitionerUnsafe(client.getPartitioner());
 
+        final Map<InetAddress, Collection<Range<Token>>> ranges = client.getEndpointRanges();
+        final ConcurrentLinkedQueue<SSTableReader> sstables = new ConcurrentLinkedQueue<>(openSSTables(directoryOrSStable));
+
+        ExecutorService executor = Executors.newFixedThreadPool(THREADS_COUNT);
+
+        final CountDownLatch latch = new CountDownLatch(THREADS_COUNT);
         try {
-            for (SSTableReader reader : sstables) {
-                logger.info("Processing {}", reader.getFilename());                
-                if (ranges == null || ranges.isEmpty()) {
-                    ISSTableScanner scanner = reader.getScanner();
-                    try {
-                        process(builder, null, scanner);
-                    } finally {
-                        scanner.close();
-                    }
-                } else {
-                    for (Map.Entry<InetAddress, Collection<Range<Token>>> e : ranges.entrySet()) {
-                        ISSTableScanner scanner = reader.getScanner(e.getValue(), null);
-                        try {
-                            process(builder, e.getKey(), scanner);
-                        } finally {
-                            scanner.close();
+            for (int i = 0; i < THREADS_COUNT; ++i) {
+                final RowBuilder builder = new RowBuilder(clients.get(i));
+                final Consumer<SSTableReader> readerProcessor = (ranges == null || ranges.isEmpty())
+                        ? (SSTableReader reader) -> {
+                            try (ISSTableScanner scanner = reader.getScanner()) {
+                                process(builder, null, scanner);
+                            }
                         }
+                        : (SSTableReader reader) -> {
+                            for (Map.Entry<InetAddress, Collection<Range<Token>>> e : ranges.entrySet()) {
+                                try (ISSTableScanner scanner = reader.getScanner(e.getValue(), null)) {
+                                        process(builder, e.getKey(), scanner);
+                                }
+                            }
+                        };
+                executor.submit(() -> {
+                    SSTableReader reader = null;
+                    while ((reader = sstables.poll()) != null) {
+                        logger.info("Processing {}", reader.getFilename());
+                        readerProcessor.accept(reader);
+                        logger.info("Done processing {}", reader.getFilename());
                     }
-                }
+                    latch.countDown();
+                });
             }
+            latch.await();
         } finally {
-            client.finish();
+            for (Client client : clients) {
+                client.close();
+            }
         }
     }
-
 }
