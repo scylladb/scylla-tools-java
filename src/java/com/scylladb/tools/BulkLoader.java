@@ -115,6 +115,7 @@ import com.datastax.driver.core.BatchStatement;
 import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.Cluster;
 import com.datastax.driver.core.CodecRegistry;
+import com.datastax.driver.core.ConsistencyLevel;
 import com.datastax.driver.core.DataType;
 import com.datastax.driver.core.DataType.CustomType;
 import com.datastax.driver.core.Host;
@@ -138,10 +139,12 @@ import com.datastax.driver.core.TokenRange;
 import com.datastax.driver.core.TupleType;
 import com.datastax.driver.core.TypeCodec;
 import com.datastax.driver.core.UserType;
+import com.datastax.driver.core.WriteType;
 import com.datastax.driver.core.exceptions.CodecNotFoundException;
 import com.datastax.driver.core.exceptions.DriverException;
 import com.datastax.driver.core.exceptions.InvalidTypeException;
 import com.datastax.driver.core.policies.DCAwareRoundRobinPolicy;
+import com.datastax.driver.core.policies.RetryPolicy;
 import com.datastax.driver.core.policies.TokenAwarePolicy;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
@@ -150,6 +153,37 @@ import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.RateLimiter;
 
 public class BulkLoader {
+    public static class InfiniteRetryPolicy implements RetryPolicy {
+        public InfiniteRetryPolicy() {
+        }
+
+        @Override
+        public RetryDecision onWriteTimeout(Statement stmnt, ConsistencyLevel cl, WriteType wt, int requiredResponses, int receivedResponses, int wTime) {
+            return RetryDecision.retry(cl);
+        }
+
+        @Override
+        public RetryDecision onUnavailable(Statement stmnt, ConsistencyLevel cl, int requiredResponses, int receivedResponses, int uTime) {
+            return RetryDecision.retry(cl);
+        }
+
+        @Override
+        public RetryPolicy.RetryDecision onReadTimeout(Statement statement, ConsistencyLevel cl, int requiredResponses, int receivedResponses, boolean dataRetrieved, int nbRetry) {
+            return RetryDecision.retry(cl);
+        }
+
+        @Override
+        public RetryPolicy.RetryDecision onRequestError(Statement statement, ConsistencyLevel cl, DriverException e, int nbRetry) {
+            return RetryDecision.retry(cl);
+        }
+        @Override
+        public void close() {
+        }
+
+        @Override
+        public void init(Cluster c) {
+        }
+    }
     public static class CmdLineOptions extends Options {
         /**
          * Add option without argument
@@ -235,6 +269,10 @@ public class BulkLoader {
                     .withCompression(Compression.LZ4).withPoolingOptions(poolingOptions)
                     .withLoadBalancingPolicy(new TokenAwarePolicy(DCAwareRoundRobinPolicy.builder().build()))
                     .withCodecRegistry(codecRegistry);
+
+            if (options.infiniteRetry) {
+                builder = builder.withRetryPolicy(new InfiniteRetryPolicy());
+            }
 
             if (options.user != null && options.passwd != null) {
                 builder = builder.withCredentials(options.user, options.passwd);
@@ -783,6 +821,7 @@ public class BulkLoader {
             options.addOption("b", USE_BATCH, "batch updates for same partition key.");
             options.addOption("x", USE_PREPARED, "prepared statements");
             options.addOption("g", IGNORE_MISSING_COLUMNS, "COLUMN NAMES...", "ignore named missing columns in tables");
+            options.addOption("ir", NO_INFINITE_RETRY_OPTION, "Disable infinite retry policy");
 
             return options;
         }
@@ -823,6 +862,7 @@ public class BulkLoader {
                 opts.verbose = cmd.hasOption(VERBOSE_OPTION);
                 opts.simulate = cmd.hasOption(SIMULATE);
                 opts.noProgress = cmd.hasOption(NOPROGRESS_OPTION);
+                opts.infiniteRetry = !cmd.hasOption(NO_INFINITE_RETRY_OPTION);
 
                 if (cmd.hasOption(PORT_OPTION)) {
                     opts.port = Integer.parseInt(cmd.getOptionValue(PORT_OPTION));
@@ -969,6 +1009,7 @@ public class BulkLoader {
         public boolean noProgress;
         public int port = 9042;
         public String user;
+        public boolean infiniteRetry;
 
         public String passwd;
         public int throttle = 0;
@@ -1000,6 +1041,7 @@ public class BulkLoader {
     private static final String IGNORE_NODES_OPTION = "ignore";
     private static final String INITIAL_HOST_ADDRESS_OPTION = "nodes";
     private static final String PORT_OPTION = "port";
+    private static final String NO_INFINITE_RETRY_OPTION = "no-infinite-retry";
 
     private static final String USER_OPTION = "username";
     private static final String PASSWD_OPTION = "password";
