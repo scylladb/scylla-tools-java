@@ -141,6 +141,8 @@ import com.datastax.driver.core.UserType;
 import com.datastax.driver.core.exceptions.CodecNotFoundException;
 import com.datastax.driver.core.exceptions.DriverException;
 import com.datastax.driver.core.exceptions.InvalidTypeException;
+import com.datastax.driver.core.policies.DCAwareRoundRobinPolicy;
+import com.datastax.driver.core.policies.TokenAwarePolicy;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -231,6 +233,7 @@ public class BulkLoader {
             this.verbose = options.verbose;
             Cluster.Builder builder = builder().addContactPoints(options.hosts).withProtocolVersion(ProtocolVersion.V3)
                     .withCompression(Compression.LZ4).withPoolingOptions(poolingOptions)
+                    .withLoadBalancingPolicy(new TokenAwarePolicy(DCAwareRoundRobinPolicy.builder().build()))
                     .withCodecRegistry(codecRegistry);
 
             if (options.user != null && options.passwd != null) {
