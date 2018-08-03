@@ -861,6 +861,7 @@ public class SSTableToCQL {
             });
         }
 
+        logger.info("Found " + sstables.size() + " SSTables");
         return sstables;
     }
 
