@@ -929,6 +929,27 @@ public class SSTableToCQL {
 
     private static final int THREADS_COUNT = 16;
 
+    private class ProcessTask {
+        private final InetAddress address;
+        private final ISSTableScanner scanner;
+        private final String filename;
+
+        private ProcessTask(InetAddress address, ISSTableScanner scanner, String filename) {
+            this.address = address;
+            this.scanner = scanner;
+            this.filename = filename;
+        }
+
+        void run(RowBuilder builder) {
+            try {
+                logger.info("Processing {} on address {}", filename, address);
+                process(builder, address, scanner);
+            } finally {
+                scanner.close();
+            }
+        }
+    }
+
     public void stream(File directoryOrSStable) throws IOException, ConfigurationException, UnrecoverableKeyException, KeyManagementException, NoSuchAlgorithmException, KeyStoreException, CertificateException, InterruptedException {
         List<Client> clients = new ArrayList<>(THREADS_COUNT);
         clients.add(client);
@@ -940,8 +961,19 @@ public class SSTableToCQL {
         // "partitioner" field.
         DatabaseDescriptor.setPartitionerUnsafe(client.getPartitioner());
 
-        final Map<InetAddress, Collection<Range<Token>>> ranges = client.getEndpointRanges();
-        final ConcurrentLinkedQueue<SSTableReader> sstables = new ConcurrentLinkedQueue<>(openSSTables(directoryOrSStable));
+        Map<InetAddress, Collection<Range<Token>>> ranges = client.getEndpointRanges();
+        Collection<SSTableReader> sstables = openSSTables(directoryOrSStable);
+
+        final ConcurrentLinkedQueue<ProcessTask> tasks = new ConcurrentLinkedQueue<>();
+
+        Consumer<SSTableReader> taskFactory = (ranges == null || ranges.isEmpty())
+                ? (SSTableReader reader) -> { tasks.add(new ProcessTask(null, reader.getScanner(), reader.getFilename())); }
+                : (SSTableReader reader) -> {
+                    for (Map.Entry<InetAddress, Collection<Range<Token>>> e : ranges.entrySet()) {
+                        tasks.add(new ProcessTask(e.getKey(), reader.getScanner(e.getValue(), null), reader.getFilename()));
+                    }
+                };
+        sstables.forEach(taskFactory);
 
         ExecutorService executor = Executors.newFixedThreadPool(THREADS_COUNT);
 
@@ -949,25 +981,10 @@ public class SSTableToCQL {
         try {
             for (int i = 0; i < THREADS_COUNT; ++i) {
                 final RowBuilder builder = new RowBuilder(clients.get(i));
-                final Consumer<SSTableReader> readerProcessor = (ranges == null || ranges.isEmpty())
-                        ? (SSTableReader reader) -> {
-                            try (ISSTableScanner scanner = reader.getScanner()) {
-                                process(builder, null, scanner);
-                            }
-                        }
-                        : (SSTableReader reader) -> {
-                            for (Map.Entry<InetAddress, Collection<Range<Token>>> e : ranges.entrySet()) {
-                                try (ISSTableScanner scanner = reader.getScanner(e.getValue(), null)) {
-                                        process(builder, e.getKey(), scanner);
-                                }
-                            }
-                        };
                 executor.submit(() -> {
-                    SSTableReader reader = null;
-                    while ((reader = sstables.poll()) != null) {
-                        logger.info("Processing {}", reader.getFilename());
-                        readerProcessor.accept(reader);
-                        logger.info("Done processing {}", reader.getFilename());
+                    ProcessTask task = null;
+                    while ((task = tasks.poll()) != null) {
+                        task.run(builder);
                     }
                     latch.countDown();
                 });
@@ -976,6 +993,9 @@ public class SSTableToCQL {
         } finally {
             for (Client client : clients) {
                 client.close();
+            }
+            for (ProcessTask task : tasks) {
+                task.scanner.close();
             }
         }
     }
