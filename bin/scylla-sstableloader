@@ -50,7 +50,7 @@ if [ -z "$CLASSPATH" ]; then
 fi
 
 if [ "x$MAX_HEAP_SIZE" = "x" ]; then
-    MAX_HEAP_SIZE="256M"
+    MAX_HEAP_SIZE="2G"
 fi
 
 "$JAVA" $JAVA_AGENT -ea -cp "$CLASSPATH" $JVM_OPTS -Xmx$MAX_HEAP_SIZE \
