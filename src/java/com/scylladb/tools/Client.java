@@ -38,6 +38,10 @@ interface Client {
 
     void finish();
 
+    void close();
+
+    Client copy();
+
     CFMetaData getCFMetaData(String keyspace, String cfName);
 
     Map<InetAddress, Collection<Range<Token>>> getEndpointRanges();
