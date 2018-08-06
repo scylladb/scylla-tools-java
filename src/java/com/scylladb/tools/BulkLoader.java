@@ -324,6 +324,25 @@ public class BulkLoader {
             this.ignoreColumns = options.ignoreColumns;
         }
 
+        private CQLClient(CQLClient other) {
+            simulate = other.simulate;
+            verbose = other.verbose;
+            cluster = other.cluster;
+            session = other.session;
+            metadata = other.metadata;
+            keyspaceMetadata = other.keyspaceMetadata;
+            partitioner = other.partitioner;
+            rateLimiter = other.rateLimiter;
+            batch = other.batch;
+            preparedStatements = other.preparedStatements != null ? new ConcurrentHashMap<>() : null;
+            ignoreColumns = other.ignoreColumns;
+        }
+
+        @Override
+        public Client copy() {
+            return new CQLClient(this);
+        }
+
         // Load user defined types. Since loading a UDT entails validation
         // of the field types against known types, we may fail to load a UDT if
         // it references a UDT that has not yet been loaded. So we run a
@@ -478,6 +497,7 @@ public class BulkLoader {
         private final Semaphore semaphore = new Semaphore(maxStatements);
         private final Semaphore preparations = new Semaphore(maxStatements);
 
+        @Override
         public void close() {
             for (Semaphore s : Arrays.asList(preparations, semaphore)) {
                 if (s != null) {
