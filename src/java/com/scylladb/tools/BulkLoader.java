@@ -232,6 +232,7 @@ public class BulkLoader {
         private final boolean simulate;
         private final boolean verbose;
         private BatchStatement batchStatement;
+        private int batchSize;
         private DecoratedKey key;
 
         private Object tokenKey;
@@ -473,7 +474,7 @@ public class BulkLoader {
         }
 
         private static final int maxStatements = 256;
-        private static final int maxBatchStatements = 256;
+        private static final int maxBatchSize = 100 * 1024; // 100 kB
         private final Semaphore semaphore = new Semaphore(maxStatements);
         private final Semaphore preparations = new Semaphore(maxStatements);
 
@@ -493,6 +494,7 @@ public class BulkLoader {
             if (batchStatement != null && !batchStatement.getStatements().isEmpty()) {
                 send(batchStatement);
                 batchStatement = null;
+                batchSize = 0;
             }
         }
 
@@ -527,18 +529,21 @@ public class BulkLoader {
         }
 
         private void send(Object callback, DecoratedKey key, Statement s) {
-            if (batch && tokenKey == callback && batchStatement != null && batchStatement.size() < maxBatchStatements
+            if (batch && tokenKey == callback && batchStatement != null && batchSize < maxBatchSize
                     && this.key.equals(key)) {
                 batchStatement.add(s);
+                batchSize += s.requestSizeInBytes(PROTOCOL_VERSION, codecRegistry);
                 return;
             }
             if (batchStatement != null && batchStatement.size() != 0) {
                 send(batchStatement);
                 batchStatement = null;
+                batchSize = 0;
             }
             if (batch) {
                 batchStatement = new BatchStatement(BatchStatement.Type.UNLOGGED);
                 batchStatement.add(s);
+                batchSize = batchStatement.requestSizeInBytes(PROTOCOL_VERSION, codecRegistry);
                 tokenKey = callback;
                 this.key = key;
             } else {
