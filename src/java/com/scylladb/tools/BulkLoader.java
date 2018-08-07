@@ -501,13 +501,7 @@ public class BulkLoader {
                 return;
             }
             if (rateLimiter != null) {
-                // Acquire after execute, since bytes used are
-                // calculated there.
-                int bytes = this.bytes;
-                this.bytes = 0;
-                if (bytes > 0) {
-                    rateLimiter.acquire(bytes);
-                }
+                rateLimiter.acquire(s.requestSizeInBytes(PROTOCOL_VERSION, codecRegistry));
             }
 
             try {
@@ -663,38 +657,7 @@ public class BulkLoader {
         }
 
         private void send(Object callback, DecoratedKey key, long timestamp, String what, List<Object> objects) {
-            SimpleStatement s = new SimpleStatement(what, objects.toArray()) {
-                @Override
-                public ByteBuffer[] getValues(ProtocolVersion protocolVersion, CodecRegistry codecRegistry) {
-                    return summarize(super.getValues(protocolVersion, codecRegistry));
-                }
-
-                @Override
-                public Map<String, ByteBuffer> getNamedValues(ProtocolVersion protocolVersion,
-                        CodecRegistry codecRegistry) {
-                    Map<String, ByteBuffer> res = super.getNamedValues(protocolVersion, codecRegistry);
-                    if (rateLimiter != null && res != null) {
-                        summarize(res.values().toArray(new ByteBuffer[res.size()]));
-                    }
-                    return res;
-                }
-
-                private ByteBuffer[] summarize(ByteBuffer[] values) {
-                    if (rateLimiter != null) {
-                        // Try to guesstimate the bytes payload of the query
-                        // and add to bytes consumed by this batch.
-                        bytes += getQueryString().length();
-                        if (values != null) {
-                            for (ByteBuffer buf : values) {
-                                if (buf != null) {
-                                    bytes += buf.remaining();
-                                }
-                            }
-                        }
-                    }
-                    return values;
-                }
-            };
+            SimpleStatement s = new SimpleStatement(what, objects.toArray());
             s.setDefaultTimestamp(timestamp);
             s.setKeyspace(getKeyspace());
             s.setRoutingKey(key.getKey());
