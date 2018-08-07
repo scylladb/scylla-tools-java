@@ -840,9 +840,12 @@ public class SSTableToCQL {
 
     private final String keyspace;
 
-    public SSTableToCQL(String keyspace, Client client) {
+    private final int threadCount;
+
+    public SSTableToCQL(String keyspace, Client client, int threadCount) {
         this.client = client;
         this.keyspace = keyspace;
+        this.threadCount = threadCount;
     }
 
     private CFMetaData getCFMetaData(String keyspace, String cfName) {
@@ -927,8 +930,6 @@ public class SSTableToCQL {
         }
     }
 
-    private static final int THREADS_COUNT = 16;
-
     private class ProcessTask {
         private final InetAddress address;
         private final ISSTableScanner scanner;
@@ -951,9 +952,9 @@ public class SSTableToCQL {
     }
 
     public void stream(File directoryOrSStable) throws IOException, ConfigurationException, UnrecoverableKeyException, KeyManagementException, NoSuchAlgorithmException, KeyStoreException, CertificateException, InterruptedException {
-        List<Client> clients = new ArrayList<>(THREADS_COUNT);
+        List<Client> clients = new ArrayList<>(threadCount);
         clients.add(client);
-        for (int i = 1; i < THREADS_COUNT; ++i) {
+        for (int i = 1; i < threadCount; ++i) {
             clients.add(client.copy());
         }
         // Hack. Must do because Range mangling code in cassandra is
@@ -975,11 +976,11 @@ public class SSTableToCQL {
                 };
         sstables.forEach(taskFactory);
 
-        ExecutorService executor = Executors.newFixedThreadPool(THREADS_COUNT);
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
 
-        final CountDownLatch latch = new CountDownLatch(THREADS_COUNT);
+        final CountDownLatch latch = new CountDownLatch(threadCount);
         try {
-            for (int i = 0; i < THREADS_COUNT; ++i) {
+            for (int i = 0; i < threadCount; ++i) {
                 final RowBuilder builder = new RowBuilder(clients.get(i));
                 executor.submit(() -> {
                     ProcessTask task = null;
