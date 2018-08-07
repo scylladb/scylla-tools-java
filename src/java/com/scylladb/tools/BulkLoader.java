@@ -235,8 +235,6 @@ public class BulkLoader {
         private int batchSize;
         private DecoratedKey key;
 
-        private Object tokenKey;
-
         private RateLimiter rateLimiter;
         private int bytes;
 
@@ -553,8 +551,8 @@ public class BulkLoader {
         // This method has to be synchronized because it can be called from different threads.
         // Usually it's called just from a single thread - the one that owns the client but for
         // prepared statements it's called from callbacks that have their own thread pool which runs them.
-        private synchronized void send(Object callback, DecoratedKey key, Statement s) {
-            if (batch && tokenKey == callback && batchStatement != null && batchSize < maxBatchSize
+        private synchronized void send(DecoratedKey key, Statement s) {
+            if (batch && batchStatement != null && batchSize < maxBatchSize
                     && this.key.equals(key)) {
                 batchStatement.add(s);
                 batchSize += s.requestSizeInBytes(PROTOCOL_VERSION, codecRegistry);
@@ -569,7 +567,6 @@ public class BulkLoader {
                 batchStatement = new BatchStatement(BatchStatement.Type.UNLOGGED);
                 batchStatement.add(s);
                 batchSize = batchStatement.requestSizeInBytes(PROTOCOL_VERSION, codecRegistry);
-                tokenKey = callback;
                 this.key = key;
             } else {
                 send(s);
@@ -666,7 +663,7 @@ public class BulkLoader {
         }
 
         @Override
-        public void processStatment(Object callback, DecoratedKey key, long timestamp, String what,
+        public void processStatment(DecoratedKey key, long timestamp, String what,
                 List<Object> objects) {
             if (verbose) {
                 System.out.print("CQL: '");
@@ -680,22 +677,22 @@ public class BulkLoader {
             }
 
             if (preparedStatements != null) {
-                sendPrepared(callback, key, timestamp, what, objects);
+                sendPrepared(key, timestamp, what, objects);
             } else {
-                send(callback, key, timestamp, what, objects);
+                send(key, timestamp, what, objects);
             }
         }
 
-        private void send(Object callback, DecoratedKey key, long timestamp, String what, List<Object> objects) {
+        private void send(DecoratedKey key, long timestamp, String what, List<Object> objects) {
             SimpleStatement s = new SimpleStatement(what, objects.toArray());
             s.setDefaultTimestamp(timestamp);
             s.setKeyspace(getKeyspace());
             s.setRoutingKey(key.getKey());
 
-            send(callback, key, s);
+            send(key, s);
         }
 
-        private void sendPrepared(final Object callback, final DecoratedKey key, final long timestamp, String what,
+        private void sendPrepared(final DecoratedKey key, final long timestamp, String what,
                 final List<Object> objects) {
             ListenableFuture<PreparedStatement> f = preparedStatements.get(what);
             if (f == null) {
@@ -760,7 +757,7 @@ public class BulkLoader {
                                                 
                         s.setRoutingKey(key.getKey());
                         s.setDefaultTimestamp(timestamp);
-                        send(callback, key, s);
+                        send(key, s);
                         preparations.release();
                     }
 
