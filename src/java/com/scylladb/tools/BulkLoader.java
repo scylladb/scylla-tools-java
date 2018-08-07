@@ -320,6 +320,7 @@ public class BulkLoader {
             }
 
             this.batch = options.batch;
+            this.maxBatchSize = options.maxBatchSize;
             this.preparedStatements = options.prepare ? new ConcurrentHashMap<>() : null;
             this.ignoreColumns = options.ignoreColumns;
         }
@@ -336,6 +337,7 @@ public class BulkLoader {
             batch = other.batch;
             preparedStatements = other.preparedStatements != null ? new ConcurrentHashMap<>() : null;
             ignoreColumns = other.ignoreColumns;
+            maxBatchSize = other.maxBatchSize;
         }
 
         @Override
@@ -493,7 +495,7 @@ public class BulkLoader {
         }
 
         private static final int maxStatements = 256;
-        private static final int maxBatchSize = 100 * 1024; // 100 kB
+        private final int maxBatchSize;
         private final Semaphore semaphore = new Semaphore(maxStatements);
         private final Semaphore preparations = new Semaphore(maxStatements);
 
@@ -816,6 +818,7 @@ public class BulkLoader {
             options.addOption("g", IGNORE_MISSING_COLUMNS, "COLUMN NAMES...", "ignore named missing columns in tables");
             options.addOption("ir", NO_INFINITE_RETRY_OPTION, "Disable infinite retry policy");
             options.addOption("j", THREADS_COUNT_OPTION, "Number of threads to execute tasks", "Run tasks in parallel");
+            options.addOption("bs", BATCH_SIZE, "Number of bytes above which batch is being sent out", "Requires -b");
 
             return options;
         }
@@ -864,6 +867,10 @@ public class BulkLoader {
 
                 if (cmd.hasOption(THREADS_COUNT_OPTION)) {
                     opts.threadCount = Integer.parseInt(cmd.getOptionValue(THREADS_COUNT_OPTION));
+                }
+
+                if (cmd.hasOption(BATCH_SIZE) && cmd.hasOption(USE_BATCH)) {
+                    opts.maxBatchSize = Integer.parseInt(cmd.getOptionValue(BATCH_SIZE));
                 }
 
                 if (cmd.hasOption(USER_OPTION)) {
@@ -1005,6 +1012,7 @@ public class BulkLoader {
         public String user;
         public boolean infiniteRetry;
         public int threadCount = 16;
+        public int maxBatchSize = 100 * 1024; // 100 kB
 
         public String passwd;
         public int throttle = 0;
@@ -1038,6 +1046,7 @@ public class BulkLoader {
     private static final String PORT_OPTION = "port";
     private static final String NO_INFINITE_RETRY_OPTION = "no-infinite-retry";
     private static final String THREADS_COUNT_OPTION = "threads-count";
+    private static final String BATCH_SIZE = "batch-size";
 
     private static final String USER_OPTION = "username";
     private static final String PASSWD_OPTION = "password";
