@@ -222,6 +222,8 @@ public class BulkLoader {
     }
 
     static class CQLClient implements Client {
+        private static final ProtocolVersion PROTOCOL_VERSION = ProtocolVersion.V3;
+
         private final Cluster cluster;
         private final Session session;
         private final Metadata metadata;
@@ -265,7 +267,7 @@ public class BulkLoader {
 
             this.simulate = options.simulate;
             this.verbose = options.verbose;
-            Cluster.Builder builder = builder().addContactPoints(options.hosts).withProtocolVersion(ProtocolVersion.V3)
+            Cluster.Builder builder = builder().addContactPoints(options.hosts).withProtocolVersion(PROTOCOL_VERSION)
                     .withCompression(Compression.LZ4).withPoolingOptions(poolingOptions)
                     .withLoadBalancingPolicy(new TokenAwarePolicy(DCAwareRoundRobinPolicy.builder().build()))
                     .withCodecRegistry(codecRegistry);
@@ -636,7 +638,7 @@ public class BulkLoader {
         }
 
         private Token getToken(com.datastax.driver.core.Token t) {
-            return getPartitioner().getTokenFactory().fromByteArray(t.serialize(ProtocolVersion.V3));
+            return getPartitioner().getTokenFactory().fromByteArray(t.serialize(PROTOCOL_VERSION));
         }
 
         @Override
