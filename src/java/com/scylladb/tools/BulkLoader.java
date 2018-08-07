@@ -815,6 +815,7 @@ public class BulkLoader {
             options.addOption("x", USE_PREPARED, "prepared statements");
             options.addOption("g", IGNORE_MISSING_COLUMNS, "COLUMN NAMES...", "ignore named missing columns in tables");
             options.addOption("ir", NO_INFINITE_RETRY_OPTION, "Disable infinite retry policy");
+            options.addOption("j", THREADS_COUNT_OPTION, "Number of threads to execute tasks", "Run tasks in parallel");
 
             return options;
         }
@@ -859,6 +860,10 @@ public class BulkLoader {
 
                 if (cmd.hasOption(PORT_OPTION)) {
                     opts.port = Integer.parseInt(cmd.getOptionValue(PORT_OPTION));
+                }
+
+                if (cmd.hasOption(THREADS_COUNT_OPTION)) {
+                    opts.threadCount = Integer.parseInt(cmd.getOptionValue(THREADS_COUNT_OPTION));
                 }
 
                 if (cmd.hasOption(USER_OPTION)) {
@@ -999,6 +1004,7 @@ public class BulkLoader {
         public int port = 9042;
         public String user;
         public boolean infiniteRetry;
+        public int threadCount = 16;
 
         public String passwd;
         public int throttle = 0;
@@ -1031,6 +1037,7 @@ public class BulkLoader {
     private static final String INITIAL_HOST_ADDRESS_OPTION = "nodes";
     private static final String PORT_OPTION = "port";
     private static final String NO_INFINITE_RETRY_OPTION = "no-infinite-retry";
+    private static final String THREADS_COUNT_OPTION = "threads-count";
 
     private static final String USER_OPTION = "username";
     private static final String PASSWD_OPTION = "password";
@@ -1066,7 +1073,7 @@ public class BulkLoader {
             String keyspace = dir.getParentFile().getName();
 
             CQLClient client = new CQLClient(options, keyspace);
-            SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client);
+            SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client, options.threadCount);
             ssTableToCQL.stream(options.directory);
             System.exit(0);
         } catch (Throwable t) {
