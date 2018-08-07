@@ -44,6 +44,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -131,10 +132,10 @@ public class SSTableToCQL {
         private static interface ColumnOp {
             boolean canDoInsert();
 
-            String apply(ColumnDefinition c, List<Object> params);
+            String apply(ColumnDefinition c, Map<String, Object> params);
         }
 
-        private static class DeleteSetEntry implements ColumnOp {
+        private class DeleteSetEntry implements ColumnOp {
             private final Object key;
 
             public DeleteSetEntry(Object key) {
@@ -142,9 +143,10 @@ public class SSTableToCQL {
             }
 
             @Override
-            public String apply(ColumnDefinition c, List<Object> params) {
-                params.add(Collections.singleton(key));
-                return " = " + c.name.toCQLString() + " - ?";
+            public String apply(ColumnDefinition c, Map<String, Object> params) {
+                String name = varName(c);
+                params.put(name, Collections.singleton(key));
+                return " = " + name + " - :" + name;
             }
 
             @Override
@@ -158,7 +160,7 @@ public class SSTableToCQL {
             NONE, UPDATE, DELETE, INSERT
         }
 
-        private static class SetColumn implements ColumnOp {
+        private class SetColumn implements ColumnOp {
             private final Object value;
 
             public SetColumn(Object value) {
@@ -166,9 +168,10 @@ public class SSTableToCQL {
             }
 
             @Override
-            public String apply(ColumnDefinition c, List<Object> params) {
-                params.add(value);
-                return " = ?";
+            public String apply(ColumnDefinition c, Map<String, Object> params) {
+                String name = varName(c);
+                params.put(name, value);
+                return " = :" + name;
             }
 
             @Override
@@ -177,14 +180,14 @@ public class SSTableToCQL {
             }
         }
 
-        private static final SetColumn SET_NULL = new SetColumn(null) {
+        private final SetColumn SET_NULL = new SetColumn(null) {
             @Override
             public boolean canDoInsert() {
                 return false;
             }
         };
 
-        private static class SetMapEntry implements ColumnOp {
+        private class SetMapEntry implements ColumnOp {
             private final Object key;
 
             private final Object value;
@@ -195,10 +198,11 @@ public class SSTableToCQL {
             }
 
             @Override
-            public String apply(ColumnDefinition c, List<Object> params) {
-                params.add(key);
-                params.add(value);
-                return "[?] = ?";
+            public String apply(ColumnDefinition c, Map<String, Object> params) {
+                String name = varName(c);
+                params.put(name + "_k", key);
+                params.put(name + "_v", value);
+                return "[:" + name + "_k] = :" + name + "_v";
             }
 
             @Override
@@ -207,7 +211,7 @@ public class SSTableToCQL {
             }
         }
 
-        private static class SetListEntry implements ColumnOp {
+        private class SetListEntry implements ColumnOp {
             private final Object key;
             private final Object value;
 
@@ -217,10 +221,11 @@ public class SSTableToCQL {
             }
 
             @Override
-            public String apply(ColumnDefinition c, List<Object> params) {
-                params.add(key);
-                params.add(value);
-                return "[SCYLLA_TIMEUUID_LIST_INDEX(?)] = ?";
+            public String apply(ColumnDefinition c, Map<String, Object> params) {
+                String name = varName(c);
+                params.put(name + "_k", key);
+                params.put(name + "_v", value);
+                return "[SCYLLA_TIMEUUID_LIST_INDEX(:" + name + "_k)] = :" + name + "_v";
             }
 
             @Override
@@ -229,7 +234,7 @@ public class SSTableToCQL {
             }
         }
 
-        private static class SetSetEntry implements ColumnOp {
+        private class SetSetEntry implements ColumnOp {
             private final Object key;
 
             public SetSetEntry(Object key) {
@@ -237,9 +242,10 @@ public class SSTableToCQL {
             }
 
             @Override
-            public String apply(ColumnDefinition c, List<Object> params) {
-                params.add(Collections.singleton(key));
-                return " = " + c.name.toCQLString() + " + ?";
+            public String apply(ColumnDefinition c, Map<String, Object> params) {
+                String name = varName(c);
+                params.put(name, Collections.singleton(key));
+                return " = " + name + " + :" + name;
             }
 
             @Override
@@ -249,6 +255,7 @@ public class SSTableToCQL {
         }
 
         private static class SetCounterEntry implements ColumnOp {
+            @SuppressWarnings("unused")
             private final AbstractType<?> type;
             private final ByteBuffer value;
 
@@ -263,7 +270,7 @@ public class SSTableToCQL {
             }
 
             @Override
-            public String apply(ColumnDefinition c, List<Object> params) {
+            public String apply(ColumnDefinition c, Map<String, Object> params) {
                 CounterContext.ContextState state = CounterContext.ContextState.wrap(value);
                 StringBuilder buf = new StringBuilder();
                 while (state.hasRemaining()) {
@@ -296,6 +303,7 @@ public class SSTableToCQL {
         DecoratedKey key;
         Row row;
         boolean rowDelete;
+        boolean setAllColumns;
         long timestamp;
         int ttl;
         Multimap<ColumnDefinition, ColumnOp> values = MultimapBuilder.treeKeys().arrayListValues(1).build();
@@ -319,9 +327,10 @@ public class SSTableToCQL {
         }
         // sorted atoms?
 
-        public RowBuilder(Client client, ColumnNamesMapping columnNamesMapping) {
+        public RowBuilder(Client client, boolean setAllColumns, ColumnNamesMapping columnNamesMapping) {
             this.client = client;
             this.columnNamesMapping = columnNamesMapping;
+            this.setAllColumns = setAllColumns;
         }
 
         /**
@@ -425,7 +434,7 @@ public class SSTableToCQL {
 
             checkRowClustering();
 
-            List<Object> params = new ArrayList<>();
+            Map<String, Object> params = new HashMap<>();
             StringBuilder buf = new StringBuilder();
 
             buf.append(op.toString());
@@ -489,36 +498,22 @@ public class SSTableToCQL {
                 where.put(c, Pair.create(Comp.Equal, c.type.compose(bufs[k++])));
             }
 
-            for (Pair<Comp, Object> p : where.values()) {
-                params.add(p.right);                
+            for (Map.Entry<ColumnDefinition, Pair<Comp, Object>> e : where.entries()) {
+                Pair<Comp, Object> p = e.getValue();
+                ColumnDefinition d = e.getKey();
+                params.put(varName(d), p.right);
             }
 
-            i = 0;
             if (op == Op.INSERT) {
-                buf.append('(');
-                for (ColumnDefinition c : values.keySet()) {
-                    if (i++ > 0) {
-                        buf.append(',');
-                    }
-                    buf.append(columnNamesMapping.getName(c));
+                if (setAllColumns) {
+                    appendColumns(buf, cfMetaData.allColumns());
+                } else {
+                    appendColumns(buf, values.keySet(), where.keySet());
                 }
-                for (ColumnDefinition c : where.keySet()) {
-                    if (i++ > 0) {
-                        buf.append(',');
-                    }
-                    buf.append(columnNamesMapping.getName(c));
-                }
-                buf.append(") values (");
-                for (i = 0; i < values.size() + where.size(); ++i) {
-                    if (i > 0) {
-                        buf.append(',');
-                    }
-                    buf.append('?');
-                }
-                buf.append(')');
                 writeUsingTimestamp(buf, params);
                 writeUsingTTL(buf, params);
             } else {
+                i = 0;
                 for (Map.Entry<ColumnDefinition, Pair<Comp, Object>> e : where.entries()) {
                     if (i++ > 0) {
                         buf.append(" AND ");
@@ -526,7 +521,8 @@ public class SSTableToCQL {
                     buf.append(columnNamesMapping.getName(e.getKey()));
                     buf.append(' ');
                     buf.append(e.getValue().left.toString());
-                    buf.append(" ?");
+                    buf.append(" :");
+                    buf.append(varName(e.getKey()));
                 }
             }
             buf.append(';');
@@ -535,8 +531,47 @@ public class SSTableToCQL {
             clear();
         }
 
-        private void writeUsingTTL(StringBuilder buf, List<Object> params) {
-            if (ttl != invalidTTL) {
+        @SafeVarargs
+        private final void appendColumns(StringBuilder buf, Collection<ColumnDefinition> ... columns) {
+            int i = 0;
+            buf.append('(');
+            for (Collection<ColumnDefinition> cc : columns) {
+                for (ColumnDefinition c : cc) {
+                    if (i++ > 0) {
+                        buf.append(',');
+                    }
+                    buf.append(columnNamesMapping.getName(c));
+                }
+            }
+            buf.append(") values (");
+            i = 0;
+            for (Collection<ColumnDefinition> cc : columns) {
+                for (ColumnDefinition c : cc) {
+                    if (i++ > 0) {
+                        buf.append(',');
+                    }
+                    buf.append(':');
+                    buf.append(varName(c));
+                }
+            }
+            buf.append(')');
+        }
+
+        private final Map<ColumnDefinition, String> variableNames = new HashMap<>();
+        
+        private String varName(ColumnDefinition c) {
+            String name = variableNames.get(c);
+            if (name == null) {
+                name = "v" + variableNames.size();
+                variableNames.put(c, name);
+            }
+            return name;
+        }
+        
+        private static final String TTL_VAR_NAME = "ttl";
+
+        private void writeUsingTTL(StringBuilder buf, Map<String, Object> params) {
+            if (ttl != invalidTTL || setAllColumns) {
                 ensureWhitespace(buf);
 
                 int adjustedTTL = ttl;
@@ -555,10 +590,11 @@ public class SSTableToCQL {
                         adjustedTTL = (int)Math.min(ttl, exp - now);
                     }                    
                 }
-                
-                
-                buf.append(" TTL ?");
-                params.add(adjustedTTL);
+                buf.append(" TTL :" + TTL_VAR_NAME);
+
+                if (ttl != invalidTTL) {
+                    params.put(TTL_VAR_NAME, adjustedTTL);
+                }
             }
         }
 
@@ -568,16 +604,20 @@ public class SSTableToCQL {
             }
         }
 
-        private void writeUsingTimestamp(StringBuilder buf, List<Object> params) {
-            if (timestamp != invalidTimestamp) {
+        private static final String TIMESTAMP_VAR_NAME = "timestamp";
+
+        private void writeUsingTimestamp(StringBuilder buf, Map<String, Object> params) {
+            if (timestamp != invalidTimestamp || setAllColumns) {
                 ensureWhitespace(buf);
-                buf.append("USING TIMESTAMP ?");
-                params.add(timestamp);
+                buf.append("USING TIMESTAMP :" + TIMESTAMP_VAR_NAME);
+            } 
+            if (timestamp != invalidTimestamp) {
+                params.put(TIMESTAMP_VAR_NAME, timestamp);
             }
         }
 
         // Dispatch the CQL
-        private void makeStatement(DecoratedKey key, long timestamp, String what, List<Object> objects) {
+        private void makeStatement(DecoratedKey key, long timestamp, String what, Map<String, Object> objects) {
             client.processStatment(key, timestamp, what, objects);
         }
 
@@ -844,11 +884,14 @@ public class SSTableToCQL {
 
     private final int threadCount;
 
-    public SSTableToCQL(String keyspace, Client client, ColumnNamesMapping columnNamesMapping, int threadCount) {
+    private final boolean setAllColumns;
+
+    public SSTableToCQL(String keyspace, Client client, boolean setAllColumns, ColumnNamesMapping columnNamesMapping, int threadCount) {
         this.client = client;
         this.keyspace = keyspace;
         this.threadCount = threadCount;
         this.columnNamesMapping = columnNamesMapping;
+        this.setAllColumns = setAllColumns;
     }
 
     private CFMetaData getCFMetaData(String keyspace, String cfName) {
@@ -985,7 +1028,7 @@ public class SSTableToCQL {
         boolean closeClients = true;
         try {
             for (int i = 0; i < threadCount; ++i) {
-                final RowBuilder builder = new RowBuilder(clients.get(i), columnNamesMapping);
+                final RowBuilder builder = new RowBuilder(clients.get(i), setAllColumns, columnNamesMapping);
                 executor.submit(() -> {
                     ProcessTask task = null;
                     while (!Thread.interrupted() && (task = tasks.poll()) != null) {

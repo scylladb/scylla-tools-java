@@ -116,6 +116,7 @@ import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.Cluster;
 import com.datastax.driver.core.CodecRegistry;
 import com.datastax.driver.core.ConsistencyLevel;
+import com.datastax.driver.core.ColumnDefinitions;
 import com.datastax.driver.core.DataType;
 import com.datastax.driver.core.DataType.CustomType;
 import com.datastax.driver.core.Host;
@@ -222,7 +223,7 @@ public class BulkLoader {
     }
 
     static class CQLClient implements Client {
-        private static final ProtocolVersion PROTOCOL_VERSION = ProtocolVersion.V3;
+        private static final ProtocolVersion PROTOCOL_VERSION = ProtocolVersion.V4;
 
         private final Cluster cluster;
         private final Session session;
@@ -439,7 +440,7 @@ public class BulkLoader {
          * We get these for certain types (date) via a {@link CustomType}
          * through the drivers statement prepare. Annoying, but easy to bind... 
          */
-        private <T> void bindCustomType(DataType.CustomType ct, final AbstractType<T> atype) {
+        private <T> void bindCustomType(DataType ct, final AbstractType<T> atype) {
             codecRegistry.register(new TypeCodec<T>(ct, atype.getSerializer().getType()) {
                 @Override
                 public ByteBuffer serialize(T value, ProtocolVersion protocolVersion) throws InvalidTypeException {
@@ -578,7 +579,7 @@ public class BulkLoader {
                 send(s);
             }
         }
-
+  
         private final Map<Pair<String, String>, CFMetaData> cfMetaDatas = new HashMap<>();
 
         private static final String SELECT_DROPPED_COLUMNS = "SELECT * FROM system_schema.dropped_columns";
@@ -670,7 +671,7 @@ public class BulkLoader {
 
         @Override
         public void processStatment(DecoratedKey key, long timestamp, String what,
-                List<Object> objects) {
+                Map<String, Object> objects) {
             if (verbose) {
                 System.out.print("CQL: '");
                 System.out.print(what);
@@ -689,8 +690,8 @@ public class BulkLoader {
             }
         }
 
-        private void send(DecoratedKey key, long timestamp, String what, List<Object> objects) {
-            SimpleStatement s = new SimpleStatement(what, objects.toArray());
+        private void send(DecoratedKey key, long timestamp, String what, Map<String, Object> objects) {
+            SimpleStatement s = new SimpleStatement(what, objects);
             s.setDefaultTimestamp(timestamp);
             s.setKeyspace(getKeyspace());
             s.setRoutingKey(key.getKey());
@@ -699,7 +700,7 @@ public class BulkLoader {
         }
 
         private void sendPrepared(final DecoratedKey key, final long timestamp, String what,
-                final List<Object> objects) {
+                final Map<String, Object> objects) {
             ListenableFuture<PreparedStatement> f = preparedStatements.computeIfAbsent(what, k -> {
                 if (verbose) {
                     System.out.println("Preparing: " + k + " on thread " + Thread.currentThread().getId());
@@ -713,11 +714,22 @@ public class BulkLoader {
                 Futures.addCallback(f, new FutureCallback<PreparedStatement>() {
                     @Override
                     public void onSuccess(PreparedStatement p) {
-                        BoundStatement s;
-                        
+                        BoundStatement s = p.bind();
+
+                        retry:
                         for (;;) {
                             try {
-                                s = p.bind(objects.toArray(new Object[objects.size()]));  
+                                CodecRegistry r = p.getCodecRegistry();
+                                for (ColumnDefinitions.Definition d : p.getVariables()) {
+                                    String name = d.getName();
+                                    // allow null object
+                                    if (objects.containsKey(name)) {
+                                        Object value = objects.get(name);
+                                        // CMH. driver special treats token values, but
+                                        // we know we will never get a driver type token here.
+                                        s.set(name, value, r.codecFor(d.getType(), value));
+                                    }
+                                }
                                 break;
                             } catch (CodecNotFoundException e) {
                                 // If we get here with a user type, it means we have
@@ -753,6 +765,15 @@ public class BulkLoader {
                                     } catch (ClassNotFoundException | IllegalAccessException | NoSuchFieldException
                                             | SecurityException ce) {
                                         throw e;
+                                    }
+                                } else if (t instanceof DataType.NativeType) {
+                                    // v4 protocol
+                                    Class<?> c = e.getJavaType().getRawType();
+                                    for (CQL3Type.Native ct : CQL3Type.Native.values()) {
+                                        if (ct.getType().getSerializer().getType() == c) {
+                                            bindCustomType(t, ct.getType());
+                                            continue retry;
+                                        }
                                     }
                                 }
                                 throw e;
@@ -816,6 +837,9 @@ public class BulkLoader {
                     "cassandra.yaml file path for streaming throughput and client/server SSL.");
             options.addOption("nb", NO_BATCH, "Do not use batch statements updates for same partition key.");
             options.addOption("nx", NO_PREPARED, "Do not use prepared statements");
+
+            options.addOption("u", USE_UNSET, "Use 'unset' values in prepared statements");
+
             options.addOption("g", IGNORE_MISSING_COLUMNS, "COLUMN NAMES...", "ignore named missing columns in tables");
             options.addOption("ir", NO_INFINITE_RETRY_OPTION, "Disable infinite retry policy");
             options.addOption("j", THREADS_COUNT_OPTION, "Number of threads to execute tasks", "Run tasks in parallel");
@@ -1006,6 +1030,9 @@ public class BulkLoader {
                 if (!cmd.hasOption(NO_BATCH)) {
                     opts.batch = true;
                 }
+                if (cmd.hasOption(USE_UNSET)) {
+                    opts.unset = true;
+                }
                 if (cmd.hasOption(IGNORE_MISSING_COLUMNS)) {
                     opts.ignoreColumns.addAll(Arrays.asList(cmd.getOptionValues(IGNORE_MISSING_COLUMNS)));
                 }
@@ -1052,6 +1079,8 @@ public class BulkLoader {
         public Map<String, String> columnNamesMappings = new HashMap<>();
 
         public ConsistencyLevel consistencyLevel = ConsistencyLevel.ONE;
+
+        public boolean unset;
 
         public EncryptionOptions encOptions = new EncryptionOptions.ClientEncryptionOptions();
 
@@ -1104,6 +1133,8 @@ public class BulkLoader {
     private static final String NO_BATCH = "no-batch";
     private static final String NO_PREPARED = "no-prepared";
 
+    private static final String USE_UNSET = "use-unset";
+
     public static void main(String args[]) {
         Config.setClientMode(true);
         LoaderOptions options = LoaderOptions.parseArgs(args);
@@ -1125,7 +1156,7 @@ public class BulkLoader {
             String keyspace = dir.getParentFile().getName();
 
             client = new CQLClient(options, keyspace);
-            SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client, new ColumnNamesMapping(options.columnNamesMappings), options.threadCount);
+            SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client, options.unset && options.prepare, new ColumnNamesMapping(options.columnNamesMappings), options.threadCount);
             ssTableToCQL.stream(options.directory);
             System.exit(0);
         } catch (Throwable t) {
