@@ -291,7 +291,6 @@ public class SSTableToCQL {
         private final Client client;
 
         Op op;
-        Object callback;
         CFMetaData cfMetaData;
         DecoratedKey key;
         Row row;
@@ -374,8 +373,7 @@ public class SSTableToCQL {
         }
 
         // Begin a new partition (cassandra "Row")
-        private void begin(Object callback, DecoratedKey key, CFMetaData cfMetaData) {
-            this.callback = callback;
+        private void begin(DecoratedKey key, CFMetaData cfMetaData) {
             this.key = key;
             this.cfMetaData = cfMetaData;
             clear();
@@ -578,7 +576,7 @@ public class SSTableToCQL {
 
         // Dispatch the CQL
         private void makeStatement(DecoratedKey key, long timestamp, String what, List<Object> objects) {
-            client.processStatment(callback, key, timestamp, what, objects);
+            client.processStatment(key, timestamp, what, objects);
         }
 
         private void process(Row row) {
@@ -695,12 +693,12 @@ public class SSTableToCQL {
         }
         
         // Process an SSTable row (partial partition)
-        private void process(Object callback, UnfilteredRowIterator rows) {
+        private void process(UnfilteredRowIterator rows) {
             CFMetaData cfMetaData = rows.metadata();
             DeletionTime deletionTime = rows.partitionLevelDeletion();
             DecoratedKey key = rows.partitionKey();
 
-            begin(callback, key, cfMetaData);
+            begin(key, cfMetaData);
 
             if (!deletionTime.isLive()) {
                 deletePartition(key, deletionTime);
@@ -922,11 +920,11 @@ public class SSTableToCQL {
         }
     }
 
-    protected void process(RowBuilder builder, InetAddress address, ISSTableScanner scanner) {
+    protected void process(RowBuilder builder, ISSTableScanner scanner) {
         // collecting keys to export
         while (scanner.hasNext()) {
             UnfilteredRowIterator ri = scanner.next();
-            builder.process(address, ri);
+            builder.process(ri);
         }
     }
 
@@ -944,7 +942,7 @@ public class SSTableToCQL {
         void run(RowBuilder builder) {
             try {
                 logger.info("Processing {} on address {}", filename, address);
-                process(builder, address, scanner);
+                process(builder, scanner);
             } finally {
                 scanner.close();
             }
