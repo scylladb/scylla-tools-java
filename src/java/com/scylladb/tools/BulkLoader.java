@@ -810,8 +810,8 @@ public class BulkLoader {
                     "Client SSL: comma-separated list of encryption suites to use");
             options.addOption("f", CONFIG_PATH, "path to config file",
                     "cassandra.yaml file path for streaming throughput and client/server SSL.");
-            options.addOption("b", USE_BATCH, "batch updates for same partition key.");
-            options.addOption("x", USE_PREPARED, "prepared statements");
+            options.addOption("nb", NO_BATCH, "Do not use batch statements updates for same partition key.");
+            options.addOption("nx", NO_PREPARED, "Do not use prepared statements");
             options.addOption("g", IGNORE_MISSING_COLUMNS, "COLUMN NAMES...", "ignore named missing columns in tables");
             options.addOption("ir", NO_INFINITE_RETRY_OPTION, "Disable infinite retry policy");
             options.addOption("j", THREADS_COUNT_OPTION, "Number of threads to execute tasks", "Run tasks in parallel");
@@ -866,7 +866,7 @@ public class BulkLoader {
                     opts.threadCount = Integer.parseInt(cmd.getOptionValue(THREADS_COUNT_OPTION));
                 }
 
-                if (cmd.hasOption(BATCH_SIZE) && cmd.hasOption(USE_BATCH)) {
+                if (cmd.hasOption(BATCH_SIZE) && !cmd.hasOption(NO_BATCH)) {
                     opts.maxBatchSize = Integer.parseInt(cmd.getOptionValue(BATCH_SIZE));
                 }
 
@@ -968,10 +968,10 @@ public class BulkLoader {
                     opts.encOptions.cipher_suites = cmd.getOptionValue(SSL_CIPHER_SUITES).split(",");
                 }
 
-                if (cmd.hasOption(USE_PREPARED)) {
+                if (!cmd.hasOption(NO_PREPARED)) {
                     opts.prepare = true;
                 }
-                if (cmd.hasOption(USE_BATCH)) {
+                if (!cmd.hasOption(NO_BATCH)) {
                     opts.batch = true;
                 }
                 if (cmd.hasOption(IGNORE_MISSING_COLUMNS)) {
@@ -1063,8 +1063,8 @@ public class BulkLoader {
     private static final String CONNECTIONS_PER_HOST = "connections-per-host";
 
     private static final String CONFIG_PATH = "conf-path";
-    private static final String USE_BATCH = "use-batch";
-    private static final String USE_PREPARED = "use-prepared";
+    private static final String NO_BATCH = "no-batch";
+    private static final String NO_PREPARED = "no-prepared";
 
     public static void main(String args[]) {
         Config.setClientMode(true);
