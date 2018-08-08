@@ -1079,6 +1079,13 @@ public class BulkLoader {
                 dir = dir.getParentFile();
             }
 
+            // Backups are keyspace/table/backups
+            // snapshots are in keyspace/table/snapshots/snapshotID
+            if (dir.getName().equals("backups")) {
+                dir = dir.getParentFile();
+            } else if (dir.getParentFile().getName().equals("snapshots")) {
+                dir = dir.getParentFile().getParentFile();
+            }
             String keyspace = dir.getParentFile().getName();
 
             client = new CQLClient(options, keyspace);
