@@ -343,6 +343,10 @@ public class BulkLoader {
             return new CQLClient(this);
         }
 
+        public Cluster getCluster( ) {
+            return cluster;
+        }
+
         // Load user defined types. Since loading a UDT entails validation
         // of the field types against known types, we may fail to load a UDT if
         // it references a UDT that has not yet been loaded. So we run a
@@ -1070,6 +1074,7 @@ public class BulkLoader {
         Config.setClientMode(true);
         LoaderOptions options = LoaderOptions.parseArgs(args);
 
+        CQLClient client = null;
         try {
             File dir = options.directory;
             if (dir.isFile()) {
@@ -1078,11 +1083,16 @@ public class BulkLoader {
 
             String keyspace = dir.getParentFile().getName();
 
-            CQLClient client = new CQLClient(options, keyspace);
+            client = new CQLClient(options, keyspace);
             SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client, options.threadCount);
             ssTableToCQL.stream(options.directory);
             System.exit(0);
         } catch (Throwable t) {
+            if (client != null) {
+                if (client.getCluster() != null) {
+                    client.getCluster().close();
+                }
+            }
             t.printStackTrace();
             System.exit(1);
         }

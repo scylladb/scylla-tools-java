@@ -977,21 +977,30 @@ public class SSTableToCQL {
         ExecutorService executor = Executors.newFixedThreadPool(threadCount);
 
         final CountDownLatch latch = new CountDownLatch(threadCount);
+        boolean closeClients = true;
         try {
             for (int i = 0; i < threadCount; ++i) {
                 final RowBuilder builder = new RowBuilder(clients.get(i));
                 executor.submit(() -> {
                     ProcessTask task = null;
-                    while ((task = tasks.poll()) != null) {
+                    while (!Thread.interrupted() && (task = tasks.poll()) != null) {
                         task.run(builder);
                     }
                     latch.countDown();
                 });
             }
-            latch.await();
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                executor.shutdownNow();
+                closeClients = false;
+                throw e;
+            }
         } finally {
-            for (Client client : clients) {
-                client.close();
+            if (closeClients) {
+                for (Client client : clients) {
+                    client.close();
+                }
             }
             for (ProcessTask task : tasks) {
                 task.scanner.close();
