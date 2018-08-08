@@ -36,8 +36,6 @@ import org.apache.cassandra.dht.Token;
 
 interface Client {
 
-    void finish();
-
     void close();
 
     Client copy();

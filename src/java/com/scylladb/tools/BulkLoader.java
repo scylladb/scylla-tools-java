@@ -503,22 +503,20 @@ public class BulkLoader {
 
         @Override
         public void close() {
-            for (Semaphore s : Arrays.asList(preparations, semaphore)) {
-                if (s != null) {
-                    try {
-                        s.acquire(maxStatements);
-                    } catch (InterruptedException e) {
-                    }
+            try {
+                preparations.acquire(maxStatements);
+            } catch (InterruptedException e) {
+            }
+            synchronized (this) {
+                if (batchStatement != null && !batchStatement.getStatements().isEmpty()) {
+                    send(batchStatement);
+                    batchStatement = null;
+                    batchSize = 0;
                 }
             }
-        }
-
-        @Override
-        public synchronized void finish() {
-            if (batchStatement != null && !batchStatement.getStatements().isEmpty()) {
-                send(batchStatement);
-                batchStatement = null;
-                batchSize = 0;
+            try {
+                semaphore.acquire(maxStatements);
+            } catch (InterruptedException e) {
             }
         }
 
