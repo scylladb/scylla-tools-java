@@ -115,6 +115,7 @@ import com.datastax.driver.core.BatchStatement;
 import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.Cluster;
 import com.datastax.driver.core.CodecRegistry;
+import com.datastax.driver.core.ConsistencyLevel;
 import com.datastax.driver.core.DataType;
 import com.datastax.driver.core.DataType.CustomType;
 import com.datastax.driver.core.Host;
@@ -138,9 +139,13 @@ import com.datastax.driver.core.TokenRange;
 import com.datastax.driver.core.TupleType;
 import com.datastax.driver.core.TypeCodec;
 import com.datastax.driver.core.UserType;
+import com.datastax.driver.core.WriteType;
 import com.datastax.driver.core.exceptions.CodecNotFoundException;
 import com.datastax.driver.core.exceptions.DriverException;
 import com.datastax.driver.core.exceptions.InvalidTypeException;
+import com.datastax.driver.core.policies.DCAwareRoundRobinPolicy;
+import com.datastax.driver.core.policies.RetryPolicy;
+import com.datastax.driver.core.policies.TokenAwarePolicy;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -148,6 +153,37 @@ import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.RateLimiter;
 
 public class BulkLoader {
+    public static class InfiniteRetryPolicy implements RetryPolicy {
+        public InfiniteRetryPolicy() {
+        }
+
+        @Override
+        public RetryDecision onWriteTimeout(Statement stmnt, ConsistencyLevel cl, WriteType wt, int requiredResponses, int receivedResponses, int wTime) {
+            return RetryDecision.retry(cl);
+        }
+
+        @Override
+        public RetryDecision onUnavailable(Statement stmnt, ConsistencyLevel cl, int requiredResponses, int receivedResponses, int uTime) {
+            return RetryDecision.retry(cl);
+        }
+
+        @Override
+        public RetryPolicy.RetryDecision onReadTimeout(Statement statement, ConsistencyLevel cl, int requiredResponses, int receivedResponses, boolean dataRetrieved, int nbRetry) {
+            return RetryDecision.retry(cl);
+        }
+
+        @Override
+        public RetryPolicy.RetryDecision onRequestError(Statement statement, ConsistencyLevel cl, DriverException e, int nbRetry) {
+            return RetryDecision.retry(cl);
+        }
+        @Override
+        public void close() {
+        }
+
+        @Override
+        public void init(Cluster c) {
+        }
+    }
     public static class CmdLineOptions extends Options {
         /**
          * Add option without argument
@@ -186,6 +222,8 @@ public class BulkLoader {
     }
 
     static class CQLClient implements Client {
+        private static final ProtocolVersion PROTOCOL_VERSION = ProtocolVersion.V3;
+
         private final Cluster cluster;
         private final Session session;
         private final Metadata metadata;
@@ -194,9 +232,8 @@ public class BulkLoader {
         private final boolean simulate;
         private final boolean verbose;
         private BatchStatement batchStatement;
+        private int batchSize;
         private DecoratedKey key;
-
-        private Object tokenKey;
 
         private RateLimiter rateLimiter;
         private int bytes;
@@ -229,9 +266,14 @@ public class BulkLoader {
 
             this.simulate = options.simulate;
             this.verbose = options.verbose;
-            Cluster.Builder builder = builder().addContactPoints(options.hosts).withProtocolVersion(ProtocolVersion.V3)
+            Cluster.Builder builder = builder().addContactPoints(options.hosts).withProtocolVersion(PROTOCOL_VERSION)
                     .withCompression(Compression.LZ4).withPoolingOptions(poolingOptions)
+                    .withLoadBalancingPolicy(new TokenAwarePolicy(DCAwareRoundRobinPolicy.builder().build()))
                     .withCodecRegistry(codecRegistry);
+
+            if (options.infiniteRetry) {
+                builder = builder.withRetryPolicy(new InfiniteRetryPolicy());
+            }
 
             if (options.user != null && options.passwd != null) {
                 builder = builder.withCredentials(options.user, options.passwd);
@@ -276,8 +318,33 @@ public class BulkLoader {
             }
 
             this.batch = options.batch;
+            this.maxBatchSize = options.maxBatchSize;
             this.preparedStatements = options.prepare ? new ConcurrentHashMap<>() : null;
             this.ignoreColumns = options.ignoreColumns;
+        }
+
+        private CQLClient(CQLClient other) {
+            simulate = other.simulate;
+            verbose = other.verbose;
+            cluster = other.cluster;
+            session = other.session;
+            metadata = other.metadata;
+            keyspaceMetadata = other.keyspaceMetadata;
+            partitioner = other.partitioner;
+            rateLimiter = other.rateLimiter;
+            batch = other.batch;
+            preparedStatements = other.preparedStatements != null ? new ConcurrentHashMap<>() : null;
+            ignoreColumns = other.ignoreColumns;
+            maxBatchSize = other.maxBatchSize;
+        }
+
+        @Override
+        public Client copy() {
+            return new CQLClient(this);
+        }
+
+        public Cluster getCluster( ) {
+            return cluster;
         }
 
         // Load user defined types. Since loading a UDT entails validation
@@ -430,26 +497,26 @@ public class BulkLoader {
         }
 
         private static final int maxStatements = 256;
-        private static final int maxBatchStatements = 256;
+        private final int maxBatchSize;
         private final Semaphore semaphore = new Semaphore(maxStatements);
         private final Semaphore preparations = new Semaphore(maxStatements);
 
+        @Override
         public void close() {
-            for (Semaphore s : Arrays.asList(preparations, semaphore)) {
-                if (s != null) {
-                    try {
-                        s.acquire(maxStatements);
-                    } catch (InterruptedException e) {
-                    }
+            try {
+                preparations.acquire(maxStatements);
+            } catch (InterruptedException e) {
+            }
+            synchronized (this) {
+                if (batchStatement != null && !batchStatement.getStatements().isEmpty()) {
+                    send(batchStatement);
+                    batchStatement = null;
+                    batchSize = 0;
                 }
             }
-        }
-
-        @Override
-        public void finish() {
-            if (batchStatement != null && !batchStatement.getStatements().isEmpty()) {
-                send(batchStatement);
-                batchStatement = null;
+            try {
+                semaphore.acquire(maxStatements);
+            } catch (InterruptedException e) {
             }
         }
 
@@ -458,13 +525,7 @@ public class BulkLoader {
                 return;
             }
             if (rateLimiter != null) {
-                // Acquire after execute, since bytes used are
-                // calculated there.
-                int bytes = this.bytes;
-                this.bytes = 0;
-                if (bytes > 0) {
-                    rateLimiter.acquire(bytes);
-                }
+                rateLimiter.acquire(s.requestSizeInBytes(PROTOCOL_VERSION, codecRegistry));
             }
 
             try {
@@ -489,20 +550,25 @@ public class BulkLoader {
             }
         }
 
-        private void send(Object callback, DecoratedKey key, Statement s) {
-            if (batch && tokenKey == callback && batchStatement != null && batchStatement.size() < maxBatchStatements
+        // This method has to be synchronized because it can be called from different threads.
+        // Usually it's called just from a single thread - the one that owns the client but for
+        // prepared statements it's called from callbacks that have their own thread pool which runs them.
+        private synchronized void send(DecoratedKey key, Statement s) {
+            if (batch && batchStatement != null && batchSize < maxBatchSize
                     && this.key.equals(key)) {
                 batchStatement.add(s);
+                batchSize += s.requestSizeInBytes(PROTOCOL_VERSION, codecRegistry);
                 return;
             }
             if (batchStatement != null && batchStatement.size() != 0) {
                 send(batchStatement);
                 batchStatement = null;
+                batchSize = 0;
             }
             if (batch) {
                 batchStatement = new BatchStatement(BatchStatement.Type.UNLOGGED);
                 batchStatement.add(s);
-                tokenKey = callback;
+                batchSize = batchStatement.requestSizeInBytes(PROTOCOL_VERSION, codecRegistry);
                 this.key = key;
             } else {
                 send(s);
@@ -595,11 +661,11 @@ public class BulkLoader {
         }
 
         private Token getToken(com.datastax.driver.core.Token t) {
-            return getPartitioner().getTokenFactory().fromByteArray(t.serialize(ProtocolVersion.V3));
+            return getPartitioner().getTokenFactory().fromByteArray(t.serialize(PROTOCOL_VERSION));
         }
 
         @Override
-        public void processStatment(Object callback, DecoratedKey key, long timestamp, String what,
+        public void processStatment(DecoratedKey key, long timestamp, String what,
                 List<Object> objects) {
             if (verbose) {
                 System.out.print("CQL: '");
@@ -613,53 +679,22 @@ public class BulkLoader {
             }
 
             if (preparedStatements != null) {
-                sendPrepared(callback, key, timestamp, what, objects);
+                sendPrepared(key, timestamp, what, objects);
             } else {
-                send(callback, key, timestamp, what, objects);
+                send(key, timestamp, what, objects);
             }
         }
 
-        private void send(Object callback, DecoratedKey key, long timestamp, String what, List<Object> objects) {
-            SimpleStatement s = new SimpleStatement(what, objects.toArray()) {
-                @Override
-                public ByteBuffer[] getValues(ProtocolVersion protocolVersion, CodecRegistry codecRegistry) {
-                    return summarize(super.getValues(protocolVersion, codecRegistry));
-                }
-
-                @Override
-                public Map<String, ByteBuffer> getNamedValues(ProtocolVersion protocolVersion,
-                        CodecRegistry codecRegistry) {
-                    Map<String, ByteBuffer> res = super.getNamedValues(protocolVersion, codecRegistry);
-                    if (rateLimiter != null && res != null) {
-                        summarize(res.values().toArray(new ByteBuffer[res.size()]));
-                    }
-                    return res;
-                }
-
-                private ByteBuffer[] summarize(ByteBuffer[] values) {
-                    if (rateLimiter != null) {
-                        // Try to guesstimate the bytes payload of the query
-                        // and add to bytes consumed by this batch.
-                        bytes += getQueryString().length();
-                        if (values != null) {
-                            for (ByteBuffer buf : values) {
-                                if (buf != null) {
-                                    bytes += buf.remaining();
-                                }
-                            }
-                        }
-                    }
-                    return values;
-                }
-            };
+        private void send(DecoratedKey key, long timestamp, String what, List<Object> objects) {
+            SimpleStatement s = new SimpleStatement(what, objects.toArray());
             s.setDefaultTimestamp(timestamp);
             s.setKeyspace(getKeyspace());
             s.setRoutingKey(key.getKey());
 
-            send(callback, key, s);
+            send(key, s);
         }
 
-        private void sendPrepared(final Object callback, final DecoratedKey key, final long timestamp, String what,
+        private void sendPrepared(final DecoratedKey key, final long timestamp, String what,
                 final List<Object> objects) {
             ListenableFuture<PreparedStatement> f = preparedStatements.get(what);
             if (f == null) {
@@ -724,7 +759,7 @@ public class BulkLoader {
                                                 
                         s.setRoutingKey(key.getKey());
                         s.setDefaultTimestamp(timestamp);
-                        send(callback, key, s);
+                        send(key, s);
                         preparations.release();
                     }
 
@@ -777,9 +812,12 @@ public class BulkLoader {
                     "Client SSL: comma-separated list of encryption suites to use");
             options.addOption("f", CONFIG_PATH, "path to config file",
                     "cassandra.yaml file path for streaming throughput and client/server SSL.");
-            options.addOption("b", USE_BATCH, "batch updates for same partition key.");
-            options.addOption("x", USE_PREPARED, "prepared statements");
+            options.addOption("nb", NO_BATCH, "Do not use batch statements updates for same partition key.");
+            options.addOption("nx", NO_PREPARED, "Do not use prepared statements");
             options.addOption("g", IGNORE_MISSING_COLUMNS, "COLUMN NAMES...", "ignore named missing columns in tables");
+            options.addOption("ir", NO_INFINITE_RETRY_OPTION, "Disable infinite retry policy");
+            options.addOption("j", THREADS_COUNT_OPTION, "Number of threads to execute tasks", "Run tasks in parallel");
+            options.addOption("bs", BATCH_SIZE, "Number of bytes above which batch is being sent out", "Requires -b");
 
             return options;
         }
@@ -820,9 +858,18 @@ public class BulkLoader {
                 opts.verbose = cmd.hasOption(VERBOSE_OPTION);
                 opts.simulate = cmd.hasOption(SIMULATE);
                 opts.noProgress = cmd.hasOption(NOPROGRESS_OPTION);
+                opts.infiniteRetry = !cmd.hasOption(NO_INFINITE_RETRY_OPTION);
 
                 if (cmd.hasOption(PORT_OPTION)) {
                     opts.port = Integer.parseInt(cmd.getOptionValue(PORT_OPTION));
+                }
+
+                if (cmd.hasOption(THREADS_COUNT_OPTION)) {
+                    opts.threadCount = Integer.parseInt(cmd.getOptionValue(THREADS_COUNT_OPTION));
+                }
+
+                if (cmd.hasOption(BATCH_SIZE) && !cmd.hasOption(NO_BATCH)) {
+                    opts.maxBatchSize = Integer.parseInt(cmd.getOptionValue(BATCH_SIZE));
                 }
 
                 if (cmd.hasOption(USER_OPTION)) {
@@ -923,14 +970,10 @@ public class BulkLoader {
                     opts.encOptions.cipher_suites = cmd.getOptionValue(SSL_CIPHER_SUITES).split(",");
                 }
 
-                if (cmd.hasOption(USE_PREPARED) && cmd.hasOption(USE_BATCH)) {
-                    errorMsg("Cannot use batch and prepared statement at the same time", options);
-                }
-
-                if (cmd.hasOption(USE_PREPARED)) {
+                if (!cmd.hasOption(NO_PREPARED)) {
                     opts.prepare = true;
                 }
-                if (cmd.hasOption(USE_BATCH)) {
+                if (!cmd.hasOption(NO_BATCH)) {
                     opts.batch = true;
                 }
                 if (cmd.hasOption(IGNORE_MISSING_COLUMNS)) {
@@ -966,6 +1009,9 @@ public class BulkLoader {
         public boolean noProgress;
         public int port = 9042;
         public String user;
+        public boolean infiniteRetry;
+        public int threadCount = 16;
+        public int maxBatchSize = 100 * 1024; // 100 kB
 
         public String passwd;
         public int throttle = 0;
@@ -997,6 +1043,9 @@ public class BulkLoader {
     private static final String IGNORE_NODES_OPTION = "ignore";
     private static final String INITIAL_HOST_ADDRESS_OPTION = "nodes";
     private static final String PORT_OPTION = "port";
+    private static final String NO_INFINITE_RETRY_OPTION = "no-infinite-retry";
+    private static final String THREADS_COUNT_OPTION = "threads-count";
+    private static final String BATCH_SIZE = "batch-size";
 
     private static final String USER_OPTION = "username";
     private static final String PASSWD_OPTION = "password";
@@ -1016,13 +1065,14 @@ public class BulkLoader {
     private static final String CONNECTIONS_PER_HOST = "connections-per-host";
 
     private static final String CONFIG_PATH = "conf-path";
-    private static final String USE_BATCH = "use-batch";
-    private static final String USE_PREPARED = "use-prepared";
+    private static final String NO_BATCH = "no-batch";
+    private static final String NO_PREPARED = "no-prepared";
 
     public static void main(String args[]) {
         Config.setClientMode(true);
         LoaderOptions options = LoaderOptions.parseArgs(args);
 
+        CQLClient client = null;
         try {
             File dir = options.directory;
             if (dir.isFile()) {
@@ -1031,15 +1081,16 @@ public class BulkLoader {
 
             String keyspace = dir.getParentFile().getName();
 
-            CQLClient client = new CQLClient(options, keyspace);
-            SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client);
-            try {
-                ssTableToCQL.stream(options.directory);
-            } finally {
-                client.close();
-            }
+            client = new CQLClient(options, keyspace);
+            SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client, options.threadCount);
+            ssTableToCQL.stream(options.directory);
             System.exit(0);
         } catch (Throwable t) {
+            if (client != null) {
+                if (client.getCluster() != null) {
+                    client.getCluster().close();
+                }
+            }
             t.printStackTrace();
             System.exit(1);
         }

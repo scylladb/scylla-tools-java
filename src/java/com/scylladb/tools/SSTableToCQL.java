@@ -34,6 +34,11 @@ import java.io.FilenameFilter;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
+import java.security.KeyManagementException;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
+import java.security.UnrecoverableKeyException;
+import java.security.cert.CertificateException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -43,7 +48,12 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
+
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
@@ -76,7 +86,6 @@ import org.apache.cassandra.io.sstable.ISSTableScanner;
 import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.utils.Pair;
-import org.apache.cassandra.utils.UUIDGen;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -282,7 +291,6 @@ public class SSTableToCQL {
         private final Client client;
 
         Op op;
-        Object callback;
         CFMetaData cfMetaData;
         DecoratedKey key;
         Row row;
@@ -365,8 +373,7 @@ public class SSTableToCQL {
         }
 
         // Begin a new partition (cassandra "Row")
-        private void begin(Object callback, DecoratedKey key, CFMetaData cfMetaData) {
-            this.callback = callback;
+        private void begin(DecoratedKey key, CFMetaData cfMetaData) {
             this.key = key;
             this.cfMetaData = cfMetaData;
             clear();
@@ -569,7 +576,7 @@ public class SSTableToCQL {
 
         // Dispatch the CQL
         private void makeStatement(DecoratedKey key, long timestamp, String what, List<Object> objects) {
-            client.processStatment(callback, key, timestamp, what, objects);
+            client.processStatment(key, timestamp, what, objects);
         }
 
         private void process(Row row) {
@@ -686,12 +693,12 @@ public class SSTableToCQL {
         }
         
         // Process an SSTable row (partial partition)
-        private void process(Object callback, UnfilteredRowIterator rows) {
+        private void process(UnfilteredRowIterator rows) {
             CFMetaData cfMetaData = rows.metadata();
             DeletionTime deletionTime = rows.partitionLevelDeletion();
             DecoratedKey key = rows.partitionKey();
 
-            begin(callback, key, cfMetaData);
+            begin(key, cfMetaData);
 
             if (!deletionTime.isLive()) {
                 deletePartition(key, deletionTime);
@@ -831,9 +838,12 @@ public class SSTableToCQL {
 
     private final String keyspace;
 
-    public SSTableToCQL(String keyspace, Client client) {
+    private final int threadCount;
+
+    public SSTableToCQL(String keyspace, Client client, int threadCount) {
         this.client = client;
         this.keyspace = keyspace;
+        this.threadCount = threadCount;
     }
 
     private CFMetaData getCFMetaData(String keyspace, String cfName) {
@@ -861,6 +871,7 @@ public class SSTableToCQL {
             });
         }
 
+        logger.info("Found " + sstables.size() + " SSTables");
         return sstables;
     }
 
@@ -909,51 +920,91 @@ public class SSTableToCQL {
         }
     }
 
-    protected void process(RowBuilder builder, InetAddress address, ISSTableScanner scanner) {
+    protected void process(RowBuilder builder, ISSTableScanner scanner) {
         // collecting keys to export
         while (scanner.hasNext()) {
             UnfilteredRowIterator ri = scanner.next();
-            builder.process(address, ri);
+            builder.process(ri);
         }
     }
 
-    public void stream(File directoryOrSStable) throws IOException, ConfigurationException {
-        RowBuilder builder = new RowBuilder(client);
+    private class ProcessTask {
+        private final InetAddress address;
+        private final ISSTableScanner scanner;
+        private final String filename;
 
-        logger.info("Opening sstables and calculating sections to stream");
+        private ProcessTask(InetAddress address, ISSTableScanner scanner, String filename) {
+            this.address = address;
+            this.scanner = scanner;
+            this.filename = filename;
+        }
 
+        void run(RowBuilder builder) {
+            try {
+                logger.info("Processing {} on address {}", filename, address);
+                process(builder, scanner);
+            } finally {
+                scanner.close();
+            }
+        }
+    }
+
+    public void stream(File directoryOrSStable) throws IOException, ConfigurationException, UnrecoverableKeyException, KeyManagementException, NoSuchAlgorithmException, KeyStoreException, CertificateException, InterruptedException {
+        List<Client> clients = new ArrayList<>(threadCount);
+        clients.add(client);
+        for (int i = 1; i < threadCount; ++i) {
+            clients.add(client.copy());
+        }
         // Hack. Must do because Range mangling code in cassandra is
         // broken, and does not preserve input range objects internal
         // "partitioner" field.
-        DatabaseDescriptor.setPartitionerUnsafe(client.getPartitioner());        
-        
+        DatabaseDescriptor.setPartitionerUnsafe(client.getPartitioner());
+
         Map<InetAddress, Collection<Range<Token>>> ranges = client.getEndpointRanges();
         Collection<SSTableReader> sstables = openSSTables(directoryOrSStable);
 
-        try {
-            for (SSTableReader reader : sstables) {
-                logger.info("Processing {}", reader.getFilename());                
-                if (ranges == null || ranges.isEmpty()) {
-                    ISSTableScanner scanner = reader.getScanner();
-                    try {
-                        process(builder, null, scanner);
-                    } finally {
-                        scanner.close();
-                    }
-                } else {
+        final ConcurrentLinkedQueue<ProcessTask> tasks = new ConcurrentLinkedQueue<>();
+
+        Consumer<SSTableReader> taskFactory = (ranges == null || ranges.isEmpty())
+                ? (SSTableReader reader) -> { tasks.add(new ProcessTask(null, reader.getScanner(), reader.getFilename())); }
+                : (SSTableReader reader) -> {
                     for (Map.Entry<InetAddress, Collection<Range<Token>>> e : ranges.entrySet()) {
-                        ISSTableScanner scanner = reader.getScanner(e.getValue(), null);
-                        try {
-                            process(builder, e.getKey(), scanner);
-                        } finally {
-                            scanner.close();
-                        }
+                        tasks.add(new ProcessTask(e.getKey(), reader.getScanner(e.getValue(), null), reader.getFilename()));
                     }
-                }
+                };
+        sstables.forEach(taskFactory);
+
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+
+        final CountDownLatch latch = new CountDownLatch(threadCount);
+        boolean closeClients = true;
+        try {
+            for (int i = 0; i < threadCount; ++i) {
+                final RowBuilder builder = new RowBuilder(clients.get(i));
+                executor.submit(() -> {
+                    ProcessTask task = null;
+                    while (!Thread.interrupted() && (task = tasks.poll()) != null) {
+                        task.run(builder);
+                    }
+                    latch.countDown();
+                });
+            }
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                executor.shutdownNow();
+                closeClients = false;
+                throw e;
             }
         } finally {
-            client.finish();
+            if (closeClients) {
+                for (Client client : clients) {
+                    client.close();
+                }
+            }
+            for (ProcessTask task : tasks) {
+                task.scanner.close();
+            }
         }
     }
-
 }
