@@ -457,7 +457,7 @@ public class SSTableToCQL {
                         buf.append(", ");
                     }
                     ensureWhitespace(buf);
-                    buf.append(c.name.toCQLString());
+                    buf.append(columnNamesMapping.getName(c));
                     if (s != null) {
                         buf.append(s);
                     }
@@ -500,13 +500,13 @@ public class SSTableToCQL {
                     if (i++ > 0) {
                         buf.append(',');
                     }
-                    buf.append(c.name.toCQLString());
+                    buf.append(columnNamesMapping.getName(c));
                 }
                 for (ColumnDefinition c : where.keySet()) {
                     if (i++ > 0) {
                         buf.append(',');
                     }
-                    buf.append(c.name.toCQLString());
+                    buf.append(columnNamesMapping.getName(c));
                 }
                 buf.append(") values (");
                 for (i = 0; i < values.size() + where.size(); ++i) {
@@ -523,7 +523,7 @@ public class SSTableToCQL {
                     if (i++ > 0) {
                         buf.append(" AND ");
                     }
-                    buf.append(e.getKey().name.toCQLString());
+                    buf.append(columnNamesMapping.getName(e.getKey()));
                     buf.append(' ');
                     buf.append(e.getValue().left.toString());
                     buf.append(" ?");
@@ -918,7 +918,7 @@ public class SSTableToCQL {
             // stream and the estimated
             // number of keys for each endpoint. See CASSANDRA-5555 for
             // details.
-            SSTableReader sstable = openForBatch(desc, components, metadata);
+            SSTableReader sstable = openForBatch(desc, components, columnNamesMapping.getMetadata(metadata));
             sstables.add(sstable);
         } catch (IOException e) {
             logger.warn("Skipping file {}, error opening it: {}", name, e.getMessage());
