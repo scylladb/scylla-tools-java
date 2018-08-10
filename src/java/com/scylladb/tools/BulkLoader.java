@@ -818,6 +818,7 @@ public class BulkLoader {
             options.addOption("ir", NO_INFINITE_RETRY_OPTION, "Disable infinite retry policy");
             options.addOption("j", THREADS_COUNT_OPTION, "Number of threads to execute tasks", "Run tasks in parallel");
             options.addOption("bs", BATCH_SIZE, "Number of bytes above which batch is being sent out", "Requires -b");
+            options.addOption("translate", TRANSLATE_OPTION, "mapping list", "comma-separated list of column name mappings");
 
             return options;
         }
@@ -870,6 +871,21 @@ public class BulkLoader {
 
                 if (cmd.hasOption(BATCH_SIZE) && !cmd.hasOption(NO_BATCH)) {
                     opts.maxBatchSize = Integer.parseInt(cmd.getOptionValue(BATCH_SIZE));
+                }
+
+                if (cmd.hasOption(TRANSLATE_OPTION)) {
+                    for (String mapping : cmd.getOptionValue(TRANSLATE_OPTION).split(",")) {
+                        String[] parts = mapping.split(":");
+                        if (parts.length != 2) {
+                            errorMsg("Invalid column name mapping: " + mapping, options);
+                        }
+                        String sourceName = parts[0].trim();
+                        String targetName = parts[1].trim();
+                        if (sourceName.isEmpty() || targetName.isEmpty()) {
+                            errorMsg("Invalid column name mapping: " + mapping, options);
+                        }
+                        opts.columnNamesMappings.put(sourceName, targetName);
+                    }
                 }
 
                 if (cmd.hasOption(USER_OPTION)) {
@@ -1018,6 +1034,8 @@ public class BulkLoader {
 
         public boolean batch;
         public boolean prepare;
+        
+        public Map<String, String> columnNamesMappings = new HashMap<>();
 
         public EncryptionOptions encOptions = new EncryptionOptions.ClientEncryptionOptions();
 
@@ -1046,6 +1064,7 @@ public class BulkLoader {
     private static final String NO_INFINITE_RETRY_OPTION = "no-infinite-retry";
     private static final String THREADS_COUNT_OPTION = "threads-count";
     private static final String BATCH_SIZE = "batch-size";
+    private static final String TRANSLATE_OPTION = "translate";
 
     private static final String USER_OPTION = "username";
     private static final String PASSWD_OPTION = "password";
