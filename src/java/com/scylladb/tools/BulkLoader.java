@@ -817,7 +817,7 @@ public class BulkLoader {
             options.addOption("g", IGNORE_MISSING_COLUMNS, "COLUMN NAMES...", "ignore named missing columns in tables");
             options.addOption("ir", NO_INFINITE_RETRY_OPTION, "Disable infinite retry policy");
             options.addOption("j", THREADS_COUNT_OPTION, "Number of threads to execute tasks", "Run tasks in parallel");
-            options.addOption("bs", BATCH_SIZE, "Number of bytes above which batch is being sent out", "Requires -b");
+            options.addOption("bs", BATCH_SIZE, "Number of bytes above which batch is being sent out", "Does not work with -nb");
             options.addOption("translate", TRANSLATE_OPTION, "mapping list", "comma-separated list of column name mappings");
 
             return options;
