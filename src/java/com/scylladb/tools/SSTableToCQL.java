@@ -289,6 +289,7 @@ public class SSTableToCQL {
         private static final int invalidTTL = LivenessInfo.NO_TTL;
 
         private final Client client;
+        private final ColumnNamesMapping columnNamesMapping;
 
         Op op;
         CFMetaData cfMetaData;
@@ -317,9 +318,10 @@ public class SSTableToCQL {
             }            
         }
         // sorted atoms?
-        
-        public RowBuilder(Client client) {
+
+        public RowBuilder(Client client, ColumnNamesMapping columnNamesMapping) {
             this.client = client;
+            this.columnNamesMapping = columnNamesMapping;
         }
 
         /**
@@ -838,12 +840,15 @@ public class SSTableToCQL {
 
     private final String keyspace;
 
+    private final ColumnNamesMapping columnNamesMapping;
+
     private final int threadCount;
 
-    public SSTableToCQL(String keyspace, Client client, int threadCount) {
+    public SSTableToCQL(String keyspace, Client client, ColumnNamesMapping columnNamesMapping, int threadCount) {
         this.client = client;
         this.keyspace = keyspace;
         this.threadCount = threadCount;
+        this.columnNamesMapping = columnNamesMapping;
     }
 
     private CFMetaData getCFMetaData(String keyspace, String cfName) {
@@ -980,7 +985,7 @@ public class SSTableToCQL {
         boolean closeClients = true;
         try {
             for (int i = 0; i < threadCount; ++i) {
-                final RowBuilder builder = new RowBuilder(clients.get(i));
+                final RowBuilder builder = new RowBuilder(clients.get(i), columnNamesMapping);
                 executor.submit(() -> {
                     ProcessTask task = null;
                     while (!Thread.interrupted() && (task = tasks.poll()) != null) {

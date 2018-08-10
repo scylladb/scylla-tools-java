@@ -1108,7 +1108,7 @@ public class BulkLoader {
             String keyspace = dir.getParentFile().getName();
 
             client = new CQLClient(options, keyspace);
-            SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client, options.threadCount);
+            SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client, new ColumnNamesMapping(options.columnNamesMappings), options.threadCount);
             ssTableToCQL.stream(options.directory);
             System.exit(0);
         } catch (Throwable t) {
