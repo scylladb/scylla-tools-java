@@ -884,6 +884,9 @@ public class BulkLoader {
                         if (sourceName.isEmpty() || targetName.isEmpty()) {
                             errorMsg("Invalid column name mapping: " + mapping, options);
                         }
+                        if (opts.columnNamesMappings.containsKey(sourceName)) {
+                            throw new RuntimeException("Mapping is not unique, key already exists: " + sourceName);
+                        }
                         opts.columnNamesMappings.put(sourceName, targetName);
                     }
                 }

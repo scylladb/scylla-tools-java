@@ -60,6 +60,9 @@ class ColumnNamesMapping {
         this.mappings = mappings;
         reversedMappings = new HashMap<>();
         for (Entry<String, String> mapping : mappings.entrySet()) {
+            if (reversedMappings.containsKey(mapping.getValue())) {
+                throw new RuntimeException("Reverse mapping is not unique, key already exists: " + mapping.getValue());
+            }
             reversedMappings.put(mapping.getValue(), mapping.getKey());
         }
     }
