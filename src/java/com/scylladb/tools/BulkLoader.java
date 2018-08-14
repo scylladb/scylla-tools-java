@@ -817,7 +817,8 @@ public class BulkLoader {
             options.addOption("g", IGNORE_MISSING_COLUMNS, "COLUMN NAMES...", "ignore named missing columns in tables");
             options.addOption("ir", NO_INFINITE_RETRY_OPTION, "Disable infinite retry policy");
             options.addOption("j", THREADS_COUNT_OPTION, "Number of threads to execute tasks", "Run tasks in parallel");
-            options.addOption("bs", BATCH_SIZE, "Number of bytes above which batch is being sent out", "Requires -b");
+            options.addOption("bs", BATCH_SIZE_OPTION, "Number of bytes above which batch is being sent out", "Does not work with -nb");
+            options.addOption("translate", TRANSLATE_OPTION, "mapping list", "comma-separated list of column name mappings");
 
             return options;
         }
@@ -868,8 +869,26 @@ public class BulkLoader {
                     opts.threadCount = Integer.parseInt(cmd.getOptionValue(THREADS_COUNT_OPTION));
                 }
 
-                if (cmd.hasOption(BATCH_SIZE) && !cmd.hasOption(NO_BATCH)) {
-                    opts.maxBatchSize = Integer.parseInt(cmd.getOptionValue(BATCH_SIZE));
+                if (cmd.hasOption(BATCH_SIZE_OPTION) && !cmd.hasOption(NO_BATCH)) {
+                    opts.maxBatchSize = Integer.parseInt(cmd.getOptionValue(BATCH_SIZE_OPTION));
+                }
+
+                if (cmd.hasOption(TRANSLATE_OPTION)) {
+                    for (String mapping : cmd.getOptionValue(TRANSLATE_OPTION).split(",")) {
+                        String[] parts = mapping.split(":");
+                        if (parts.length != 2) {
+                            errorMsg("Invalid column name mapping: " + mapping, options);
+                        }
+                        String sourceName = parts[0].trim();
+                        String targetName = parts[1].trim();
+                        if (sourceName.isEmpty() || targetName.isEmpty()) {
+                            errorMsg("Invalid column name mapping: " + mapping, options);
+                        }
+                        if (opts.columnNamesMappings.containsKey(sourceName)) {
+                            throw new RuntimeException("Mapping is not unique, key already exists: " + sourceName);
+                        }
+                        opts.columnNamesMappings.put(sourceName, targetName);
+                    }
                 }
 
                 if (cmd.hasOption(USER_OPTION)) {
@@ -1018,6 +1037,8 @@ public class BulkLoader {
 
         public boolean batch;
         public boolean prepare;
+        
+        public Map<String, String> columnNamesMappings = new HashMap<>();
 
         public EncryptionOptions encOptions = new EncryptionOptions.ClientEncryptionOptions();
 
@@ -1045,7 +1066,8 @@ public class BulkLoader {
     private static final String PORT_OPTION = "port";
     private static final String NO_INFINITE_RETRY_OPTION = "no-infinite-retry";
     private static final String THREADS_COUNT_OPTION = "threads-count";
-    private static final String BATCH_SIZE = "batch-size";
+    private static final String BATCH_SIZE_OPTION = "batch-size";
+    private static final String TRANSLATE_OPTION = "translate";
 
     private static final String USER_OPTION = "username";
     private static final String PASSWD_OPTION = "password";
@@ -1089,7 +1111,7 @@ public class BulkLoader {
             String keyspace = dir.getParentFile().getName();
 
             client = new CQLClient(options, keyspace);
-            SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client, options.threadCount);
+            SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client, new ColumnNamesMapping(options.columnNamesMappings), options.threadCount);
             ssTableToCQL.stream(options.directory);
             System.exit(0);
         } catch (Throwable t) {
