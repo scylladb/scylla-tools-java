@@ -333,7 +333,7 @@ public class BulkLoader {
             partitioner = other.partitioner;
             rateLimiter = other.rateLimiter;
             batch = other.batch;
-            preparedStatements = other.preparedStatements != null ? new ConcurrentHashMap<>() : null;
+            preparedStatements = other.preparedStatements;
             ignoreColumns = other.ignoreColumns;
             maxBatchSize = other.maxBatchSize;
         }
