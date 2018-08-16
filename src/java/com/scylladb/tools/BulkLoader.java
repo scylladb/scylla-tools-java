@@ -696,14 +696,12 @@ public class BulkLoader {
 
         private void sendPrepared(final DecoratedKey key, final long timestamp, String what,
                 final List<Object> objects) {
-            ListenableFuture<PreparedStatement> f = preparedStatements.get(what);
-            if (f == null) {
+            ListenableFuture<PreparedStatement> f = preparedStatements.computeIfAbsent(what, k -> {
                 if (verbose) {
-                    System.out.println("Preparing: " + what);
+                    System.out.println("Preparing: " + k + " on thread " + Thread.currentThread().getId());
                 }
-                f = session.prepareAsync(what);
-                preparedStatements.put(what, f);
-            }
+                return session.prepareAsync(k);
+            });
 
             try {
                 preparations.acquire();
