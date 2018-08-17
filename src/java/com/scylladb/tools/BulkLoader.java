@@ -240,6 +240,7 @@ public class BulkLoader {
 
         private final boolean batch;
         private final Map<String, ListenableFuture<PreparedStatement>> preparedStatements;
+        private final ConsistencyLevel consistencyLevel;
         private final Set<String> ignoreColumns;
         private final CodecRegistry codecRegistry = new CodecRegistry();
         private final TypeCodec<ByteBuffer> blob = codecRegistry.codecFor(ByteBuffer.allocate(1));
@@ -321,6 +322,7 @@ public class BulkLoader {
             this.maxBatchSize = options.maxBatchSize;
             this.preparedStatements = options.prepare ? new ConcurrentHashMap<>() : null;
             this.ignoreColumns = options.ignoreColumns;
+            this.consistencyLevel = options.consistencyLevel;
         }
 
         private CQLClient(CQLClient other) {
@@ -334,6 +336,7 @@ public class BulkLoader {
             rateLimiter = other.rateLimiter;
             batch = other.batch;
             preparedStatements = other.preparedStatements;
+            consistencyLevel = other.consistencyLevel;
             ignoreColumns = other.ignoreColumns;
             maxBatchSize = other.maxBatchSize;
         }
@@ -524,6 +527,7 @@ public class BulkLoader {
             if (simulate) {
                 return;
             }
+            s.setConsistencyLevel(consistencyLevel);
             if (rateLimiter != null) {
                 rateLimiter.acquire(s.requestSizeInBytes(PROTOCOL_VERSION, codecRegistry));
             }
@@ -817,6 +821,7 @@ public class BulkLoader {
             options.addOption("j", THREADS_COUNT_OPTION, "Number of threads to execute tasks", "Run tasks in parallel");
             options.addOption("bs", BATCH_SIZE_OPTION, "Number of bytes above which batch is being sent out", "Does not work with -nb");
             options.addOption("translate", TRANSLATE_OPTION, "mapping list", "comma-separated list of column name mappings");
+            options.addOption("cl", CONSISTENCY_LEVEL_OPTION, "consistency level (default: ONE)", "sets the consistency level for statements");
 
             return options;
         }
@@ -886,6 +891,14 @@ public class BulkLoader {
                             throw new RuntimeException("Mapping is not unique, key already exists: " + sourceName);
                         }
                         opts.columnNamesMappings.put(sourceName, targetName);
+                    }
+                }
+
+                if (cmd.hasOption(CONSISTENCY_LEVEL_OPTION)) {
+                    try {
+                        opts.consistencyLevel = ConsistencyLevel.valueOf(cmd.getOptionValue(CONSISTENCY_LEVEL_OPTION));
+                    } catch (IllegalArgumentException e) {
+                        errorMsg("Illegal consistency level option: " + cmd.getOptionValue(CONSISTENCY_LEVEL_OPTION), options);
                     }
                 }
 
@@ -1038,6 +1051,8 @@ public class BulkLoader {
         
         public Map<String, String> columnNamesMappings = new HashMap<>();
 
+        public ConsistencyLevel consistencyLevel = ConsistencyLevel.ONE;
+
         public EncryptionOptions encOptions = new EncryptionOptions.ClientEncryptionOptions();
 
         public int connectionsPerHost = 1;
@@ -1066,6 +1081,7 @@ public class BulkLoader {
     private static final String THREADS_COUNT_OPTION = "threads-count";
     private static final String BATCH_SIZE_OPTION = "batch-size";
     private static final String TRANSLATE_OPTION = "translate";
+    private static final String CONSISTENCY_LEVEL_OPTION = "consistency-level";
 
     private static final String USER_OPTION = "username";
     private static final String PASSWD_OPTION = "password";
