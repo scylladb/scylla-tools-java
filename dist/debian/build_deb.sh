@@ -1,5 +1,7 @@
 #!/bin/bash -e
 
+PRODUCT=scylla
+
 . /etc/os-release
 print_usage() {
     echo "build_deb.sh -target <codename>"
@@ -110,9 +112,14 @@ VERSION=$(./SCYLLA-VERSION-GEN)
 SCYLLA_VERSION=$(cat build/SCYLLA-VERSION-FILE | sed 's/\.rc/~rc/')
 SCYLLA_RELEASE=$(cat build/SCYLLA-RELEASE-FILE)
 echo $VERSION > version
-./scripts/git-archive-all --extra version --force-submodules --prefix scylla-tools ../scylla-tools_$SCYLLA_VERSION-$SCYLLA_RELEASE.orig.tar.gz 
+./scripts/git-archive-all --extra version --force-submodules --prefix $PRODUCT-tools ../$PRODUCT-tools_$SCYLLA_VERSION-$SCYLLA_RELEASE.orig.tar.gz 
 
 cp -a dist/debian/debian debian
+if [ "$PRODUCT" != "scylla" ]; then
+    for i in debian/scylla-*;do
+        mv $i ${i/scylla-/$PRODUCT-}
+    done
+fi
 PYTHON_SUPPORT=false
 if is_debian $TARGET; then
     REVISION="1~$TARGET"
@@ -125,18 +132,19 @@ if [ "$TARGET" = "jessie" ] || [ "$TARGET" = "trusty" ]; then
     PYTHON_SUPPORT=true
 fi
 
-MUSTACHE_DIST="\"debian\": true, \"$TARGET\": true"
-pystache dist/debian/changelog.mustache "{ \"version\": \"$SCYLLA_VERSION\", \"release\": \"$SCYLLA_RELEASE\", \"revision\": \"$REVISION\", \"codename\": \"$TARGET\" }" > debian/changelog
+MUSTACHE_DIST="\"debian\": true, \"$TARGET\": true, \"product\": \"$PRODUCT\", \"$PRODUCT\": true"
+pystache dist/debian/changelog.mustache "{ $MUSTACHE_DIST, \"version\": \"$SCYLLA_VERSION\", \"release\": \"$SCYLLA_RELEASE\", \"revision\": \"$REVISION\", \"codename\": \"$TARGET\" }" > debian/changelog
 pystache dist/debian/control.mustache "{ $MUSTACHE_DIST, \"python-support\": $PYTHON_SUPPORT }" > debian/control
+pystache dist/debian/rules.mustache "{ $MUSTACHE_DIST }" > debian/rules
+chmod a+rx debian/rules
 
-cp ./dist/debian/pbuilderrc ~/.pbuilderrc
-sudo rm -fv /var/cache/pbuilder/scylla-tools-$TARGET.tgz
-sudo -E DIST=$TARGET /usr/sbin/pbuilder clean
-sudo -E DIST=$TARGET /usr/sbin/pbuilder create
-sudo -E DIST=$TARGET /usr/sbin/pbuilder update
+sudo rm -fv /var/cache/pbuilder/$PRODUCT-tools-$TARGET.tgz
+sudo PRODUCT=$PRODUCT DIST=$TARGET /usr/sbin/pbuilder clean --configfile ./dist/debian/pbuilderrc
+sudo PRODUCT=$PRODUCT DIST=$TARGET /usr/sbin/pbuilder create --configfile ./dist/debian/pbuilderrc
+sudo PRODUCT=$PRODUCT DIST=$TARGET /usr/sbin/pbuilder update --configfile ./dist/debian/pbuilderrc
 if [ "$TARGET" = "jessie" ]; then
     echo "apt-get install -y -t jessie-backports ca-certificates-java" > build/jessie-pkginst.sh
     chmod a+rx build/jessie-pkginst.sh
-    sudo -E DIST=$TARGET /usr/sbin/pbuilder execute build/jessie-pkginst.sh
+    sudo PRODUCT=$PRODUCT DIST=$TARGET /usr/sbin/pbuilder execute --configfile ./dist/debian/pbuilderrc build/jessie-pkginst.sh
 fi
-sudo -E DIST=$TARGET pdebuild --buildresult build/debs
+sudo PRODUCT=$PRODUCT DIST=$TARGET pdebuild --configfile ./dist/debian/pbuilderrc --buildresult build/debs
