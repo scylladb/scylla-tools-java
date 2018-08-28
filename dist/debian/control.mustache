@@ -1,4 +1,4 @@
-Source: scylla-tools
+Source: {{product}}-tools
 Section: misc
 Priority: extra
 Maintainer: Takuya ASADA <syuu@scylladb.com>
@@ -6,19 +6,19 @@ Build-Depends: debhelper (>= 5), openjdk-8-jdk-headless, ant (>= 1.7), ant-optio
 Homepage: http://www.scylladb.com
 Standards-Version: 3.9.5
 
-Package: scylla-tools
+Package: {{product}}-tools
 Architecture: all
-Depends: scylla-conf, scylla-tools-core (>= 2.0~rc0), ${misc:Depends}{{#python-support}}, python-support (>= 0.90.0){{/python-support}}
+Depends: {{product}}-conf, {{product}}-tools-core (>= 2.0~rc0), ${misc:Depends}{{#python-support}}, python-support (>= 0.90.0){{/python-support}}
 Recommends: ntp | time-daemon
 Conflicts: cassandra
 Description: Scylla database tools
  Scylla is a highly scalable, eventually consistent, distributed,
  partitioned row DB.
 
-Package: scylla-tools-core
+Package: {{product}}-tools-core
 Architecture: all
 Depends: default-jre-headless | openjdk-8-jre | oracle-java8-set-default, python (>= 2.7), python-yaml
 Description: Scylla database tools core files
  Core files for scylla database tools
-Replaces: scylla-tools (<< 2.0~rc0)
-Breaks: scylla-tools (<< 2.0~rc0)
+Replaces: {{product}}-tools (<< 2.0~rc0)
+Breaks: {{product}}-tools (<< 2.0~rc0)
