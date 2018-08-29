@@ -25,7 +25,6 @@ package com.scylladb.tools;
 
 import java.net.InetAddress;
 import java.util.Collection;
-import java.util.List;
 import java.util.Map;
 
 import org.apache.cassandra.config.CFMetaData;
@@ -46,7 +45,5 @@ interface Client {
 
     IPartitioner getPartitioner();
 
-    void processStatment(DecoratedKey key, long timestamp,
-            String what, List<Object> objects);
-
+    void processStatment(DecoratedKey key, long timestamp, String what, Map<String, Object> objects);
 }

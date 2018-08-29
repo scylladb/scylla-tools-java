@@ -60,7 +60,7 @@ public class ColumnNamesMappingTest {
         }
 
         @Override
-        public void processStatment(DecoratedKey key, long timestamp, String what, List<Object> objects) {
+        public void processStatment(DecoratedKey key, long timestamp, String what, Map<String, Object> objects) {
             statements.add(what);
         }
 
@@ -87,7 +87,7 @@ public class ColumnNamesMappingTest {
         mapping.put("val2", "new_val2");
 
         MockClient client = new MockClient();
-        SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client, new ColumnNamesMapping(mapping), THREADS_COUNT);
+        SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client, false, new ColumnNamesMapping(mapping), THREADS_COUNT);
         ssTableToCQL.stream(dir);
         client.assertStatements();
     }
