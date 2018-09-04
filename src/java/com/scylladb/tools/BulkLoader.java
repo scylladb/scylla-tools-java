@@ -115,8 +115,8 @@ import com.datastax.driver.core.BatchStatement;
 import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.Cluster;
 import com.datastax.driver.core.CodecRegistry;
-import com.datastax.driver.core.ConsistencyLevel;
 import com.datastax.driver.core.ColumnDefinitions;
+import com.datastax.driver.core.ConsistencyLevel;
 import com.datastax.driver.core.DataType;
 import com.datastax.driver.core.DataType.CustomType;
 import com.datastax.driver.core.Host;
@@ -245,7 +245,8 @@ public class BulkLoader {
         private final Set<String> ignoreColumns;
         private final CodecRegistry codecRegistry = new CodecRegistry();
         private final TypeCodec<ByteBuffer> blob = codecRegistry.codecFor(ByteBuffer.allocate(1));
-
+        private boolean isRoot = false;
+        
         public CQLClient(LoaderOptions options, String keyspace)
                 throws NoSuchAlgorithmException, FileNotFoundException, IOException, KeyStoreException,
                 CertificateException, UnrecoverableKeyException, KeyManagementException, ConfigurationException {
@@ -324,6 +325,7 @@ public class BulkLoader {
             this.preparedStatements = options.prepare ? new ConcurrentHashMap<>() : null;
             this.ignoreColumns = options.ignoreColumns;
             this.consistencyLevel = options.consistencyLevel;
+            this.isRoot = true;
         }
 
         private CQLClient(CQLClient other) {
@@ -521,6 +523,9 @@ public class BulkLoader {
             try {
                 semaphore.acquire(maxStatements);
             } catch (InterruptedException e) {
+            }
+            if (isRoot && cluster != null) {
+                cluster.close();
             }
         }
 
@@ -1153,18 +1158,19 @@ public class BulkLoader {
             } else if (dir.getParentFile().getName().equals("snapshots")) {
                 dir = dir.getParentFile().getParentFile();
             }
+
             String keyspace = dir.getParentFile().getName();
 
-            client = new CQLClient(options, keyspace);
-            SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client, options.unset && options.prepare, new ColumnNamesMapping(options.columnNamesMappings), options.threadCount);
-            ssTableToCQL.stream(options.directory);
-            System.exit(0);
-        } catch (Throwable t) {
-            if (client != null) {
-                if (client.getCluster() != null) {
-                    client.getCluster().close();
-                }
+            try {
+                client = new CQLClient(options, keyspace);
+                SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client, options.unset && options.prepare,
+                        new ColumnNamesMapping(options.columnNamesMappings), options.threadCount);
+                ssTableToCQL.stream(options.directory);
+                System.exit(0);
+            } finally {
+                client.close();
             }
+        } catch (Throwable t) {
             t.printStackTrace();
             System.exit(1);
         }
