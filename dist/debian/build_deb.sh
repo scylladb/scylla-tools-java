@@ -129,14 +129,12 @@ MUSTACHE_DIST="\"debian\": true, \"$TARGET\": true"
 pystache dist/debian/changelog.mustache "{ \"version\": \"$SCYLLA_VERSION\", \"release\": \"$SCYLLA_RELEASE\", \"revision\": \"$REVISION\", \"codename\": \"$TARGET\" }" > debian/changelog
 pystache dist/debian/control.mustache "{ $MUSTACHE_DIST, \"python-support\": $PYTHON_SUPPORT }" > debian/control
 
-cp ./dist/debian/pbuilderrc ~/.pbuilderrc
-sudo rm -fv /var/cache/pbuilder/scylla-tools-$TARGET.tgz
-sudo -E DIST=$TARGET /usr/sbin/pbuilder clean
-sudo -E DIST=$TARGET /usr/sbin/pbuilder create
-sudo -E DIST=$TARGET /usr/sbin/pbuilder update
+sudo -E DIST=$TARGET /usr/sbin/pbuilder clean --configfile ./dist/debian/pbuilderrc
+sudo -E DIST=$TARGET /usr/sbin/pbuilder create --configfile ./dist/debian/pbuilderrc
+sudo -E DIST=$TARGET /usr/sbin/pbuilder update --configfile ./dist/debian/pbuilderrc
 if [ "$TARGET" = "jessie" ]; then
     echo "apt-get install -y -t jessie-backports ca-certificates-java" > build/jessie-pkginst.sh
     chmod a+rx build/jessie-pkginst.sh
-    sudo -E DIST=$TARGET /usr/sbin/pbuilder execute build/jessie-pkginst.sh
+    sudo -E DIST=$TARGET /usr/sbin/pbuilder execute --configfile ./dist/debian/pbuilderrc build/jessie-pkginst.sh
 fi
-sudo -E DIST=$TARGET pdebuild --buildresult build/debs
+sudo -E DIST=$TARGET pdebuild --buildresult build/debs --configfile ./dist/debian/pbuilderrc
