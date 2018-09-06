@@ -108,19 +108,18 @@ sed -i -e "s/@@VERSION@@/$SCYLLA_VERSION/g" debian/changelog
 sed -i -e "s/@@RELEASE@@/$SCYLLA_RELEASE/g" debian/changelog
 sed -i -e "s/@@CODENAME@@/$TARGET/g" debian/changelog
 
-cp ./dist/debian/pbuilderrc ~/.pbuilderrc
 sudo rm -fv /var/cache/pbuilder/scylla-tools-$TARGET.tgz
-sudo -E DIST=$TARGET /usr/sbin/pbuilder clean
-sudo -E DIST=$TARGET /usr/sbin/pbuilder create
-sudo -E DIST=$TARGET /usr/sbin/pbuilder update
+sudo -E DIST=$TARGET /usr/sbin/pbuilder clean --configfile ./dist/debian/pbuilderrc
+sudo -E DIST=$TARGET /usr/sbin/pbuilder create --configfile ./dist/debian/pbuilderrc
+sudo -E DIST=$TARGET /usr/sbin/pbuilder update --configfile ./dist/debian/pbuilderrc
 if [ "$TARGET" = "trusty" ]; then
     sed -i -e "s/@@BUILD_DEPENDS@@/python-support (>= 0.90.0)/g" debian/control
 elif [ "$TARGET" = "jessie" ]; then
     sed -i -e "s/@@BUILD_DEPENDS@@/python-support (>= 0.90.0)/g" debian/control
     echo "apt-get install -y -t jessie-backports ca-certificates-java" > build/jessie-pkginst.sh
     chmod a+rx build/jessie-pkginst.sh
-    sudo -E DIST=$TARGET /usr/sbin/pbuilder execute build/jessie-pkginst.sh
+    sudo -E DIST=$TARGET /usr/sbin/pbuilder execute --configfile ./dist/debian/pbuilderrc build/jessie-pkginst.sh
 else
     sed -i -e "s/@@BUILD_DEPENDS@@//g" debian/control
 fi
-sudo -E DIST=$TARGET pdebuild --buildresult build/debs
+sudo -E DIST=$TARGET pdebuild --buildresult build/debs --configfile ./dist/debian/pbuilderrc
