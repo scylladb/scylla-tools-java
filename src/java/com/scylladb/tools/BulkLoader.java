@@ -121,13 +121,13 @@ import com.datastax.driver.core.DataType;
 import com.datastax.driver.core.DataType.CustomType;
 import com.datastax.driver.core.Host;
 import com.datastax.driver.core.HostDistance;
-import com.datastax.driver.core.JdkSSLOptions;
 import com.datastax.driver.core.KeyspaceMetadata;
 import com.datastax.driver.core.Metadata;
 import com.datastax.driver.core.PoolingOptions;
 import com.datastax.driver.core.PreparedStatement;
 import com.datastax.driver.core.ProtocolOptions.Compression;
 import com.datastax.driver.core.ProtocolVersion;
+import com.datastax.driver.core.RemoteEndpointAwareJdkSSLOptions;
 import com.datastax.driver.core.ResultSet;
 import com.datastax.driver.core.ResultSetFuture;
 import com.datastax.driver.core.Row;
@@ -299,7 +299,8 @@ public class BulkLoader {
                     kmf.init(ks, enco.keystore_password.toCharArray());
                     ctx.init(kmf.getKeyManagers(), tmf.getTrustManagers(), new SecureRandom());
                 }
-                SSLOptions sslOptions = JdkSSLOptions.builder().withSSLContext(ctx).withCipherSuites(enco.cipher_suites)
+                @SuppressWarnings("deprecation")
+                SSLOptions sslOptions = RemoteEndpointAwareJdkSSLOptions.builder().withSSLContext(ctx).withCipherSuites(enco.cipher_suites)
                         .build();
                 builder = builder.withSSL(sslOptions);
             }
