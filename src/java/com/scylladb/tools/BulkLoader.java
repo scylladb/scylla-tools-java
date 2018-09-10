@@ -43,12 +43,15 @@ package com.scylladb.tools;
 
 import static com.datastax.driver.core.Cluster.builder;
 import static java.lang.Thread.currentThread;
+import static org.apache.cassandra.io.sstable.format.SSTableReader.openForBatch;
 import static org.apache.cassandra.schema.CQLTypeParser.parse;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
+import java.io.FilenameFilter;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.lang.reflect.Field;
 import java.net.InetAddress;
 import java.net.MalformedURLException;
@@ -64,14 +67,21 @@ import java.security.cert.CertificateException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
@@ -80,6 +90,7 @@ import javax.net.ssl.TrustManagerFactory;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.CFMetaData.DroppedColumn;
 import org.apache.cassandra.config.Config;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.EncryptionOptions;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.config.YamlConfigurationLoader;
@@ -97,6 +108,10 @@ import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.io.sstable.Component;
+import org.apache.cassandra.io.sstable.Descriptor;
+import org.apache.cassandra.io.sstable.SSTable;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.schema.Types;
 import org.apache.cassandra.service.ClientState;
@@ -110,6 +125,8 @@ import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.datastax.driver.core.BatchStatement;
 import com.datastax.driver.core.BoundStatement;
@@ -221,6 +238,19 @@ public class BulkLoader {
             return addOption(option);
         }
     }
+    // this should really be contained in logging
+    // but Java logging (and slj4 proxy) won't let
+    // us manipulate log levels from code, so
+    // verbosity != loggins. Glö.
+    static enum Verbosity {
+        Quiet, Normal, Verbose, Chatty, Trace,
+        ;
+        boolean greaterOrEqual(Verbosity v) {
+            return ordinal() >= v.ordinal();
+        }
+    }
+
+    private static final Logger logger = LoggerFactory.getLogger(BulkLoader.class);
 
     static class CQLClient implements Client {
         private static final ProtocolVersion PROTOCOL_VERSION = ProtocolVersion.V4;
@@ -231,13 +261,12 @@ public class BulkLoader {
         private final KeyspaceMetadata keyspaceMetadata;
         private final IPartitioner partitioner;
         private final boolean simulate;
-        private final boolean verbose;
+        private final Verbosity verbose;
         private BatchStatement batchStatement;
         private int batchSize;
         private DecoratedKey key;
 
         private RateLimiter rateLimiter;
-        private int bytes;
 
         private final boolean batch;
         private final Map<String, ListenableFuture<PreparedStatement>> preparedStatements;
@@ -246,6 +275,10 @@ public class BulkLoader {
         private final CodecRegistry codecRegistry = new CodecRegistry();
         private final TypeCodec<ByteBuffer> blob = codecRegistry.codecFor(ByteBuffer.allocate(1));
         private boolean isRoot = false;
+
+        private final Metrics metrics;
+
+        private PrintStream out = System.out;
         
         public CQLClient(LoaderOptions options, String keyspace)
                 throws NoSuchAlgorithmException, FileNotFoundException, IOException, KeyStoreException,
@@ -269,6 +302,7 @@ public class BulkLoader {
 
             this.simulate = options.simulate;
             this.verbose = options.verbose;
+            this.metrics = new Metrics();
             Cluster.Builder builder = builder().addContactPoints(options.hosts).withProtocolVersion(PROTOCOL_VERSION)
                     .withCompression(Compression.LZ4).withPoolingOptions(poolingOptions)
                     .withLoadBalancingPolicy(new TokenAwarePolicy(DCAwareRoundRobinPolicy.builder().build()))
@@ -328,25 +362,25 @@ public class BulkLoader {
             this.isRoot = true;
         }
 
-        private CQLClient(CQLClient other) {
-            simulate = other.simulate;
-            verbose = other.verbose;
-            cluster = other.cluster;
-            session = other.session;
-            metadata = other.metadata;
-            keyspaceMetadata = other.keyspaceMetadata;
-            partitioner = other.partitioner;
-            rateLimiter = other.rateLimiter;
-            batch = other.batch;
-            preparedStatements = other.preparedStatements;
-            consistencyLevel = other.consistencyLevel;
-            ignoreColumns = other.ignoreColumns;
-            maxBatchSize = other.maxBatchSize;
+        private CQLClient(CQLClient other, Metrics metrics) {
+            this.simulate = other.simulate;
+            this.verbose = other.verbose;
+            this.cluster = other.cluster;
+            this.session = other.session;
+            this.metadata = other.metadata;
+            this.keyspaceMetadata = other.keyspaceMetadata;
+            this.partitioner = other.partitioner;
+            this.rateLimiter = other.rateLimiter;
+            this.batch = other.batch;
+            this.preparedStatements = other.preparedStatements;
+            this.consistencyLevel = other.consistencyLevel;
+            this.ignoreColumns = other.ignoreColumns;
+            this.maxBatchSize = other.maxBatchSize;
+            this.metrics = metrics;
         }
 
-        @Override
-        public Client copy() {
-            return new CQLClient(this);
+        public CQLClient copy() {
+            return new CQLClient(this, metrics.newChild());
         }
 
         public Cluster getCluster( ) {
@@ -435,6 +469,7 @@ public class BulkLoader {
                     return blob.format(value);
                 }
             });
+            ++metrics.typesCreated;
         }
 
         /**
@@ -464,6 +499,7 @@ public class BulkLoader {
                     return atype.getString(atype.decompose(value));
                 }
             });
+            ++metrics.typesCreated;
         }
 
         private static CQL3Type.Raw getCql3Type(DataType dt) throws Exception {
@@ -507,7 +543,6 @@ public class BulkLoader {
         private final Semaphore semaphore = new Semaphore(maxStatements);
         private final Semaphore preparations = new Semaphore(maxStatements);
 
-        @Override
         public void close() {
             try {
                 preparations.acquire(maxStatements);
@@ -546,12 +581,14 @@ public class BulkLoader {
                         @Override
                         public void onSuccess(ResultSet result) {
                             semaphore.release();
+                            ++metrics.statementsSent;
                         }
 
                         @Override
                         public void onFailure(Throwable t) {
                             semaphore.release();
-                            System.err.println(t);
+                            ++metrics.statementsFailed;
+                            out.println(t);
                         }
                     }, MoreExecutors.directExecutor());
                 } finally {
@@ -574,6 +611,7 @@ public class BulkLoader {
                 send(batchStatement);
                 batchStatement = null;
                 batchSize = 0;
+                ++metrics.batchesProcessed;
             }
             if (batch) {
                 batchStatement = new BatchStatement(BatchStatement.Type.UNLOGGED);
@@ -644,7 +682,6 @@ public class BulkLoader {
             return cfm;
         }
 
-        @Override
         public Map<InetAddress, Collection<Range<Token>>> getEndpointRanges() {
             HashMap<InetAddress, Collection<Range<Token>>> map = new HashMap<>();
             for (TokenRange range : metadata.getTokenRanges()) {
@@ -665,7 +702,6 @@ public class BulkLoader {
             return keyspaceMetadata.getName();
         }
 
-        @Override
         public IPartitioner getPartitioner() {
             return partitioner;
         }
@@ -677,15 +713,15 @@ public class BulkLoader {
         @Override
         public void processStatment(DecoratedKey key, long timestamp, String what,
                 Map<String, Object> objects) {
-            if (verbose) {
-                System.out.print("CQL: '");
-                System.out.print(what);
-                System.out.print("'");
+            if (verbose.greaterOrEqual(Verbosity.Chatty)) {
+                out.print("CQL: '");
+                out.print(what);
+                out.print("'");
                 if (!objects.isEmpty()) {
-                    System.out.print(" ");
-                    System.out.print(objects);
+                    out.print(" ");
+                    out.print(objects);
                 }
-                System.out.println();
+                out.println();
             }
 
             if (preparedStatements != null) {
@@ -707,8 +743,8 @@ public class BulkLoader {
         private void sendPrepared(final DecoratedKey key, final long timestamp, String what,
                 final Map<String, Object> objects) {
             ListenableFuture<PreparedStatement> f = preparedStatements.computeIfAbsent(what, k -> {
-                if (verbose) {
-                    System.out.println("Preparing: " + k + " on thread " + Thread.currentThread().getId());
+                if (verbose.greaterOrEqual(Verbosity.Chatty)) {
+                    out.println("Preparing: " + k + " on thread " + Thread.currentThread().getId());
                 }
                 return session.prepareAsync(k);
             });
@@ -789,12 +825,14 @@ public class BulkLoader {
                         s.setDefaultTimestamp(timestamp);
                         send(key, s);
                         preparations.release();
+                        ++metrics.preparationsDone;
                     }
 
                     @Override
                     public void onFailure(Throwable t) {
                         preparations.release();
-                        System.err.println(t);
+                        ++metrics.preparationsFailed;
+                        out.println(t);
                     }
                 }, MoreExecutors.directExecutor());
             } catch (InterruptedException e) {
@@ -888,7 +926,14 @@ public class BulkLoader {
 
                 LoaderOptions opts = new LoaderOptions(dir);
 
-                opts.verbose = cmd.hasOption(VERBOSE_OPTION);
+                if (cmd.hasOption(VERBOSE_OPTION)) {
+                    try {
+                        int level = Integer.parseInt(cmd.getOptionValue(VERBOSE_OPTION, "2"));
+                        opts.verbose = Verbosity.values()[level];
+                    } catch (Exception e) {
+                        errorMsg("Invalid verbosity level", options);
+                    }
+                }
                 opts.simulate = cmd.hasOption(SIMULATE);
                 opts.noProgress = cmd.hasOption(NOPROGRESS_OPTION);
                 opts.infiniteRetry = !cmd.hasOption(NO_INFINITE_RETRY_OPTION);
@@ -1066,7 +1111,7 @@ public class BulkLoader {
         public final File directory;
         public boolean ssl;
         public boolean debug;
-        public boolean verbose;
+        public Verbosity verbose = Verbosity.Normal;
         public boolean simulate;
         public boolean noProgress;
         public int port = 9042;
@@ -1142,9 +1187,9 @@ public class BulkLoader {
 
     public static void main(String args[]) {
         Config.setClientMode(true);
-        LoaderOptions options = LoaderOptions.parseArgs(args);
+        final LoaderOptions options = LoaderOptions.parseArgs(args);
+        final ExecutorService executor = Executors.newFixedThreadPool(options.threadCount);
 
-        CQLClient client = null;
         try {
             File dir = options.directory;
             if (dir.isFile()) {
@@ -1159,20 +1204,181 @@ public class BulkLoader {
                 dir = dir.getParentFile().getParentFile();
             }
 
-            String keyspace = dir.getParentFile().getName();
+            final String keyspace = dir.getParentFile().getName();
+            final CQLClient client = new CQLClient(options, keyspace);
 
-            try {
-                client = new CQLClient(options, keyspace);
-                SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client, options.unset && options.prepare,
-                        new ColumnNamesMapping(options.columnNamesMappings), options.threadCount);
-                ssTableToCQL.stream(options.directory);
-                System.exit(0);
-            } finally {
-                client.close();
+            // Hack. Must do because Range mangling code in cassandra is
+            // broken, and does not preserve input range objects internal
+            // "partitioner" field.
+            DatabaseDescriptor.setPartitionerUnsafe(client.getPartitioner());
+
+            final Map<InetAddress, Collection<Range<Token>>> ranges = getRanges(client);
+            final List<File> files = findFiles(dir);
+            final ConcurrentLinkedQueue<SSTableToCQL> tasks = new ConcurrentLinkedQueue<>();
+            final CountDownLatch latch = new CountDownLatch(options.threadCount);
+            final ColumnNamesMapping columnNamesMapping = new ColumnNamesMapping(options.columnNamesMappings);
+
+            for (int i = 0; i < options.threadCount; ++i) {
+                executor.submit(() -> {
+                    try {
+                        process(options, keyspace, tasks, files, ranges, client, columnNamesMapping);
+                    } finally {
+                        latch.countDown();
+                    }
+                });
             }
+
+            boolean done = false;
+            do {
+                done = latch.await(1, TimeUnit.SECONDS);
+                printSummary(client);
+            } while (!done);
+
+            System.out.println();
+            System.exit(0);
         } catch (Throwable t) {
+            executor.shutdownNow();
             t.printStackTrace();
             System.exit(1);
+        }
+    }
+
+    private static void printSummary(CQLClient client) {
+        if (client.verbose.greaterOrEqual(Verbosity.Normal)) {
+            Metrics sum = client.metrics.sum();     
+            System.out.format("%1$8d statements sent (%2$ 8d in batches, %3$8d failed).\r", sum.statementsSent,
+                    sum.batchesProcessed, sum.statementsFailed);
+        }
+    }
+
+    private static Map<InetAddress, Collection<Range<Token>>> getRanges(CQLClient client) {
+        Map<InetAddress, Collection<Range<Token>>> ranges = client.getEndpointRanges();
+        if (ranges == null || ranges.isEmpty()) {
+            ranges = Collections.singletonMap(null, null);
+        }
+        return ranges;
+    }
+
+    public static List<File> findFiles(File dir) {
+        final List<File> files = new LinkedList<>();
+
+        // Find all file candidates.
+        if (!dir.isDirectory()) {
+            files.add(dir);
+        } else {
+            dir.list(new FilenameFilter() {
+                @Override
+                public boolean accept(File dir, String name) {
+                    File f = new File(dir, name);
+                    if (f.isDirectory()) {
+                        return false;
+                    }
+                    files.add(f);
+                    return false;
+                }
+            });
+        }
+        return files;
+    }
+
+    public static SSTableReader openFile(String keyspace, File dir, String name, ColumnNamesMapping columnNamesMapping,
+            Client client) {
+        Pair<Descriptor, Component> p = SSTable.tryComponentFromFilename(dir, name);
+        Descriptor desc = p == null ? null : p.left;
+        if (p == null || !p.right.equals(Component.DATA)) {
+            return null;
+        }
+
+        if (!new File(desc.filenameFor(Component.PRIMARY_INDEX)).exists()) {
+            logger.info("Skipping file {} because index is missing", name);
+            return null;
+        }
+
+        CFMetaData metadata = client.getCFMetaData(keyspace, desc.cfname);
+        if (metadata == null) {
+            logger.info("Skipping file {}: column family {}.{} doesn't exist", name, keyspace, desc.cfname);
+            return null;
+        }
+
+        Set<Component> components = new HashSet<>();
+        components.add(Component.DATA);
+        components.add(Component.PRIMARY_INDEX);
+        if (new File(desc.filenameFor(Component.SUMMARY)).exists()) {
+            components.add(Component.SUMMARY);
+        }
+        if (new File(desc.filenameFor(Component.COMPRESSION_INFO)).exists()) {
+            components.add(Component.COMPRESSION_INFO);
+        }
+        if (new File(desc.filenameFor(Component.STATS)).exists()) {
+            components.add(Component.STATS);
+        }
+
+        try {
+            // To conserve memory, open SSTableReaders without bloom
+            // filters and discard
+            // the index summary after calculating the file sections to
+            // stream and the estimated
+            // number of keys for each endpoint. See CASSANDRA-5555 for
+            // details.
+            return openForBatch(desc, components, columnNamesMapping.getMetadata(metadata));
+        } catch (IOException e) {
+            logger.warn("Skipping file {}, error opening it: {}", name, e.getMessage());
+        }
+        return null;
+    }
+
+    // Main processing loop for worker thread, broken out into function
+    private static void process(LoaderOptions options, String keyspace, ConcurrentLinkedQueue<SSTableToCQL> tasks,
+            List<File> files, Map<InetAddress, Collection<Range<Token>>> ranges, CQLClient client,
+            ColumnNamesMapping columnNamesMapping) {
+        // always use a copy of the client to keep from
+        // colliding with other threads.
+        CQLClient c = client.copy();
+        try {
+            boolean triedFiles = false;
+            while (!Thread.interrupted()) {
+                // First try to get a ready task to process (i.e.
+                // sstable slice)
+                SSTableToCQL t;
+                if ((t = tasks.poll()) != null) {
+                    t.run(c);
+                    continue;
+                }
+
+                // need to synchronize here so all executor threads wait
+                // for the last file to be turned into tasks.
+                synchronized (files) {
+                    // Be greedy until we find a loadable file or run out
+                    // of sources.
+                    for (;;) {
+                        if (files.isEmpty() && triedFiles) {
+                            return;
+                        }
+                        if (files.isEmpty()) {
+                            triedFiles = true;
+                            continue; // see if any tasks.
+                        }
+                        File f = files.remove(0);
+                        SSTableReader r = openFile(keyspace, f.getParentFile(), f.getName(), columnNamesMapping,
+                                client);
+                        if (r != null) {
+                            // We could open it. Turn into tasks and submit to
+                            // workers.
+                            if (client.verbose.greaterOrEqual(Verbosity.Verbose)) {
+                                client.out.println("Adding sstable " + f.getName());
+                            }
+                            for (Map.Entry<InetAddress, Collection<Range<Token>>> e : ranges.entrySet()) {
+                                tasks.add(new SSTableToCQL(e.getKey(), r, e.getValue(), columnNamesMapping, f,
+                                        options.unset && options.prepare));
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        } finally {
+            // drain all remaining statements in queue before terminating.
+            c.close();
         }
     }
 }
