@@ -1,13 +1,11 @@
 package com.scylladb.tools;
 
-import static com.scylladb.tools.BulkLoader.findFiles;
-import static com.scylladb.tools.BulkLoader.openFile;
-
 import java.io.File;
 import java.net.InetAddress;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -18,14 +16,25 @@ import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Murmur3Partitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.junit.Assert;
 import org.junit.Test;
 
 public class ColumnNamesMappingTest {
+
+    private static final int THREADS_COUNT = 1;
+
     private static class MockClient implements Client {
 
         private final Set<String> statements = new HashSet<>();
+
+        @Override
+        public void close() {
+        }
+
+        @Override
+        public Client copy() {
+            throw new UnsupportedOperationException();
+        }
 
         @Override
         public CFMetaData getCFMetaData(String keyspace, String cfName) {
@@ -38,6 +47,16 @@ public class ColumnNamesMappingTest {
                     .addRegularColumn("new_val1", Int32Type.instance)
                     .addRegularColumn("new_val2", Int32Type.instance)
                     .build();
+        }
+
+        @Override
+        public Map<InetAddress, Collection<Range<Token>>> getEndpointRanges() {
+            return null;
+        }
+
+        @Override
+        public IPartitioner getPartitioner() {
+            return new Murmur3Partitioner();
         }
 
         @Override
@@ -68,15 +87,8 @@ public class ColumnNamesMappingTest {
         mapping.put("val2", "new_val2");
 
         MockClient client = new MockClient();
-        ColumnNamesMapping columnNamesMapping = new ColumnNamesMapping(mapping);
-        for (File f : findFiles(dir)) {
-            SSTableReader r = openFile(keyspace, dir, f.getName(), columnNamesMapping, client);
-            if (r == null) {
-                continue;
-            }
-            SSTableToCQL ssTableToCQL = new SSTableToCQL(null, r, null, columnNamesMapping, f, false);
-            ssTableToCQL.run(client);
-        }
+        SSTableToCQL ssTableToCQL = new SSTableToCQL(keyspace, client, false, new ColumnNamesMapping(mapping), THREADS_COUNT);
+        ssTableToCQL.stream(dir);
         client.assertStatements();
     }
 

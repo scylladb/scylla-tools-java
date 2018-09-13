@@ -26,21 +26,37 @@ package com.scylladb.tools;
 import static java.util.concurrent.TimeUnit.MICROSECONDS;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.apache.cassandra.io.sstable.format.SSTableReader.openForBatch;
 import static org.apache.cassandra.utils.UUIDGen.getUUID;
 
 import java.io.File;
+import java.io.FilenameFilter;
+import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
+import java.security.KeyManagementException;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
+import java.security.UnrecoverableKeyException;
+import java.security.cert.CertificateException;
 import java.util.ArrayDeque;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ClusteringPrefix;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.DeletionTime;
@@ -62,10 +78,13 @@ import org.apache.cassandra.db.rows.Unfiltered;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.io.sstable.Component;
+import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
+import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.utils.Pair;
-import org.apache.cassandra.utils.concurrent.Ref;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -855,41 +874,204 @@ public class SSTableToCQL {
 
     private static final Logger logger = LoggerFactory.getLogger(SSTableToCQL.class);
 
-    private final InetAddress address;
-    private final Ref<SSTableReader> readerRef;
-    private final Collection<Range<Token>> range;
+    private final Client client;
+
+    private final String keyspace;
+
     private final ColumnNamesMapping columnNamesMapping;
-    private final File file;
+
+    private final int threadCount;
+
     private final boolean setAllColumns;
 
-    public SSTableToCQL(InetAddress address, SSTableReader reader, Collection<Range<Token>> range,
-            ColumnNamesMapping columnNamesMapping, File file, boolean setAllColumns) {
-        this.address = address;
-        this.readerRef = reader.ref();
-        this.range = range;
+    public SSTableToCQL(String keyspace, Client client, boolean setAllColumns, ColumnNamesMapping columnNamesMapping, int threadCount) {
+        this.client = client;
+        this.keyspace = keyspace;
+        this.threadCount = threadCount;
         this.columnNamesMapping = columnNamesMapping;
-        this.file = file;
         this.setAllColumns = setAllColumns;
     }
 
-    /** 
-     * Performs the transformation of the SSTable to CQL statements. 
-     * This can be called exactly once. 
-     * @param client
-     */
-    public void run(Client client) {
-        SSTableReader reader = readerRef.get();
-        ISSTableScanner scanner = range != null ? reader.getScanner(range, null) : reader.getScanner();
+    private CFMetaData getCFMetaData(String keyspace, String cfName) {
+        return client.getCFMetaData(keyspace, cfName);
+    }
+
+    private SSTableReader openFile(File dir, String name) {
+        Pair<Descriptor, Component> p = SSTable.tryComponentFromFilename(dir, name);
+        Descriptor desc = p == null ? null : p.left;
+        if (p == null || !p.right.equals(Component.DATA)) {
+            return null;
+        }
+
+        if (!new File(desc.filenameFor(Component.PRIMARY_INDEX)).exists()) {
+            logger.info("Skipping file {} because index is missing", name);
+            return null;
+        }
+
+        CFMetaData metadata = getCFMetaData(keyspace, desc.cfname);
+        if (metadata == null) {
+            logger.info("Skipping file {}: column family {}.{} doesn't exist", name, keyspace, desc.cfname);
+            return null;
+        }
+
+        Set<Component> components = new HashSet<>();
+        components.add(Component.DATA);
+        components.add(Component.PRIMARY_INDEX);
+        if (new File(desc.filenameFor(Component.SUMMARY)).exists()) {
+            components.add(Component.SUMMARY);
+        }
+        if (new File(desc.filenameFor(Component.COMPRESSION_INFO)).exists()) {
+            components.add(Component.COMPRESSION_INFO);
+        }
+        if (new File(desc.filenameFor(Component.STATS)).exists()) {
+            components.add(Component.STATS);
+        }
+
         try {
-            RowBuilder builder = new RowBuilder(client, setAllColumns, columnNamesMapping);
-            logger.info("Processing {} on address {}", file.getName(), address);
-            while (scanner.hasNext()) {
-                UnfilteredRowIterator ri = scanner.next();
-                builder.process(ri);
+            // To conserve memory, open SSTableReaders without bloom
+            // filters and discard
+            // the index summary after calculating the file sections to
+            // stream and the estimated
+            // number of keys for each endpoint. See CASSANDRA-5555 for
+            // details.
+            return openForBatch(desc, components, columnNamesMapping.getMetadata(metadata));
+        } catch (IOException e) {
+            logger.warn("Skipping file {}, error opening it: {}", name, e.getMessage());
+        }
+        return null;
+    }
+
+    private Map<InetAddress, Collection<Range<Token>>> getRanges() {
+        Map<InetAddress, Collection<Range<Token>>> ranges = client.getEndpointRanges();
+        if (ranges == null || ranges.isEmpty()) {
+            ranges = Collections.singletonMap(null, null);
+        }
+        return ranges;
+    }
+
+    private class ProcessTask {
+        private final InetAddress address;
+        private final SSTableReader reader;
+        private final Collection<Range<Token>> range;
+        private final File file;
+        
+        ProcessTask(InetAddress address, SSTableReader reader, Collection<Range<Token>> range, File file) {
+            this.address = address;
+            this.reader = reader;
+            this.range = range;
+            this.file = file;
+        }
+
+        public void run(Client client) {
+            ISSTableScanner scanner = range != null ? reader.getScanner(range, null) : reader.getScanner();
+            try {
+                RowBuilder builder = new RowBuilder(client, setAllColumns, columnNamesMapping);
+                logger.info("Processing {} on address {}", file.getName(), address);
+                while (scanner.hasNext()) {
+                    UnfilteredRowIterator ri = scanner.next();
+                    builder.process(ri);
+                }
+            } finally {
+                scanner.close();
+            }
+        }
+    }
+
+    public void stream(File directoryOrSStable)
+            throws IOException, ConfigurationException, UnrecoverableKeyException, KeyManagementException,
+            NoSuchAlgorithmException, KeyStoreException, CertificateException, InterruptedException {
+        // Hack. Must do because Range mangling code in cassandra is
+        // broken, and does not preserve input range objects internal
+        // "partitioner" field.
+        DatabaseDescriptor.setPartitionerUnsafe(client.getPartitioner());
+
+        final Map<InetAddress, Collection<Range<Token>>> ranges = getRanges();
+        final List<File> files = new LinkedList<>();
+        final ConcurrentLinkedQueue<ProcessTask> tasks = new ConcurrentLinkedQueue<>();
+
+        // Find all file candidates. 
+        if (!directoryOrSStable.isDirectory()) {
+            files.add(directoryOrSStable);
+        } else {
+            directoryOrSStable.list(new FilenameFilter() {
+                @Override
+                public boolean accept(File dir, String name) {
+                    File f = new File(dir, name);
+                    if (f.isDirectory()) {
+                        return false;
+                    }
+                    files.add(f);
+                    return false;
+                }
+            });
+        }
+
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+
+        final CountDownLatch latch = new CountDownLatch(threadCount);
+
+        for (int i = 0; i < threadCount; ++i) {
+            executor.submit(() -> {
+                try {
+                    process(tasks, files, ranges);
+                } finally {
+                    latch.countDown();
+                }
+            });
+        }
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            throw e;
+        }
+    }
+
+    // Main processing loop for worker thread, broken out into function
+    private void process(ConcurrentLinkedQueue<ProcessTask> tasks, List<File> files,
+            Map<InetAddress, Collection<Range<Token>>> ranges) {
+        // always use a copy of the client to keep from 
+        // colliding with other threads. 
+        Client c = client.copy();
+        try {
+            boolean triedFiles = false;
+            while (!Thread.interrupted()) {
+                // First try to get a ready task to process (i.e. 
+                // sstable slice)
+                ProcessTask t;
+                if ((t = tasks.poll()) != null) {
+                    t.run(c);
+                    continue;
+                }
+
+                // need to synchronize here so all executor threads wait 
+                // for the last file to be turned into tasks. 
+                synchronized (files) {
+                    // Be greedy until we find a loadable file or run out
+                    // of sources. 
+                    for (;;) {
+                        if (files.isEmpty() && triedFiles) {
+                            return;
+                        }
+                        if (files.isEmpty()) {
+                            triedFiles = true;
+                            continue; // see if any tasks.
+                        }
+                        File f = files.remove(0);
+                        SSTableReader r = openFile(f.getParentFile(), f.getName());
+                        if (r != null) {
+                            // We could open it. Turn into tasks and submit to workers. 
+                            for (Map.Entry<InetAddress, Collection<Range<Token>>> e : ranges.entrySet()) {
+                                tasks.add(new ProcessTask(e.getKey(), r, e.getValue(), f));
+                            }
+                            break;
+                        }
+                    }
+                }
             }
         } finally {
-            scanner.close();
-            readerRef.release();
+            // drain all remaining statements in queue before terminating. 
+            c.close();
         }
     }
 }
