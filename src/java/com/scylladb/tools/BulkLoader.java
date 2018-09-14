@@ -1253,7 +1253,7 @@ public class BulkLoader {
     private static void printSummary(CQLClient client) {
         if (client.verbose.greaterOrEqual(Verbosity.Normal)) {
             Metrics sum = client.metrics.sum();     
-            System.out.format("%1$8d statements sent (%2$ 8d in batches, %3$8d failed).\r", sum.statementsSent,
+            System.out.format("%1$8d statements sent (in %2$8d batches, %3$8d failed).\r", sum.statementsSent,
                     sum.batchesProcessed, sum.statementsFailed);
         }
     }
