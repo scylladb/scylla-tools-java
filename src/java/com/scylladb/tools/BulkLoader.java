@@ -767,9 +767,15 @@ public class BulkLoader {
                                     // allow null object
                                     if (objects.containsKey(name)) {
                                         Object value = objects.get(name);
-                                        // CMH. driver special treats token values, but
-                                        // we know we will never get a driver type token here.
-                                        s.set(name, value, r.codecFor(d.getType(), value));
+                                        if (value == null) {
+                                            // various types do not allow null as value, 
+                                            // but we should be able to null a column
+                                            s.setToNull(name);
+                                        } else {
+                                            // CMH. driver special treats token values, but
+                                            // we know we will never get a driver type token here.
+                                            s.set(name, value, r.codecFor(d.getType(), value));
+                                        }
                                     }
                                 }
                                 break;
