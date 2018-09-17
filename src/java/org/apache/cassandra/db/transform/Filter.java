@@ -23,27 +23,23 @@ package org.apache.cassandra.db.transform;
 import org.apache.cassandra.db.DeletionPurger;
 import org.apache.cassandra.db.rows.*;
 
-final class Filter extends Transformation
+public final class Filter extends Transformation
 {
-    private final boolean filterEmpty; // generally maps to !isForThrift, but also false for direct row filtration
     private final int nowInSec;
-    public Filter(boolean filterEmpty, int nowInSec)
+    private final boolean enforceStrictLiveness;
+
+    public Filter(int nowInSec, boolean enforceStrictLiveness)
     {
-        this.filterEmpty = filterEmpty;
         this.nowInSec = nowInSec;
+        this.enforceStrictLiveness = enforceStrictLiveness;
     }
 
     @Override
     protected RowIterator applyToPartition(BaseRowIterator iterator)
     {
-        RowIterator filtered = iterator instanceof UnfilteredRows
-                               ? new FilteredRows(this, (UnfilteredRows) iterator)
-                               : new FilteredRows((UnfilteredRowIterator) iterator, this);
-
-        if (filterEmpty && closeIfEmpty(filtered))
-            return null;
-
-        return filtered;
+        return iterator instanceof UnfilteredRows
+             ? new FilteredRows(this, (UnfilteredRows) iterator)
+             : new FilteredRows((UnfilteredRowIterator) iterator, this);
     }
 
     @Override
@@ -52,29 +48,19 @@ final class Filter extends Transformation
         if (row.isEmpty())
             return Rows.EMPTY_STATIC_ROW;
 
-        row = row.purge(DeletionPurger.PURGE_ALL, nowInSec);
+        row = row.purge(DeletionPurger.PURGE_ALL, nowInSec, enforceStrictLiveness);
         return row == null ? Rows.EMPTY_STATIC_ROW : row;
     }
 
     @Override
     protected Row applyToRow(Row row)
     {
-        return row.purge(DeletionPurger.PURGE_ALL, nowInSec);
+        return row.purge(DeletionPurger.PURGE_ALL, nowInSec, enforceStrictLiveness);
     }
 
     @Override
     protected RangeTombstoneMarker applyToMarker(RangeTombstoneMarker marker)
     {
         return null;
-    }
-
-    private static boolean closeIfEmpty(BaseRowIterator<?> iter)
-    {
-        if (iter.isEmpty())
-        {
-            iter.close();
-            return true;
-        }
-        return false;
     }
 }

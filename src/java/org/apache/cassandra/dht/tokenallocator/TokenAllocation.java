@@ -35,12 +35,14 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.locator.AbstractReplicationStrategy;
 import org.apache.cassandra.locator.IEndpointSnitch;
 import org.apache.cassandra.locator.NetworkTopologyStrategy;
 import org.apache.cassandra.locator.SimpleStrategy;
 import org.apache.cassandra.locator.TokenMetadata;
 import org.apache.cassandra.locator.TokenMetadata.Topology;
+import org.apache.cassandra.utils.FBUtilities;
 
 public class TokenAllocation
 {
@@ -51,19 +53,19 @@ public class TokenAllocation
                                                    final InetAddress endpoint,
                                                    int numTokens)
     {
-        StrategyAdapter strategy = getStrategy(tokenMetadata, rs, endpoint);
+        TokenMetadata tokenMetadataCopy = tokenMetadata.cloneOnlyTokenMap();
+        StrategyAdapter strategy = getStrategy(tokenMetadataCopy, rs, endpoint);
         Collection<Token> tokens = create(tokenMetadata, strategy).addUnit(endpoint, numTokens);
         tokens = adjustForCrossDatacenterClashes(tokenMetadata, strategy, tokens);
 
         if (logger.isWarnEnabled())
         {
             logger.warn("Selected tokens {}", tokens);
-            SummaryStatistics os = replicatedOwnershipStats(tokenMetadata, rs, endpoint);
-            TokenMetadata tokenMetadataCopy = tokenMetadata.cloneOnlyTokenMap();
+            SummaryStatistics os = replicatedOwnershipStats(tokenMetadataCopy, rs, endpoint);
             tokenMetadataCopy.updateNormalTokens(tokens, endpoint);
             SummaryStatistics ns = replicatedOwnershipStats(tokenMetadataCopy, rs, endpoint);
-            logger.warn("Replicated node load in datacentre before allocation " + statToString(os));
-            logger.warn("Replicated node load in datacentre after allocation " + statToString(ns));
+            logger.warn("Replicated node load in datacentre before allocation {}", statToString(os));
+            logger.warn("Replicated node load in datacentre after allocation {}", statToString(ns));
 
             // TODO: Is it worth doing the replicated ownership calculation always to be able to raise this alarm?
             if (ns.getStandardDeviation() > os.getStandardDeviation())
@@ -147,7 +149,7 @@ public class TokenAllocation
             if (strategy.inAllocationRing(en.getValue()))
                 sortedTokens.put(en.getKey(), en.getValue());
         }
-        return new ReplicationAwareTokenAllocator<>(sortedTokens, strategy, tokenMetadata.partitioner);
+        return TokenAllocatorFactory.createTokenAllocator(sortedTokens, strategy, tokenMetadata.partitioner);
     }
 
     interface StrategyAdapter extends ReplicationStrategy<InetAddress>
@@ -197,6 +199,31 @@ public class TokenAllocation
     {
         final String dc = snitch.getDatacenter(endpoint);
         final int replicas = rs.getReplicationFactor(dc);
+
+        if (replicas == 0 || replicas == 1)
+        {
+            // No replication, each node is treated as separate.
+            return new StrategyAdapter()
+            {
+                @Override
+                public int replicas()
+                {
+                    return 1;
+                }
+
+                @Override
+                public Object getGroup(InetAddress unit)
+                {
+                    return unit;
+                }
+
+                @Override
+                public boolean inAllocationRing(InetAddress other)
+                {
+                    return dc.equals(snitch.getDatacenter(other));
+                }
+            };
+        }
 
         Topology topology = tokenMetadata.getTopology();
         int racks = topology.getDatacenterRacks().get(dc).asMap().size();

@@ -22,15 +22,19 @@ import java.util.*;
 
 import com.google.common.collect.Iterators;
 
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.cql3.Term.Terminal;
 import org.apache.cassandra.cql3.functions.Function;
+import org.apache.cassandra.cql3.statements.RequestValidations;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.exceptions.InvalidRequestException;
-import org.apache.cassandra.transport.Server;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
-import static com.google.common.collect.Lists.newArrayList;
+import static org.apache.cassandra.cql3.statements.RequestValidations.checkFalse;
+import static org.apache.cassandra.cql3.statements.RequestValidations.invalidRequest;
 
 /**
  * A CQL3 condition on the value of a column or collection element.  For example, "UPDATE .. IF a = 0".
@@ -42,51 +46,77 @@ public class ColumnCondition
     // For collection, when testing the equality of a specific element, null otherwise.
     private final Term collectionElement;
 
+    // For UDT, when testing the equality of a specific field, null otherwise.
+    private final FieldIdentifier field;
+
     private final Term value;  // a single value or a marker for a list of IN values
     private final List<Term> inValues;
 
     public final Operator operator;
 
-    private ColumnCondition(ColumnDefinition column, Term collectionElement, Term value, List<Term> inValues, Operator op)
+    private ColumnCondition(ColumnDefinition column, Term collectionElement, FieldIdentifier field, Term value, List<Term> inValues, Operator op)
     {
         this.column = column;
         this.collectionElement = collectionElement;
+        this.field = field;
         this.value = value;
         this.inValues = inValues;
         this.operator = op;
 
+        assert field == null || collectionElement == null;
         if (operator != Operator.IN)
             assert this.inValues == null;
     }
 
+    // Public for SuperColumn tables support only
+    public Term value()
+    {
+        return value;
+    }
+
     public static ColumnCondition condition(ColumnDefinition column, Term value, Operator op)
     {
-        return new ColumnCondition(column, null, value, null, op);
+        return new ColumnCondition(column, null, null, value, null, op);
     }
 
     public static ColumnCondition condition(ColumnDefinition column, Term collectionElement, Term value, Operator op)
     {
-        return new ColumnCondition(column, collectionElement, value, null, op);
+        return new ColumnCondition(column, collectionElement, null, value, null, op);
+    }
+
+    public static ColumnCondition condition(ColumnDefinition column, FieldIdentifier udtField, Term value, Operator op)
+    {
+        return new ColumnCondition(column, null, udtField, value, null, op);
     }
 
     public static ColumnCondition inCondition(ColumnDefinition column, List<Term> inValues)
     {
-        return new ColumnCondition(column, null, null, inValues, Operator.IN);
+        return new ColumnCondition(column, null, null, null, inValues, Operator.IN);
     }
 
     public static ColumnCondition inCondition(ColumnDefinition column, Term collectionElement, List<Term> inValues)
     {
-        return new ColumnCondition(column, collectionElement, null, inValues, Operator.IN);
+        return new ColumnCondition(column, collectionElement, null, null, inValues, Operator.IN);
+    }
+
+    public static ColumnCondition inCondition(ColumnDefinition column, FieldIdentifier udtField, List<Term> inValues)
+    {
+        return new ColumnCondition(column, null, udtField, null, inValues, Operator.IN);
     }
 
     public static ColumnCondition inCondition(ColumnDefinition column, Term inMarker)
     {
-        return new ColumnCondition(column, null, inMarker, null, Operator.IN);
+        return new ColumnCondition(column, null, null, inMarker, null, Operator.IN);
     }
 
     public static ColumnCondition inCondition(ColumnDefinition column, Term collectionElement, Term inMarker)
     {
-        return new ColumnCondition(column, collectionElement, inMarker, null, Operator.IN);
+        return new ColumnCondition(column, collectionElement, null, inMarker, null, Operator.IN);
+    }
+
+    public static ColumnCondition inCondition(ColumnDefinition column, FieldIdentifier udtField, Term inMarker)
+    {
+        return new ColumnCondition(column, null, udtField, inMarker, null, Operator.IN);
     }
 
     public void addFunctionsTo(List<Function> functions)
@@ -128,11 +158,19 @@ public class ColumnCondition
         boolean isInCondition = operator == Operator.IN;
         if (column.type instanceof CollectionType)
         {
-            if (collectionElement == null)
-                return isInCondition ? new CollectionInBound(this, options) : new CollectionBound(this, options);
-            else
+            if (collectionElement != null)
                 return isInCondition ? new ElementAccessInBound(this, options) : new ElementAccessBound(this, options);
+            else
+                return isInCondition ? new CollectionInBound(this, options) : new CollectionBound(this, options);
         }
+        else if (column.type.isUDT())
+        {
+            if (field != null)
+                return isInCondition ? new UDTFieldAccessInBound(this, options) : new UDTFieldAccessBound(this, options);
+            else
+                return isInCondition ? new UDTInBound(this, options) : new UDTBound(this, options);
+        }
+
         return isInCondition ? new SimpleInBound(this, options) : new SimpleBound(this, options);
     }
 
@@ -213,6 +251,35 @@ public class ColumnCondition
         return complexData == null ? Collections.<Cell>emptyIterator() : complexData.iterator();
     }
 
+    private static boolean evaluateComparisonWithOperator(int comparison, Operator operator)
+    {
+        // called when comparison != 0
+        switch (operator)
+        {
+            case EQ:
+                return false;
+            case LT:
+            case LTE:
+                return comparison < 0;
+            case GT:
+            case GTE:
+                return comparison > 0;
+            case NEQ:
+                return true;
+            default:
+                throw new AssertionError();
+        }
+    }
+
+    private static ByteBuffer cellValueAtIndex(Iterator<Cell> iter, int index)
+    {
+        int adv = Iterators.advance(iter, index);
+        if (adv == index && iter.hasNext())
+            return iter.next().value();
+        else
+            return null;
+    }
+
     /**
      * A condition on a single non-collection column. This does not support IN operators (see SimpleInBound).
      */
@@ -223,7 +290,7 @@ public class ColumnCondition
         private SimpleBound(ColumnCondition condition, QueryOptions options) throws InvalidRequestException
         {
             super(condition.column, condition.operator);
-            assert !(column.type instanceof CollectionType) && condition.collectionElement == null;
+            assert !(column.type instanceof CollectionType) && condition.field == null;
             assert condition.operator != Operator.IN;
             this.value = condition.value.bindAndGet(options);
         }
@@ -244,15 +311,29 @@ public class ColumnCondition
         private SimpleInBound(ColumnCondition condition, QueryOptions options) throws InvalidRequestException
         {
             super(condition.column, condition.operator);
-            assert !(column.type instanceof CollectionType) && condition.collectionElement == null;
+            assert !(column.type instanceof CollectionType) && condition.field == null;
             assert condition.operator == Operator.IN;
             if (condition.inValues == null)
-                this.inValues = ((Lists.Value) condition.value.bind(options)).getElements();
+            {
+                Terminal terminal = condition.value.bind(options);
+
+                if (terminal == null)
+                    throw new InvalidRequestException("Invalid null list in IN condition");
+
+                if (terminal == Constants.UNSET_VALUE)
+                    throw new InvalidRequestException("Invalid 'unset' value in condition");
+
+                this.inValues = ((Lists.Value) terminal).getElements();
+            }
             else
             {
                 this.inValues = new ArrayList<>(condition.inValues.size());
                 for (Term value : condition.inValues)
-                    this.inValues.add(value.bindAndGet(options));
+                {
+                    ByteBuffer buffer = value.bindAndGet(options);
+                    if (buffer != ByteBufferUtil.UNSET_BYTE_BUFFER)
+                        this.inValues.add(value.bindAndGet(options));
+                }
             }
         }
 
@@ -308,7 +389,7 @@ public class ColumnCondition
             ListType listType = (ListType) column.type;
             if (column.type.isMultiCell())
             {
-                ByteBuffer columnValue = getListItem(getCells(row, column), getListIndex(collectionElement));
+                ByteBuffer columnValue = cellValueAtIndex(getCells(row, column), getListIndex(collectionElement));
                 return compareWithOperator(operator, ((ListType)column.type).getElementsType(), value, columnValue);
             }
             else
@@ -325,15 +406,6 @@ public class ColumnCondition
             if (idx < 0)
                 throw new InvalidRequestException(String.format("Invalid negative list index %d", idx));
             return idx;
-        }
-
-        static ByteBuffer getListItem(Iterator<Cell> iter, int index)
-        {
-            int adv = Iterators.advance(iter, index);
-            if (adv == index && iter.hasNext())
-                return iter.next().value();
-            else
-                return null;
         }
 
         public ByteBuffer getCollectionElementValue()
@@ -354,12 +426,22 @@ public class ColumnCondition
             this.collectionElement = condition.collectionElement.bindAndGet(options);
 
             if (condition.inValues == null)
-                this.inValues = ((Lists.Value) condition.value.bind(options)).getElements();
+            {
+                Terminal terminal = condition.value.bind(options);
+                if (terminal == Constants.UNSET_VALUE)
+                    throw new InvalidRequestException("Invalid 'unset' value in condition");
+                this.inValues = ((Lists.Value) terminal).getElements();
+            }
             else
             {
                 this.inValues = new ArrayList<>(condition.inValues.size());
                 for (Term value : condition.inValues)
-                    this.inValues.add(value.bindAndGet(options));
+                {
+                    ByteBuffer buffer = value.bindAndGet(options);
+                    // We want to ignore unset values
+                    if (buffer != ByteBufferUtil.UNSET_BYTE_BUFFER)
+                        this.inValues.add(buffer);
+                }
             }
         }
 
@@ -368,71 +450,46 @@ public class ColumnCondition
             if (collectionElement == null)
                 throw new InvalidRequestException("Invalid null value for " + (column.type instanceof MapType ? "map" : "list") + " element access");
 
+            ByteBuffer cellValue;
+            AbstractType<?> valueType;
             if (column.type instanceof MapType)
             {
                 MapType mapType = (MapType) column.type;
-                AbstractType<?> valueType = mapType.getValuesType();
+                valueType = mapType.getValuesType();
                 if (column.type.isMultiCell())
                 {
-                    Cell item = getCell(row, column, CellPath.create(collectionElement));
-                    for (ByteBuffer value : inValues)
-                    {
-                        if (isSatisfiedByValue(value, item, valueType, Operator.EQ))
-                            return true;
-                    }
-                    return false;
+                    Cell cell = getCell(row, column, CellPath.create(collectionElement));
+                    cellValue = cell == null ? null : cell.value();
                 }
                 else
                 {
                     Cell cell = getCell(row, column);
-                    ByteBuffer mapElementValue = cell == null
-                                               ? null
-                                               : mapType.getSerializer().getSerializedValue(cell.value(), collectionElement, mapType.getKeysType());
-                    for (ByteBuffer value : inValues)
-                    {
-                        if (value == null)
-                        {
-                            if (mapElementValue == null)
-                                return true;
-                            continue;
-                        }
-                        if (valueType.compare(value, mapElementValue) == 0)
-                            return true;
-                    }
-                    return false;
+                    cellValue = cell == null
+                              ? null
+                              : mapType.getSerializer().getSerializedValue(cell.value(), collectionElement, mapType.getKeysType());
+                }
+            }
+            else // ListType
+            {
+                ListType listType = (ListType) column.type;
+                valueType = listType.getElementsType();
+                if (column.type.isMultiCell())
+                {
+                    cellValue = cellValueAtIndex(getCells(row, column), ElementAccessBound.getListIndex(collectionElement));
+                }
+                else
+                {
+                    Cell cell = getCell(row, column);
+                    cellValue = cell == null
+                              ? null
+                              : listType.getSerializer().getElement(cell.value(), ElementAccessBound.getListIndex(collectionElement));
                 }
             }
 
-            ListType listType = (ListType) column.type;
-            AbstractType<?> elementsType = listType.getElementsType();
-            if (column.type.isMultiCell())
+            for (ByteBuffer value : inValues)
             {
-                ByteBuffer columnValue = ElementAccessBound.getListItem(getCells(row, column), ElementAccessBound.getListIndex(collectionElement));
-
-                for (ByteBuffer value : inValues)
-                {
-                    if (compareWithOperator(Operator.EQ, elementsType, value, columnValue))
-                        return true;
-                }
-            }
-            else
-            {
-                Cell cell = getCell(row, column);
-                ByteBuffer listElementValue = cell == null
-                                            ? null
-                                            : listType.getSerializer().getElement(cell.value(), ElementAccessBound.getListIndex(collectionElement));
-
-                for (ByteBuffer value : inValues)
-                {
-                    if (value == null)
-                    {
-                        if (listElementValue == null)
-                            return true;
-                        continue;
-                    }
-                    if (elementsType.compare(value, listElementValue) == 0)
-                        return true;
-                }
+                if (compareWithOperator(Operator.EQ, valueType, value, cellValue))
+                    return true;
             }
             return false;
         }
@@ -482,15 +539,19 @@ public class ColumnCondition
                 else
                     throw new InvalidRequestException(String.format("Invalid comparison with null for operator \"%s\"", operator));
             }
+            else if (cell == null) // cell is null but condition has a value
+            {
+                return false;
+            }
 
             // make sure we use v3 serialization format for comparison
             ByteBuffer conditionValue;
             if (type.kind == CollectionType.Kind.LIST)
-                conditionValue = ((Lists.Value) value).get(Server.VERSION_3);
+                conditionValue = ((Lists.Value) value).get(ProtocolVersion.V3);
             else if (type.kind == CollectionType.Kind.SET)
-                conditionValue = ((Sets.Value) value).get(Server.VERSION_3);
+                conditionValue = ((Sets.Value) value).get(ProtocolVersion.V3);
             else
-                conditionValue = ((Maps.Value) value).get(Server.VERSION_3);
+                conditionValue = ((Maps.Value) value).get(ProtocolVersion.V3);
 
             return compareWithOperator(operator, type, conditionValue, cell.value());
         }
@@ -534,26 +595,6 @@ public class ColumnCondition
 
             // they're equal
             return operator == Operator.EQ || operator == Operator.LTE || operator == Operator.GTE;
-        }
-
-        private static boolean evaluateComparisonWithOperator(int comparison, Operator operator)
-        {
-            // called when comparison != 0
-            switch (operator)
-            {
-                case EQ:
-                    return false;
-                case LT:
-                case LTE:
-                    return comparison < 0;
-                case GT:
-                case GTE:
-                    return comparison > 0;
-                case NEQ:
-                    return true;
-                default:
-                    throw new AssertionError();
-            }
         }
 
         static boolean listAppliesTo(ListType type, Iterator<Cell> iter, List<ByteBuffer> elements, Operator operator)
@@ -614,11 +655,22 @@ public class ColumnCondition
                 // We have a list of serialized collections that need to be deserialized for later comparisons
                 CollectionType collectionType = (CollectionType) column.type;
                 Lists.Marker inValuesMarker = (Lists.Marker) condition.value;
+                Terminal terminal = inValuesMarker.bind(options);
+
+                if (terminal == null)
+                    throw new InvalidRequestException("Invalid null list in IN condition");
+
+                if (terminal == Constants.UNSET_VALUE)
+                    throw new InvalidRequestException("Invalid 'unset' value in condition");
+
                 if (column.type instanceof ListType)
                 {
                     ListType deserializer = ListType.getInstance(collectionType.valueComparator(), false);
-                    for (ByteBuffer buffer : ((Lists.Value)inValuesMarker.bind(options)).elements)
+                    for (ByteBuffer buffer : ((Lists.Value) terminal).elements)
                     {
+                        if (buffer == ByteBufferUtil.UNSET_BYTE_BUFFER)
+                            continue;
+
                         if (buffer == null)
                             this.inValues.add(null);
                         else
@@ -628,8 +680,11 @@ public class ColumnCondition
                 else if (column.type instanceof MapType)
                 {
                     MapType deserializer = MapType.getInstance(collectionType.nameComparator(), collectionType.valueComparator(), false);
-                    for (ByteBuffer buffer : ((Lists.Value)inValuesMarker.bind(options)).elements)
+                    for (ByteBuffer buffer : ((Lists.Value) terminal).elements)
                     {
+                        if (buffer == ByteBufferUtil.UNSET_BYTE_BUFFER)
+                            continue;
+
                         if (buffer == null)
                             this.inValues.add(null);
                         else
@@ -639,8 +694,11 @@ public class ColumnCondition
                 else if (column.type instanceof SetType)
                 {
                     SetType deserializer = SetType.getInstance(collectionType.valueComparator(), false);
-                    for (ByteBuffer buffer : ((Lists.Value)inValuesMarker.bind(options)).elements)
+                    for (ByteBuffer buffer : ((Lists.Value) terminal).elements)
                     {
+                        if (buffer == ByteBufferUtil.UNSET_BYTE_BUFFER)
+                            continue;
+
                         if (buffer == null)
                             this.inValues.add(null);
                         else
@@ -651,7 +709,11 @@ public class ColumnCondition
             else
             {
                 for (Term value : condition.inValues)
-                    this.inValues.add(value.bind(options));
+                {
+                    Terminal terminal = value.bind(options);
+                    if (terminal != Constants.UNSET_VALUE)
+                        this.inValues.add(terminal);
+                }
             }
         }
 
@@ -678,13 +740,209 @@ public class ColumnCondition
                         if (cell == null)
                             return true;
                     }
-                    else if (type.compare(value.get(Server.VERSION_3), cell.value()) == 0)
+                    else if (type.compare(value.get(ProtocolVersion.V3), cell.value()) == 0)
                     {
                         return true;
                     }
                 }
                 return false;
             }
+        }
+    }
+
+    /** A condition on a UDT field. IN operators are not supported here, see UDTFieldAccessInBound. */
+    static class UDTFieldAccessBound extends Bound
+    {
+        public final FieldIdentifier field;
+        public final ByteBuffer value;
+
+        private UDTFieldAccessBound(ColumnCondition condition, QueryOptions options) throws InvalidRequestException
+        {
+            super(condition.column, condition.operator);
+            assert column.type.isUDT() && condition.field != null;
+            assert condition.operator != Operator.IN;
+            this.field = condition.field;
+            this.value = condition.value.bindAndGet(options);
+        }
+
+        public boolean appliesTo(Row row) throws InvalidRequestException
+        {
+            UserType userType = (UserType) column.type;
+            int fieldPosition = userType.fieldPosition(field);
+            assert fieldPosition >= 0;
+
+            ByteBuffer cellValue;
+            if (column.type.isMultiCell())
+            {
+                Cell cell = getCell(row, column, userType.cellPathForField(field));
+                cellValue = cell == null ? null : cell.value();
+            }
+            else
+            {
+                Cell cell = getCell(row, column);
+                cellValue = cell == null
+                          ? null
+                          : userType.split(cell.value())[fieldPosition];
+            }
+            return compareWithOperator(operator, userType.fieldType(fieldPosition), value, cellValue);
+        }
+    }
+
+    /** An IN condition on a UDT field.  For example: IF user.name IN ('a', 'b') */
+    static class UDTFieldAccessInBound extends Bound
+    {
+        public final FieldIdentifier field;
+        public final List<ByteBuffer> inValues;
+
+        private UDTFieldAccessInBound(ColumnCondition condition, QueryOptions options) throws InvalidRequestException
+        {
+            super(condition.column, condition.operator);
+            assert column.type.isUDT() && condition.field != null;
+            this.field = condition.field;
+
+            if (condition.inValues == null)
+                this.inValues = ((Lists.Value) condition.value.bind(options)).getElements();
+            else
+            {
+                this.inValues = new ArrayList<>(condition.inValues.size());
+                for (Term value : condition.inValues)
+                    this.inValues.add(value.bindAndGet(options));
+            }
+        }
+
+        public boolean appliesTo(Row row) throws InvalidRequestException
+        {
+            UserType userType = (UserType) column.type;
+            int fieldPosition = userType.fieldPosition(field);
+            assert fieldPosition >= 0;
+
+            ByteBuffer cellValue;
+            if (column.type.isMultiCell())
+            {
+                Cell cell = getCell(row, column, userType.cellPathForField(field));
+                cellValue = cell == null ? null : cell.value();
+            }
+            else
+            {
+                Cell cell = getCell(row, column);
+                cellValue = cell == null ? null : userType.split(getCell(row, column).value())[fieldPosition];
+            }
+
+            AbstractType<?> valueType = userType.fieldType(fieldPosition);
+            for (ByteBuffer value : inValues)
+            {
+                if (compareWithOperator(Operator.EQ, valueType, value, cellValue))
+                    return true;
+            }
+            return false;
+        }
+    }
+
+    /** A non-IN condition on an entire UDT.  For example: IF user = {name: 'joe', age: 42}). */
+    static class UDTBound extends Bound
+    {
+        private final ByteBuffer value;
+        private final ProtocolVersion protocolVersion;
+
+        private UDTBound(ColumnCondition condition, QueryOptions options) throws InvalidRequestException
+        {
+            super(condition.column, condition.operator);
+            assert column.type.isUDT() && condition.field == null;
+            assert condition.operator != Operator.IN;
+            protocolVersion = options.getProtocolVersion();
+            value = condition.value.bindAndGet(options);
+        }
+
+        public boolean appliesTo(Row row) throws InvalidRequestException
+        {
+            UserType userType = (UserType) column.type;
+            ByteBuffer rowValue;
+            if (userType.isMultiCell())
+            {
+                Iterator<Cell> iter = getCells(row, column);
+                rowValue = iter.hasNext() ? userType.serializeForNativeProtocol(iter, protocolVersion) : null;
+            }
+            else
+            {
+                Cell cell = getCell(row, column);
+                rowValue = cell == null ? null : cell.value();
+            }
+
+            if (value == null)
+            {
+                if (operator == Operator.EQ)
+                    return rowValue == null;
+                else if (operator == Operator.NEQ)
+                    return rowValue != null;
+                else
+                    throw new InvalidRequestException(String.format("Invalid comparison with null for operator \"%s\"", operator));
+            }
+
+            return compareWithOperator(operator, userType, value, rowValue);
+        }
+    }
+
+    /** An IN condition on an entire UDT.  For example: IF user IN ({name: 'joe', age: 42}, {name: 'bob', age: 23}). */
+    public static class UDTInBound extends Bound
+    {
+        private final List<ByteBuffer> inValues;
+        private final ProtocolVersion protocolVersion;
+
+        private UDTInBound(ColumnCondition condition, QueryOptions options) throws InvalidRequestException
+        {
+            super(condition.column, condition.operator);
+            assert column.type.isUDT() && condition.field == null;
+            assert condition.operator == Operator.IN;
+            protocolVersion = options.getProtocolVersion();
+            inValues = new ArrayList<>();
+            if (condition.inValues == null)
+            {
+                Lists.Marker inValuesMarker = (Lists.Marker) condition.value;
+                Terminal terminal = inValuesMarker.bind(options);
+                if (terminal == null)
+                    throw new InvalidRequestException("Invalid null list in IN condition");
+
+                if (terminal == Constants.UNSET_VALUE)
+                    throw new InvalidRequestException("Invalid 'unset' value in condition");
+
+                for (ByteBuffer buffer : ((Lists.Value)terminal).elements)
+                    this.inValues.add(buffer);
+            }
+            else
+            {
+                for (Term value : condition.inValues)
+                    this.inValues.add(value.bindAndGet(options));
+            }
+        }
+
+        public boolean appliesTo(Row row) throws InvalidRequestException
+        {
+            UserType userType = (UserType) column.type;
+            ByteBuffer rowValue;
+            if (userType.isMultiCell())
+            {
+                Iterator<Cell> cells = getCells(row, column);
+                rowValue = cells.hasNext() ? userType.serializeForNativeProtocol(cells, protocolVersion) : null;
+            }
+            else
+            {
+                Cell cell = getCell(row, column);
+                rowValue = cell == null ? null : cell.value();
+            }
+
+            for (ByteBuffer value : inValues)
+            {
+                if (value == null || rowValue == null)
+                {
+                    if (value == rowValue) // both null
+                        return true;
+                }
+                else if (userType.compare(value, rowValue) == 0)
+                {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 
@@ -697,59 +955,143 @@ public class ColumnCondition
         // Can be null, only used with the syntax "IF m[e] = ..." (in which case it's 'e')
         private final Term.Raw collectionElement;
 
+        // Can be null, only used with the syntax "IF udt.field = ..." (in which case it's 'field')
+        private final FieldIdentifier udtField;
+
         private final Operator operator;
 
-        private Raw(Term.Raw value, List<Term.Raw> inValues, AbstractMarker.INRaw inMarker, Term.Raw collectionElement, Operator op)
+        private Raw(Term.Raw value, List<Term.Raw> inValues, AbstractMarker.INRaw inMarker, Term.Raw collectionElement,
+                    FieldIdentifier udtField, Operator op)
         {
             this.value = value;
             this.inValues = inValues;
             this.inMarker = inMarker;
             this.collectionElement = collectionElement;
+            this.udtField = udtField;
             this.operator = op;
         }
 
         /** A condition on a column. For example: "IF col = 'foo'" */
         public static Raw simpleCondition(Term.Raw value, Operator op)
         {
-            return new Raw(value, null, null, null, op);
+            return new Raw(value, null, null, null, null, op);
         }
 
         /** An IN condition on a column. For example: "IF col IN ('foo', 'bar', ...)" */
         public static Raw simpleInCondition(List<Term.Raw> inValues)
         {
-            return new Raw(null, inValues, null, null, Operator.IN);
+            return new Raw(null, inValues, null, null, null, Operator.IN);
         }
 
         /** An IN condition on a column with a single marker. For example: "IF col IN ?" */
         public static Raw simpleInCondition(AbstractMarker.INRaw inMarker)
         {
-            return new Raw(null, null, inMarker, null, Operator.IN);
+            return new Raw(null, null, inMarker, null, null, Operator.IN);
         }
 
         /** A condition on a collection element. For example: "IF col['key'] = 'foo'" */
         public static Raw collectionCondition(Term.Raw value, Term.Raw collectionElement, Operator op)
         {
-            return new Raw(value, null, null, collectionElement, op);
+            return new Raw(value, null, null, collectionElement, null, op);
         }
 
         /** An IN condition on a collection element. For example: "IF col['key'] IN ('foo', 'bar', ...)" */
         public static Raw collectionInCondition(Term.Raw collectionElement, List<Term.Raw> inValues)
         {
-            return new Raw(null, inValues, null, collectionElement, Operator.IN);
+            return new Raw(null, inValues, null, collectionElement, null, Operator.IN);
         }
 
         /** An IN condition on a collection element with a single marker. For example: "IF col['key'] IN ?" */
         public static Raw collectionInCondition(Term.Raw collectionElement, AbstractMarker.INRaw inMarker)
         {
-            return new Raw(null, null, inMarker, collectionElement, Operator.IN);
+            return new Raw(null, null, inMarker, collectionElement, null, Operator.IN);
         }
 
-        public ColumnCondition prepare(String keyspace, ColumnDefinition receiver) throws InvalidRequestException
+        /** A condition on a UDT field. For example: "IF col.field = 'foo'" */
+        public static Raw udtFieldCondition(Term.Raw value, FieldIdentifier udtField, Operator op)
+        {
+            return new Raw(value, null, null, null, udtField, op);
+        }
+
+        /** An IN condition on a collection element. For example: "IF col.field IN ('foo', 'bar', ...)" */
+        public static Raw udtFieldInCondition(FieldIdentifier udtField, List<Term.Raw> inValues)
+        {
+            return new Raw(null, inValues, null, null, udtField, Operator.IN);
+        }
+
+        /** An IN condition on a collection element with a single marker. For example: "IF col.field IN ?" */
+        public static Raw udtFieldInCondition(FieldIdentifier udtField, AbstractMarker.INRaw inMarker)
+        {
+            return new Raw(null, null, inMarker, null, udtField, Operator.IN);
+        }
+
+        public ColumnCondition prepare(String keyspace, ColumnDefinition receiver, CFMetaData cfm) throws InvalidRequestException
         {
             if (receiver.type instanceof CounterColumnType)
                 throw new InvalidRequestException("Conditions on counters are not supported");
 
-            if (collectionElement == null)
+            if (collectionElement != null)
+            {
+                if (!(receiver.type.isCollection()))
+                    throw new InvalidRequestException(String.format("Invalid element access syntax for non-collection column %s", receiver.name));
+
+                ColumnSpecification elementSpec, valueSpec;
+                switch ((((CollectionType) receiver.type).kind))
+                {
+                    case LIST:
+                        elementSpec = Lists.indexSpecOf(receiver);
+                        valueSpec = Lists.valueSpecOf(receiver);
+                        break;
+                    case MAP:
+                        elementSpec = Maps.keySpecOf(receiver);
+                        valueSpec = Maps.valueSpecOf(receiver);
+                        break;
+                    case SET:
+                        throw new InvalidRequestException(String.format("Invalid element access syntax for set column %s", receiver.name));
+                    default:
+                        throw new AssertionError();
+                }
+
+                if (operator == Operator.IN)
+                {
+                    if (inValues == null)
+                        return ColumnCondition.inCondition(receiver, collectionElement.prepare(keyspace, elementSpec), inMarker.prepare(keyspace, valueSpec));
+                    List<Term> terms = new ArrayList<>(inValues.size());
+                    for (Term.Raw value : inValues)
+                        terms.add(value.prepare(keyspace, valueSpec));
+                    return ColumnCondition.inCondition(receiver, collectionElement.prepare(keyspace, elementSpec), terms);
+                }
+                else
+                {
+                    validateOperationOnDurations(valueSpec.type);
+                    return ColumnCondition.condition(receiver, collectionElement.prepare(keyspace, elementSpec), value.prepare(keyspace, valueSpec), operator);
+                }
+            }
+            else if (udtField != null)
+            {
+                UserType userType = (UserType) receiver.type;
+                int fieldPosition = userType.fieldPosition(udtField);
+                if (fieldPosition == -1)
+                    throw new InvalidRequestException(String.format("Unknown field %s for column %s", udtField, receiver.name));
+
+                ColumnSpecification fieldReceiver = UserTypes.fieldSpecOf(receiver, fieldPosition);
+                if (operator == Operator.IN)
+                {
+                    if (inValues == null)
+                        return ColumnCondition.inCondition(receiver, udtField, inMarker.prepare(keyspace, fieldReceiver));
+
+                    List<Term> terms = new ArrayList<>(inValues.size());
+                    for (Term.Raw value : inValues)
+                        terms.add(value.prepare(keyspace, fieldReceiver));
+                    return ColumnCondition.inCondition(receiver, udtField, terms);
+                }
+                else
+                {
+                    validateOperationOnDurations(fieldReceiver.type);
+                    return ColumnCondition.condition(receiver, udtField, value.prepare(keyspace, fieldReceiver), operator);
+                }
+            }
+            else
             {
                 if (operator == Operator.IN)
                 {
@@ -762,41 +1104,20 @@ public class ColumnCondition
                 }
                 else
                 {
+                    validateOperationOnDurations(receiver.type);
                     return ColumnCondition.condition(receiver, value.prepare(keyspace, receiver), operator);
                 }
             }
+        }
 
-            if (!(receiver.type.isCollection()))
-                throw new InvalidRequestException(String.format("Invalid element access syntax for non-collection column %s", receiver.name));
-
-            ColumnSpecification elementSpec, valueSpec;
-            switch ((((CollectionType)receiver.type).kind))
+        private void validateOperationOnDurations(AbstractType<?> type)
+        {
+            if (type.referencesDuration() && operator.isSlice())
             {
-                case LIST:
-                    elementSpec = Lists.indexSpecOf(receiver);
-                    valueSpec = Lists.valueSpecOf(receiver);
-                    break;
-                case MAP:
-                    elementSpec = Maps.keySpecOf(receiver);
-                    valueSpec = Maps.valueSpecOf(receiver);
-                    break;
-                case SET:
-                    throw new InvalidRequestException(String.format("Invalid element access syntax for set column %s", receiver.name));
-                default:
-                    throw new AssertionError();
-            }
-            if (operator == Operator.IN)
-            {
-                if (inValues == null)
-                    return ColumnCondition.inCondition(receiver, collectionElement.prepare(keyspace, elementSpec), inMarker.prepare(keyspace, valueSpec));
-                List<Term> terms = new ArrayList<>(inValues.size());
-                for (Term.Raw value : inValues)
-                    terms.add(value.prepare(keyspace, valueSpec));
-                return ColumnCondition.inCondition(receiver, collectionElement.prepare(keyspace, elementSpec), terms);
-            }
-            else
-            {
-                return ColumnCondition.condition(receiver, collectionElement.prepare(keyspace, elementSpec), value.prepare(keyspace, valueSpec), operator);
+                checkFalse(type.isCollection(), "Slice conditions are not supported on collections containing durations");
+                checkFalse(type.isTuple(), "Slice conditions are not supported on tuples containing durations");
+                checkFalse(type.isUDT(), "Slice conditions are not supported on UDTs containing durations");
+                throw invalidRequest("Slice conditions are not supported on durations", operator);
             }
         }
     }

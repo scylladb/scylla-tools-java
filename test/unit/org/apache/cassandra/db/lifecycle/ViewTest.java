@@ -33,6 +33,7 @@ import org.junit.Test;
 
 import junit.framework.Assert;
 import org.apache.cassandra.MockSchema;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Memtable;
 import org.apache.cassandra.db.PartitionPosition;
@@ -42,6 +43,7 @@ import org.apache.cassandra.io.sstable.format.SSTableReader;
 import static com.google.common.collect.ImmutableSet.copyOf;
 import static com.google.common.collect.ImmutableSet.of;
 import static com.google.common.collect.Iterables.concat;
+import static java.util.Collections.singleton;
 import static org.apache.cassandra.db.lifecycle.Helpers.emptySet;
 
 public class ViewTest
@@ -49,6 +51,7 @@ public class ViewTest
     @BeforeClass
     public static void setUp()
     {
+        DatabaseDescriptor.daemonInitialization();
         MockSchema.cleanup();
     }
 
@@ -83,7 +86,7 @@ public class ViewTest
     public void testCompaction()
     {
         ColumnFamilyStore cfs = MockSchema.newCFS();
-        View initialView = fakeView(0, 5, cfs);
+        View initialView = fakeView(0, 5, cfs, true);
         View cur = initialView;
         List<SSTableReader> readers = ImmutableList.copyOf(initialView.sstables);
         Assert.assertTrue(View.permitCompacting(readers).apply(cur));
@@ -133,6 +136,9 @@ public class ViewTest
         Assert.assertTrue(nonCompacting.containsAll(readers.subList(2, 5)));
         Assert.assertTrue(nonCompacting.containsAll(readers.subList(0, 1)));
         Assert.assertEquals(4, nonCompacting.size());
+
+        for (SSTableReader sstable : initialView.sstables)
+            sstable.selfRef().release();
     }
 
     private static void testFailure(Function<View, ?> function, View view)
@@ -195,7 +201,7 @@ public class ViewTest
         Assert.assertEquals(memtable3, cur.getCurrentMemtable());
 
         SSTableReader sstable = MockSchema.sstable(1, cfs);
-        cur = View.replaceFlushed(memtable1, Collections.singleton(sstable)).apply(cur);
+        cur = View.replaceFlushed(memtable1, singleton(sstable)).apply(cur);
         Assert.assertEquals(0, cur.flushingMemtables.size());
         Assert.assertEquals(1, cur.liveMemtables.size());
         Assert.assertEquals(memtable3, cur.getCurrentMemtable());
@@ -205,12 +211,17 @@ public class ViewTest
 
     static View fakeView(int memtableCount, int sstableCount, ColumnFamilyStore cfs)
     {
+        return fakeView(memtableCount, sstableCount, cfs, false);
+    }
+
+    static View fakeView(int memtableCount, int sstableCount, ColumnFamilyStore cfs, boolean keepRef)
+    {
         List<Memtable> memtables = new ArrayList<>();
         List<SSTableReader> sstables = new ArrayList<>();
         for (int i = 0 ; i < memtableCount ; i++)
             memtables.add(MockSchema.memtable(cfs));
         for (int i = 0 ; i < sstableCount ; i++)
-            sstables.add(MockSchema.sstable(i, cfs));
+            sstables.add(MockSchema.sstable(i, keepRef, cfs));
         return new View(ImmutableList.copyOf(memtables), Collections.<Memtable>emptyList(), Helpers.identityMap(sstables),
                         Collections.<SSTableReader, SSTableReader>emptyMap(), SSTableIntervalTree.build(sstables));
     }

@@ -25,14 +25,13 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
-import java.util.zip.Checksum;
 
 import com.google.common.collect.Iterators;
 import com.google.common.primitives.Ints;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import io.netty.util.concurrent.FastThreadLocalThread;
 import org.apache.cassandra.io.compress.CompressionMetadata;
 import org.apache.cassandra.utils.ChecksumType;
 import org.apache.cassandra.utils.WrappedRunnable;
@@ -60,7 +59,7 @@ public class CompressedInputStream extends InputStream
     // number of bytes in the buffer that are actually valid
     protected int validBufferBytes = -1;
 
-    private final Checksum checksum;
+    private final ChecksumType checksumType;
 
     // raw checksum bytes
     private final byte[] checksumBytes = new byte[4];
@@ -85,41 +84,71 @@ public class CompressedInputStream extends InputStream
     public CompressedInputStream(InputStream source, CompressionInfo info, ChecksumType checksumType, Supplier<Double> crcCheckChanceSupplier)
     {
         this.info = info;
-        this.checksum =  checksumType.newInstance();
         this.buffer = new byte[info.parameters.chunkLength()];
         // buffer is limited to store up to 1024 chunks
         this.dataBuffer = new ArrayBlockingQueue<>(Math.min(info.chunks.length, 1024));
         this.crcCheckChanceSupplier = crcCheckChanceSupplier;
+        this.checksumType = checksumType;
 
-        new Thread(new Reader(source, info, dataBuffer)).start();
+        new FastThreadLocalThread(new Reader(source, info, dataBuffer)).start();
     }
 
-    public int read() throws IOException
+    private void decompressNextChunk() throws IOException
     {
         if (readException != null)
             throw readException;
 
-        if (current >= bufferOffset + buffer.length || validBufferBytes == -1)
+        try
         {
-            try
+            byte[] compressedWithCRC = dataBuffer.take();
+            if (compressedWithCRC == POISON_PILL)
             {
-                byte[] compressedWithCRC = dataBuffer.take();
-                if (compressedWithCRC == POISON_PILL)
-                {
-                    assert readException != null;
-                    throw readException;
-                }
-                decompress(compressedWithCRC);
+                assert readException != null;
+                throw readException;
             }
-            catch (InterruptedException e)
-            {
-                throw new EOFException("No chunk available");
-            }
+            decompress(compressedWithCRC);
         }
+        catch (InterruptedException e)
+        {
+            throw new EOFException("No chunk available");
+        }
+    }
+
+    @Override
+    public int read() throws IOException
+    {
+        if (current >= bufferOffset + buffer.length || validBufferBytes == -1)
+            decompressNextChunk();
 
         assert current >= bufferOffset && current < bufferOffset + validBufferBytes;
 
         return ((int) buffer[(int) (current++ - bufferOffset)]) & 0xff;
+    }
+
+    @Override
+    public int read(byte[] b, int off, int len) throws IOException
+    {
+        long nextCurrent = current + len;
+
+        if (current >= bufferOffset + buffer.length || validBufferBytes == -1)
+            decompressNextChunk();
+
+        assert nextCurrent >= bufferOffset;
+
+        int read = 0;
+        while (read < len)
+        {
+            int nextLen = Math.min((len - read), (int)((bufferOffset + validBufferBytes) - current));
+
+            System.arraycopy(buffer, (int)(current - bufferOffset), b, off + read, nextLen);
+            read += nextLen;
+
+            current += nextLen;
+            if (read != len)
+                decompressNextChunk();
+        }
+
+        return len;
     }
 
     public void position(long position)
@@ -135,16 +164,14 @@ public class CompressedInputStream extends InputStream
         totalCompressedBytesRead += compressed.length;
 
         // validate crc randomly
-        if (this.crcCheckChanceSupplier.get() > ThreadLocalRandom.current().nextDouble())
+        if (this.crcCheckChanceSupplier.get() >= 1d ||
+            this.crcCheckChanceSupplier.get() > ThreadLocalRandom.current().nextDouble())
         {
-            checksum.update(compressed, 0, compressed.length - checksumBytes.length);
+            int checksum = (int) checksumType.of(compressed, 0, compressed.length - checksumBytes.length);
 
             System.arraycopy(compressed, compressed.length - checksumBytes.length, checksumBytes, 0, checksumBytes.length);
-            if (Ints.fromByteArray(checksumBytes) != (int) checksum.getValue())
+            if (Ints.fromByteArray(checksumBytes) != checksum)
                 throw new IOException("CRC unmatched");
-
-            // reset checksum object back to the original (blank) state
-            checksum.reset();
         }
 
         // buffer offset is always aligned

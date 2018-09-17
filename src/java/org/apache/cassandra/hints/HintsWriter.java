@@ -33,8 +33,7 @@ import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.util.DataOutputBuffer;
 import org.apache.cassandra.io.util.DataOutputBufferFixed;
-import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.utils.CLibrary;
+import org.apache.cassandra.utils.NativeLibrary;
 import org.apache.cassandra.utils.SyncUtil;
 import org.apache.cassandra.utils.Throwables;
 
@@ -49,9 +48,9 @@ class HintsWriter implements AutoCloseable
     private final File directory;
     private final HintsDescriptor descriptor;
     private final File file;
-    private final FileChannel channel;
+    protected final FileChannel channel;
     private final int fd;
-    private final CRC32 globalCRC;
+    protected final CRC32 globalCRC;
 
     private volatile long lastSyncPosition = 0L;
 
@@ -71,11 +70,11 @@ class HintsWriter implements AutoCloseable
         File file = new File(directory, descriptor.fileName());
 
         FileChannel channel = FileChannel.open(file.toPath(), StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
-        int fd = CLibrary.getfd(channel);
+        int fd = NativeLibrary.getfd(channel);
 
         CRC32 crc = new CRC32();
 
-        try (DataOutputBuffer dob = new DataOutputBuffer())
+        try (DataOutputBuffer dob = DataOutputBuffer.scratchBuffer.get())
         {
             // write the descriptor
             descriptor.serialize(dob);
@@ -89,14 +88,11 @@ class HintsWriter implements AutoCloseable
             throw e;
         }
 
+        if (descriptor.isEncrypted())
+            return new EncryptedHintsWriter(directory, descriptor, file, channel, fd, crc);
         if (descriptor.isCompressed())
-        {
             return new CompressedHintsWriter(directory, descriptor, file, channel, fd, crc);
-        }
-        else
-        {
-            return new HintsWriter(directory, descriptor, file, channel, fd, crc);
-        }
+        return new HintsWriter(directory, descriptor, file, channel, fd, crc);
     }
 
     HintsDescriptor descriptor()
@@ -293,7 +289,7 @@ class HintsWriter implements AutoCloseable
             // don't skip page cache for tiny files, on the assumption that if they are tiny, the target node is probably
             // alive, and if so, the file will be closed and dispatched shortly (within a minute), and the file will be dropped.
             if (position >= DatabaseDescriptor.getTrickleFsyncIntervalInKb() * 1024L)
-                CLibrary.trySkipCache(fd, 0, position - (position % PAGE_SIZE), file.getPath());
+                NativeLibrary.trySkipCache(fd, 0, position - (position % PAGE_SIZE), file.getPath());
         }
     }
 }

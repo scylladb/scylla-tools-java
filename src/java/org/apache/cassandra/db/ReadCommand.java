@@ -20,6 +20,9 @@ package org.apache.cassandra.db;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.*;
+import java.util.function.Predicate;
+
+import javax.annotation.Nullable;
 
 import com.google.common.collect.Lists;
 import org.slf4j.Logger;
@@ -28,8 +31,13 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.config.*;
 import org.apache.cassandra.cql3.Operator;
 import org.apache.cassandra.db.filter.*;
+import org.apache.cassandra.db.monitoring.ApproximateTime;
+import org.apache.cassandra.db.monitoring.MonitorableImpl;
 import org.apache.cassandra.db.partitions.*;
 import org.apache.cassandra.db.rows.*;
+import org.apache.cassandra.db.transform.RTBoundCloser;
+import org.apache.cassandra.db.transform.RTBoundValidator;
+import org.apache.cassandra.db.transform.StoppingTransformation;
 import org.apache.cassandra.db.transform.Transformation;
 import org.apache.cassandra.dht.AbstractBounds;
 import org.apache.cassandra.index.Index;
@@ -46,6 +54,7 @@ import org.apache.cassandra.schema.UnknownIndexException;
 import org.apache.cassandra.service.ClientWarn;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.Pair;
 
 /**
@@ -54,10 +63,10 @@ import org.apache.cassandra.utils.Pair;
  * <p>
  * This contains all the informations needed to do a local read.
  */
-public abstract class ReadCommand implements ReadQuery
+public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
 {
+    private static final int TEST_ITERATION_DELAY_MILLIS = Integer.parseInt(System.getProperty("cassandra.test.read_iteration_delay_ms", "0"));
     protected static final Logger logger = LoggerFactory.getLogger(ReadCommand.class);
-
     public static final IVersionedSerializer<ReadCommand> serializer = new Serializer();
 
     // For READ verb: will either dispatch on 'serializer' for 3.0 or 'legacyReadCommandSerializer' for earlier version.
@@ -105,24 +114,27 @@ public abstract class ReadCommand implements ReadQuery
     private final RowFilter rowFilter;
     private final DataLimits limits;
 
-    // SecondaryIndexManager will attempt to provide the most selective of any available indexes
-    // during execution. Here we also store an the results of that lookup to repeating it over
-    // the lifetime of the command.
-    protected Optional<IndexMetadata> index = Optional.empty();
-
-    // Flag to indicate whether the index manager has been queried to select an index for this
-    // command. This is necessary as the result of that lookup may be null, in which case we
-    // still don't want to repeat it.
-    private boolean indexManagerQueried = false;
-
-    private boolean isDigestQuery;
+    private final boolean isDigestQuery;
     // if a digest query, the version for which the digest is expected. Ignored if not a digest.
     private int digestVersion;
     private final boolean isForThrift;
 
+    @Nullable
+    private final IndexMetadata index;
+
     protected static abstract class SelectionDeserializer
     {
-        public abstract ReadCommand deserialize(DataInputPlus in, int version, boolean isDigest, int digestVersion, boolean isForThrift, CFMetaData metadata, int nowInSec, ColumnFilter columnFilter, RowFilter rowFilter, DataLimits limits, Optional<IndexMetadata> index) throws IOException;
+        public abstract ReadCommand deserialize(DataInputPlus in,
+                                                int version,
+                                                boolean isDigest,
+                                                int digestVersion,
+                                                boolean isForThrift,
+                                                CFMetaData metadata,
+                                                int nowInSec,
+                                                ColumnFilter columnFilter,
+                                                RowFilter rowFilter,
+                                                DataLimits limits,
+                                                IndexMetadata index) throws IOException;
     }
 
     protected enum Kind
@@ -146,7 +158,8 @@ public abstract class ReadCommand implements ReadQuery
                           int nowInSec,
                           ColumnFilter columnFilter,
                           RowFilter rowFilter,
-                          DataLimits limits)
+                          DataLimits limits,
+                          IndexMetadata index)
     {
         this.kind = kind;
         this.isDigestQuery = isDigestQuery;
@@ -157,10 +170,21 @@ public abstract class ReadCommand implements ReadQuery
         this.columnFilter = columnFilter;
         this.rowFilter = rowFilter;
         this.limits = limits;
+        this.index = index;
     }
 
     protected abstract void serializeSelection(DataOutputPlus out, int version) throws IOException;
     protected abstract long selectionSerializedSize(int version);
+
+    public abstract boolean isLimitedToOnePartition();
+
+    /**
+     * Creates a new <code>ReadCommand</code> instance with new limits.
+     *
+     * @param newLimits the new limits
+     * @return a new <code>ReadCommand</code> with the updated limits
+     */
+    public abstract ReadCommand withUpdatedLimit(DataLimits newLimits);
 
     /**
      * The metadata for the table queried.
@@ -252,18 +276,6 @@ public abstract class ReadCommand implements ReadQuery
     }
 
     /**
-     * Sets whether this command should be a digest one or not.
-     *
-     * @param isDigestQuery whether the command should be set as a digest one or not.
-     * @return this read command.
-     */
-    public ReadCommand setIsDigestQuery(boolean isDigestQuery)
-    {
-        this.isDigestQuery = isDigestQuery;
-        return this;
-    }
-
-    /**
      * Sets the digest version, for when digest for that command is requested.
      * <p>
      * Note that we allow setting this independently of setting the command as a digest query as
@@ -290,6 +302,17 @@ public abstract class ReadCommand implements ReadQuery
     }
 
     /**
+     * Index (metadata) chosen for this query. Can be null.
+     *
+     * @return index (metadata) chosen for this query
+     */
+    @Nullable
+    public IndexMetadata indexMetadata()
+    {
+        return index;
+    }
+
+    /**
      * The clustering index filter this command to use for the provided key.
      * <p>
      * Note that that method should only be called on a key actually queried by this command
@@ -309,46 +332,52 @@ public abstract class ReadCommand implements ReadQuery
      */
     public abstract ReadCommand copy();
 
-    protected abstract UnfilteredPartitionIterator queryStorage(ColumnFamilyStore cfs, ReadOrderGroup orderGroup);
+    /**
+     * Returns a copy of this command with isDigestQuery set to true.
+     */
+    public abstract ReadCommand copyAsDigestQuery();
+
+    protected abstract UnfilteredPartitionIterator queryStorage(ColumnFamilyStore cfs, ReadExecutionController executionController);
 
     protected abstract int oldestUnrepairedTombstone();
 
     public ReadResponse createResponse(UnfilteredPartitionIterator iterator)
     {
+        // validate that the sequence of RT markers is correct: open is followed by close, deletion times for both
+        // ends equal, and there are no dangling RT bound in any partition.
+        iterator = Transformation.apply(iterator, new RTBoundValidator(true));
+
         return isDigestQuery()
              ? ReadResponse.createDigestResponse(iterator, this)
              : ReadResponse.createDataResponse(iterator, this);
     }
 
-    public long indexSerializedSize(int version)
+    long indexSerializedSize(int version)
     {
-        if (index.isPresent())
-            return IndexMetadata.serializer.serializedSize(index.get(), version);
-        else
-            return 0;
+        return null != index
+             ? IndexMetadata.serializer.serializedSize(index, version)
+             : 0;
     }
 
     public Index getIndex(ColumnFamilyStore cfs)
     {
-        // if we've already consulted the index manager, and it returned a valid index
-        // the result should be cached here.
-        if(index.isPresent())
-            return cfs.indexManager.getIndex(index.get());
+        return null != index
+             ? cfs.indexManager.getIndex(index)
+             : null;
+    }
 
-        // if no cached index is present, but we've already consulted the index manager
-        // then no registered index is suitable for this command, so just return null.
-        if (indexManagerQueried)
+    static IndexMetadata findIndex(CFMetaData table, RowFilter rowFilter)
+    {
+        if (table.getIndexes().isEmpty() || rowFilter.isEmpty())
             return null;
 
-        // do the lookup, set the flag to indicate so and cache the result if not null
-        Index selected = cfs.indexManager.getBestIndexFor(this);
-        indexManagerQueried = true;
+        ColumnFamilyStore cfs = Keyspace.openAndGetStore(table);
 
-        if (selected == null)
-            return null;
+        Index index = cfs.indexManager.getBestIndexFor(rowFilter);
 
-        index = Optional.of(selected.getIndexMetadata());
-        return selected;
+        return null != index
+             ? index.getIndexMetadata()
+             : null;
     }
 
     /**
@@ -367,13 +396,13 @@ public abstract class ReadCommand implements ReadQuery
     /**
      * Executes this command on the local host.
      *
-     * @param orderGroup the operation group spanning this command
+     * @param executionController the execution controller spanning this command
      *
      * @return an iterator over the result of executing this command locally.
      */
     @SuppressWarnings("resource") // The result iterator is closed upon exceptions (we know it's fine to potentially not close the intermediary
                                   // iterators created inside the try as long as we do close the original resultIterator), or by closing the result.
-    public UnfilteredPartitionIterator executeLocally(ReadOrderGroup orderGroup)
+    public UnfilteredPartitionIterator executeLocally(ReadExecutionController executionController)
     {
         long startTimeNanos = System.nanoTime();
 
@@ -390,43 +419,52 @@ public abstract class ReadCommand implements ReadQuery
             Tracing.trace("Executing read on {}.{} using index {}", cfs.metadata.ksName, cfs.metadata.cfName, index.getIndexMetadata().name);
         }
 
-        UnfilteredPartitionIterator resultIterator = searcher == null
-                                         ? queryStorage(cfs, orderGroup)
-                                         : searcher.search(orderGroup);
+        UnfilteredPartitionIterator iterator = (null == searcher) ? queryStorage(cfs, executionController) : searcher.search(executionController);
 
         try
         {
-            resultIterator = withMetricsRecording(withoutPurgeableTombstones(resultIterator, cfs), cfs.metric, startTimeNanos);
+            iterator = withStateTracking(iterator);
+            iterator = withoutPurgeableTombstones(iterator, cfs);
+            iterator = withMetricsRecording(iterator, cfs.metric, startTimeNanos);
 
             // If we've used a 2ndary index, we know the result already satisfy the primary expression used, so
             // no point in checking it again.
-            RowFilter updatedFilter = searcher == null
-                                    ? rowFilter()
-                                    : index.getPostIndexQueryFilter(rowFilter());
+            RowFilter filter = (null == searcher) ? rowFilter() : index.getPostIndexQueryFilter(rowFilter());
 
-            // TODO: We'll currently do filtering by the rowFilter here because it's convenient. However,
-            // we'll probably want to optimize by pushing it down the layer (like for dropped columns) as it
-            // would be more efficient (the sooner we discard stuff we know we don't care, the less useless
-            // processing we do on it).
-            return limits().filter(updatedFilter.filter(resultIterator, nowInSec()), nowInSec());
+            /*
+             * TODO: We'll currently do filtering by the rowFilter here because it's convenient. However,
+             * we'll probably want to optimize by pushing it down the layer (like for dropped columns) as it
+             * would be more efficient (the sooner we discard stuff we know we don't care, the less useless
+             * processing we do on it).
+             */
+            iterator = filter.filter(iterator, nowInSec());
+
+            // apply the limits/row counter; this transformation is stopping and would close the iterator as soon
+            // as the count is observed; if that happens in the middle of an open RT, its end bound will not be included.
+            iterator = limits().filter(iterator, nowInSec(), selectsFullPartition());
+
+            // because of the above, we need to append an aritifical end bound if the source iterator was stopped short by a counter.
+            iterator = Transformation.apply(iterator, new RTBoundCloser());
+
+            return iterator;
         }
         catch (RuntimeException | Error e)
         {
-            resultIterator.close();
+            iterator.close();
             throw e;
         }
     }
 
     protected abstract void recordLatency(TableMetrics metric, long latencyNanos);
 
-    public PartitionIterator executeInternal(ReadOrderGroup orderGroup)
+    public PartitionIterator executeInternal(ReadExecutionController controller)
     {
-        return UnfilteredPartitionIterators.filter(executeLocally(orderGroup), nowInSec());
+        return UnfilteredPartitionIterators.filter(executeLocally(controller), nowInSec());
     }
 
-    public ReadOrderGroup startOrderGroup()
+    public ReadExecutionController executionController()
     {
-        return ReadOrderGroup.forCommand(this);
+        return ReadExecutionController.forCommand(this);
     }
 
     /**
@@ -440,7 +478,8 @@ public abstract class ReadCommand implements ReadQuery
             private final int failureThreshold = DatabaseDescriptor.getTombstoneFailureThreshold();
             private final int warningThreshold = DatabaseDescriptor.getTombstoneWarnThreshold();
 
-            private final boolean respectTombstoneThresholds = !Schema.isSystemKeyspace(ReadCommand.this.metadata().ksName);
+            private final boolean respectTombstoneThresholds = !SchemaConstants.isLocalSystemKeyspace(ReadCommand.this.metadata().ksName);
+            private final boolean enforceStrictLiveness = metadata.enforceStrictLiveness();
 
             private int liveRows = 0;
             private int tombstones = 0;
@@ -460,17 +499,37 @@ public abstract class ReadCommand implements ReadQuery
                 return applyToRow(row);
             }
 
+            /**
+             * Count the number of live rows returned by the read command and the number of tombstones.
+             *
+             * Tombstones come in two forms on rows :
+             * - cells that aren't live anymore (either expired through TTL or deleted) : 1 tombstone per cell
+             * - Rows that aren't live and have no cell (DELETEs performed on the primary key) : 1 tombstone per row 
+             * We avoid counting rows as tombstones if they contain nothing but expired cells.
+             */
             @Override
             public Row applyToRow(Row row)
             {
-                if (row.hasLiveData(ReadCommand.this.nowInSec()))
-                    ++liveRows;
-
+                boolean hasTombstones = false;
                 for (Cell cell : row.cells())
                 {
                     if (!cell.isLive(ReadCommand.this.nowInSec()))
+                    {
                         countTombstone(row.clustering());
+                        hasTombstones = true; // allows to avoid counting an extra tombstone if the whole row expired
+                    }
                 }
+
+                if (row.hasLiveData(ReadCommand.this.nowInSec(), enforceStrictLiveness))
+                    ++liveRows;
+                else if (!row.primaryKeyLivenessInfo().isLive(ReadCommand.this.nowInSec())
+                        && row.hasDeletion(ReadCommand.this.nowInSec())
+                        && !hasTombstones)
+                {
+                    // We're counting primary key deletions only here.
+                    countTombstone(row.clustering());
+                }
+
                 return row;
             }
 
@@ -503,16 +562,76 @@ public abstract class ReadCommand implements ReadQuery
                 boolean warnTombstones = tombstones > warningThreshold && respectTombstoneThresholds;
                 if (warnTombstones)
                 {
-                    String msg = String.format("Read %d live rows and %d tombstone cells for query %1.512s (see tombstone_warn_threshold)", liveRows, tombstones, ReadCommand.this.toCQLString());
+                    String msg = String.format(
+                            "Read %d live rows and %d tombstone cells for query %1.512s (see tombstone_warn_threshold)",
+                            liveRows, tombstones, ReadCommand.this.toCQLString());
                     ClientWarn.instance.warn(msg);
                     logger.warn(msg);
                 }
 
-                Tracing.trace("Read {} live and {} tombstone cells{}", liveRows, tombstones, (warnTombstones ? " (see tombstone_warn_threshold)" : ""));
+                Tracing.trace("Read {} live rows and {} tombstone cells{}",
+                        liveRows, tombstones,
+                        (warnTombstones ? " (see tombstone_warn_threshold)" : ""));
             }
         };
 
         return Transformation.apply(iter, new MetricRecording());
+    }
+
+    protected class CheckForAbort extends StoppingTransformation<UnfilteredRowIterator>
+    {
+        long lastChecked = 0;
+
+        protected UnfilteredRowIterator applyToPartition(UnfilteredRowIterator partition)
+        {
+            if (maybeAbort())
+            {
+                partition.close();
+                return null;
+            }
+
+            return Transformation.apply(partition, this);
+        }
+
+        protected Row applyToRow(Row row)
+        {
+            if (TEST_ITERATION_DELAY_MILLIS > 0)
+                maybeDelayForTesting();
+
+            return maybeAbort() ? null : row;
+        }
+
+        private boolean maybeAbort()
+        {
+            /**
+             * The value returned by ApproximateTime.currentTimeMillis() is updated only every
+             * {@link ApproximateTime.CHECK_INTERVAL_MS}, by default 10 millis. Since MonitorableImpl
+             * relies on ApproximateTime, we don't need to check unless the approximate time has elapsed.
+             */
+            if (lastChecked == ApproximateTime.currentTimeMillis())
+                return false;
+
+            lastChecked = ApproximateTime.currentTimeMillis();
+
+            if (isAborted())
+            {
+                stop();
+                return true;
+            }
+
+            return false;
+        }
+
+        private void maybeDelayForTesting()
+        {
+            if (!metadata.ksName.startsWith("system"))
+                FBUtilities.sleepQuietly(TEST_ITERATION_DELAY_MILLIS);
+        }
+    }
+
+    protected UnfilteredPartitionIterator withStateTracking(UnfilteredPartitionIterator iter)
+    {
+        return Transformation.apply(iter, new CheckForAbort());
     }
 
     /**
@@ -532,12 +651,17 @@ public abstract class ReadCommand implements ReadQuery
         {
             public WithoutPurgeableTombstones()
             {
-                super(isForThrift, nowInSec(), cfs.gcBefore(nowInSec()), oldestUnrepairedTombstone(), cfs.getCompactionStrategyManager().onlyPurgeRepairedTombstones());
+                super(isForThrift,
+                      nowInSec(),
+                      cfs.gcBefore(nowInSec()),
+                      oldestUnrepairedTombstone(),
+                      cfs.getCompactionStrategyManager().onlyPurgeRepairedTombstones(),
+                      cfs.metadata.enforceStrictLiveness());
             }
 
-            protected long getMaxPurgeableTimestamp()
+            protected Predicate<Long> getPurgeEvaluator()
             {
-                return Long.MAX_VALUE;
+                return time -> true;
             }
         }
         return Transformation.apply(iterator, new WithoutPurgeableTombstones());
@@ -562,6 +686,12 @@ public abstract class ReadCommand implements ReadQuery
         if (limits() != DataLimits.NONE)
             sb.append(' ').append(limits());
         return sb.toString();
+    }
+
+    // Monitorable interface
+    public String name()
+    {
+        return toCQLString();
     }
 
     private static class Serializer implements IVersionedSerializer<ReadCommand>
@@ -601,16 +731,16 @@ public abstract class ReadCommand implements ReadQuery
             assert version >= MessagingService.VERSION_30;
 
             out.writeByte(command.kind.ordinal());
-            out.writeByte(digestFlag(command.isDigestQuery()) | thriftFlag(command.isForThrift()) | indexFlag(command.index.isPresent()));
+            out.writeByte(digestFlag(command.isDigestQuery()) | thriftFlag(command.isForThrift()) | indexFlag(null != command.index));
             if (command.isDigestQuery())
                 out.writeUnsignedVInt(command.digestVersion());
             CFMetaData.serializer.serialize(command.metadata(), out, version);
             out.writeInt(command.nowInSec());
             ColumnFilter.serializer.serialize(command.columnFilter(), out, version);
             RowFilter.serializer.serialize(command.rowFilter(), out, version);
-            DataLimits.serializer.serialize(command.limits(), out, version);
-            if (command.index.isPresent())
-                IndexMetadata.serializer.serialize(command.index.get(), out, version);
+            DataLimits.serializer.serialize(command.limits(), out, version, command.metadata.comparator);
+            if (null != command.index)
+                IndexMetadata.serializer.serialize(command.index, out, version);
 
             command.serializeSelection(out, version);
         }
@@ -629,29 +759,26 @@ public abstract class ReadCommand implements ReadQuery
             int nowInSec = in.readInt();
             ColumnFilter columnFilter = ColumnFilter.serializer.deserialize(in, version, metadata);
             RowFilter rowFilter = RowFilter.serializer.deserialize(in, version, metadata);
-            DataLimits limits = DataLimits.serializer.deserialize(in, version);
-            Optional<IndexMetadata> index = hasIndex
-                                            ? deserializeIndexMetadata(in, version, metadata)
-                                            : Optional.empty();
+            DataLimits limits = DataLimits.serializer.deserialize(in, version,  metadata.comparator);
+            IndexMetadata index = hasIndex ? deserializeIndexMetadata(in, version, metadata) : null;
 
             return kind.selectionDeserializer.deserialize(in, version, isDigest, digestVersion, isForThrift, metadata, nowInSec, columnFilter, rowFilter, limits, index);
         }
 
-        private Optional<IndexMetadata> deserializeIndexMetadata(DataInputPlus in, int version, CFMetaData cfm) throws IOException
+        private IndexMetadata deserializeIndexMetadata(DataInputPlus in, int version, CFMetaData cfm) throws IOException
         {
             try
             {
-                return Optional.of(IndexMetadata.serializer.deserialize(in, version, cfm));
+                return IndexMetadata.serializer.deserialize(in, version, cfm);
             }
             catch (UnknownIndexException e)
             {
-                String message = String.format("Couldn't find a defined index on %s.%s with the id %s. " +
-                                               "If an index was just created, this is likely due to the schema not " +
-                                               "being fully propagated. Local read will proceed without using the " +
-                                               "index. Please wait for schema agreement after index creation.",
-                                               cfm.ksName, cfm.cfName, e.indexId.toString());
-                logger.info(message);
-                return Optional.empty();
+                logger.info("Couldn't find a defined index on {}.{} with the id {}. " +
+                            "If an index was just created, this is likely due to the schema not " +
+                            "being fully propagated. Local read will proceed without using the " +
+                            "index. Please wait for schema agreement after index creation.",
+                            cfm.ksName, cfm.cfName, e.indexId);
+                return null;
             }
         }
 
@@ -665,7 +792,7 @@ public abstract class ReadCommand implements ReadQuery
                  + TypeSizes.sizeof(command.nowInSec())
                  + ColumnFilter.serializer.serializedSize(command.columnFilter(), version)
                  + RowFilter.serializer.serializedSize(command.rowFilter(), version)
-                 + DataLimits.serializer.serializedSize(command.limits(), version)
+                 + DataLimits.serializer.serializedSize(command.limits(), version, command.metadata.comparator)
                  + command.selectionSerializedSize(version)
                  + command.indexSerializedSize(version);
         }
@@ -744,7 +871,7 @@ public abstract class ReadCommand implements ReadQuery
                     out.writeInt(LegacyReadCommandSerializer.updateLimitForQuery(rangeCommand.limits().count(), filter.requestedSlices()));
 
                 int compositesToGroup;
-                boolean selectsStatics = !rangeCommand.columnFilter().fetchedColumns().statics.isEmpty() || filter.requestedSlices().selects(Clustering.STATIC_CLUSTERING);
+                boolean selectsStatics = !rangeCommand.columnFilter().fetchedColumns().statics.isEmpty() && filter.requestedSlices().selects(Clustering.STATIC_CLUSTERING);
                 if (limits.kind() == DataLimits.Kind.THRIFT_LIMIT)
                     compositesToGroup = -1;
                 else if (limits.isDistinct() && !selectsStatics)
@@ -829,7 +956,7 @@ public abstract class ReadCommand implements ReadQuery
             else
                 limits = DataLimits.cqlLimits(maxResults);
 
-            return new PartitionRangeReadCommand(false, 0, true, metadata, nowInSec, selection, rowFilter, limits, new DataRange(keyRange, filter), Optional.empty());
+            return PartitionRangeReadCommand.create(true, metadata, nowInSec, selection, rowFilter, limits, new DataRange(keyRange, filter));
         }
 
         static void serializeRowFilter(DataOutputPlus out, RowFilter rowFilter) throws IOException
@@ -938,9 +1065,8 @@ public abstract class ReadCommand implements ReadQuery
             ClusteringIndexNamesFilter filter = (ClusteringIndexNamesFilter) command.dataRange().clusteringIndexFilter;
             ClusteringIndexSliceFilter sliceFilter = LegacyReadCommandSerializer.convertNamesFilterToSliceFilter(filter, metadata);
             DataRange newRange = new DataRange(command.dataRange().keyRange(), sliceFilter);
-            return new PartitionRangeReadCommand(
-                    command.isDigestQuery(), command.digestVersion(), command.isForThrift(), metadata, command.nowInSec(),
-                    command.columnFilter(), command.rowFilter(), command.limits(), newRange, Optional.empty());
+
+            return command.withUpdatedDataRange(newRange);
         }
 
         static ColumnFilter getColumnSelectionForSlice(boolean selectsStatics, int compositesToGroup, CFMetaData metadata)
@@ -1016,7 +1142,7 @@ public abstract class ReadCommand implements ReadQuery
             // slice filter's stop.
             DataRange.Paging pagingRange = (DataRange.Paging) rangeCommand.dataRange();
             Clustering lastReturned = pagingRange.getLastReturned();
-            Slice.Bound newStart = Slice.Bound.exclusiveStartOf(lastReturned);
+            ClusteringBound newStart = ClusteringBound.inclusiveStartOf(lastReturned);
             Slice lastSlice = filter.requestedSlices().get(filter.requestedSlices().size() - 1);
             ByteBufferUtil.writeWithShortLength(LegacyLayout.encodeBound(metadata, newStart, true), out);
             ByteBufferUtil.writeWithShortLength(LegacyLayout.encodeClustering(metadata, lastSlice.end().clustering()), out);
@@ -1025,10 +1151,8 @@ public abstract class ReadCommand implements ReadQuery
 
             // command-level limit
             // Pre-3.0 we would always request one more row than we actually needed and the command-level "start" would
-            // be the last-returned cell name, so the response would always include it.  When dealing with compound comparators,
-            // we can pass an exclusive start and use the normal limit.  However, when dealing with non-compound comparators,
-            // pre-3.0 nodes cannot perform exclusive slices, so we need to request one extra row.
-            int maxResults = rangeCommand.limits().count() + (metadata.isCompound() ? 0 : 1);
+            // be the last-returned cell name, so the response would always include it.
+            int maxResults = rangeCommand.limits().count() + 1;
             out.writeInt(maxResults);
 
             // countCQL3Rows
@@ -1097,7 +1221,7 @@ public abstract class ReadCommand implements ReadQuery
                 // missing without any problems, so we can safely always set "inclusive" to false in the data range
                 dataRange = dataRange.forPaging(keyRange, metadata.comparator, startBound.getAsClustering(metadata), false);
             }
-            return new PartitionRangeReadCommand(false, 0, true, metadata, nowInSec, selection, rowFilter, limits, dataRange, Optional.empty());
+            return PartitionRangeReadCommand.create(true, metadata, nowInSec, selection, rowFilter, limits, dataRange);
         }
 
         public long serializedSize(ReadCommand command, int version)
@@ -1291,10 +1415,7 @@ public abstract class ReadCommand implements ReadQuery
         {
             Pair<ColumnFilter, ClusteringIndexNamesFilter> selectionAndFilter = deserializeNamesSelectionAndFilter(in, metadata);
 
-            // messages from old nodes will expect the thrift format, so always use 'true' for isForThrift
-            return new SinglePartitionReadCommand(
-                    isDigest, version, true, metadata, nowInSeconds, selectionAndFilter.left, RowFilter.NONE, DataLimits.NONE,
-                    key, selectionAndFilter.right);
+            return SinglePartitionReadCommand.legacyNamesCommand(isDigest, version, metadata, nowInSeconds, selectionAndFilter.left, key, selectionAndFilter.right);
         }
 
         static Pair<ColumnFilter, ClusteringIndexNamesFilter> deserializeNamesSelectionAndFilter(DataInputPlus in, CFMetaData metadata) throws IOException
@@ -1332,7 +1453,7 @@ public abstract class ReadCommand implements ReadQuery
                 // See CASSANDRA-11087.
                 if (metadata.isStaticCompactTable() && cellName.clustering.equals(Clustering.STATIC_CLUSTERING))
                 {
-                    clusterings.add(new Clustering(cellName.column.name.bytes));
+                    clusterings.add(Clustering.make(cellName.column.name.bytes));
                     selectionBuilder.add(metadata.compactValueColumn());
                 }
                 else
@@ -1423,8 +1544,7 @@ public abstract class ReadCommand implements ReadQuery
             else
                 limits = DataLimits.cqlLimits(count);
 
-            // messages from old nodes will expect the thrift format, so always use 'true' for isForThrift
-            return new SinglePartitionReadCommand(isDigest, version, true, metadata, nowInSeconds, columnFilter, RowFilter.NONE, limits, key, filter);
+            return SinglePartitionReadCommand.legacySliceCommand(isDigest, version, metadata, nowInSeconds, columnFilter, limits, key, filter);
         }
 
         private long serializedSliceCommandSize(SinglePartitionReadCommand command)
@@ -1484,7 +1604,7 @@ public abstract class ReadCommand implements ReadQuery
         static long serializedStaticSliceSize(CFMetaData metadata)
         {
             // unlike serializeStaticSlice(), but we don't care about reversal for size calculations
-            ByteBuffer sliceStart = LegacyLayout.encodeBound(metadata, Slice.Bound.BOTTOM, false);
+            ByteBuffer sliceStart = LegacyLayout.encodeBound(metadata, ClusteringBound.BOTTOM, false);
             long size = ByteBufferUtil.serializedSizeWithShortLength(sliceStart);
 
             size += TypeSizes.sizeof((short) (metadata.comparator.size() * 3 + 2));
@@ -1512,7 +1632,7 @@ public abstract class ReadCommand implements ReadQuery
             // slice finish after we've written the static slice start
             if (!isReversed)
             {
-                ByteBuffer sliceStart = LegacyLayout.encodeBound(metadata, Slice.Bound.BOTTOM, false);
+                ByteBuffer sliceStart = LegacyLayout.encodeBound(metadata, ClusteringBound.BOTTOM, false);
                 ByteBufferUtil.writeWithShortLength(sliceStart, out);
             }
 
@@ -1528,7 +1648,7 @@ public abstract class ReadCommand implements ReadQuery
 
             if (isReversed)
             {
-                ByteBuffer sliceStart = LegacyLayout.encodeBound(metadata, Slice.Bound.BOTTOM, false);
+                ByteBuffer sliceStart = LegacyLayout.encodeBound(metadata, ClusteringBound.BOTTOM, false);
                 ByteBufferUtil.writeWithShortLength(sliceStart, out);
             }
         }
@@ -1606,9 +1726,8 @@ public abstract class ReadCommand implements ReadQuery
 
             ClusteringIndexNamesFilter filter = (ClusteringIndexNamesFilter)command.clusteringIndexFilter();
             ClusteringIndexSliceFilter sliceFilter = convertNamesFilterToSliceFilter(filter, metadata);
-            return new SinglePartitionReadCommand(
-                    command.isDigestQuery(), command.digestVersion(), command.isForThrift(), metadata, command.nowInSec(),
-                    command.columnFilter(), command.rowFilter(), command.limits(), command.partitionKey(), sliceFilter);
+
+            return command.withUpdatedClusteringIndexFilter(sliceFilter);
         }
 
         /**
@@ -1650,7 +1769,7 @@ public abstract class ReadCommand implements ReadQuery
             {
                 Slices.Builder slicesBuilder = new Slices.Builder(metadata.comparator);
                 for (Clustering clustering : requestedRows)
-                    slicesBuilder.add(Slice.Bound.inclusiveStartOf(clustering), Slice.Bound.inclusiveEndOf(clustering));
+                    slicesBuilder.add(ClusteringBound.inclusiveStartOf(clustering), ClusteringBound.inclusiveEndOf(clustering));
                 slices = slicesBuilder.build();
             }
 

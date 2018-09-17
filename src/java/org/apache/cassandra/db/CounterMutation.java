@@ -43,7 +43,6 @@ import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.service.CacheService;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.*;
-import org.apache.cassandra.utils.concurrent.OpOrder;
 import org.apache.cassandra.utils.btree.BTreeSet;
 
 public class CounterMutation implements IMutation
@@ -110,7 +109,7 @@ public class CounterMutation implements IMutation
      *
      * @return the applied resulting Mutation
      */
-    public Mutation apply() throws WriteTimeoutException
+    public Mutation applyCounterMutation() throws WriteTimeoutException
     {
         Mutation result = new Mutation(getKeyspaceName(), key());
         Keyspace keyspace = Keyspace.open(getKeyspaceName());
@@ -130,6 +129,11 @@ public class CounterMutation implements IMutation
             for (Lock lock : locks)
                 lock.unlock();
         }
+    }
+
+    public void apply()
+    {
+        applyCounterMutation();
     }
 
     private void grabCounterLocks(Keyspace keyspace, List<Lock> locks) throws WriteTimeoutException
@@ -206,7 +210,7 @@ public class CounterMutation implements IMutation
 
     private void updateWithCurrentValue(PartitionUpdate.CounterMark mark, ClockAndCount currentValue, ColumnFamilyStore cfs)
     {
-        long clock = currentValue.clock + 1L;
+        long clock = Math.max(FBUtilities.timestampMicros(), currentValue.clock + 1L);
         long count = currentValue.count + CounterContext.instance().total(mark.value());
 
         mark.setValue(CounterContext.instance().createGlobal(CounterId.getLocalId(), clock, count));
@@ -250,7 +254,8 @@ public class CounterMutation implements IMutation
         ClusteringIndexNamesFilter filter = new ClusteringIndexNamesFilter(names.build(), false);
         SinglePartitionReadCommand cmd = SinglePartitionReadCommand.create(cfs.metadata, nowInSec, key(), builder.build(), filter);
         PeekingIterator<PartitionUpdate.CounterMark> markIter = Iterators.peekingIterator(marks.iterator());
-        try (OpOrder.Group op = cfs.readOrdering.start(); RowIterator partition = UnfilteredRowIterators.filter(cmd.queryMemtableAndDisk(cfs, op), nowInSec))
+        try (ReadExecutionController controller = cmd.executionController();
+             RowIterator partition = UnfilteredRowIterators.filter(cmd.queryMemtableAndDisk(cfs, controller), nowInSec))
         {
             updateForRow(markIter, partition.staticRow(), cfs);
 

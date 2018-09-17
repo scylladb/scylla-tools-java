@@ -20,13 +20,13 @@ package org.apache.cassandra.utils;
 import java.io.DataInput;
 import java.io.IOException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.utils.obs.IBitSet;
 import org.apache.cassandra.utils.obs.OffHeapBitSet;
 import org.apache.cassandra.utils.obs.OpenBitSet;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 public class FilterFactory
 {
@@ -55,7 +55,7 @@ public class FilterFactory
         int bucketsPerElement = Math.min(targetBucketsPerElem, maxBucketsPerElement);
         if (bucketsPerElement < targetBucketsPerElem)
         {
-            logger.warn(String.format("Cannot provide an optimal BloomFilter for %d elements (%d/%d buckets per element).", numElements, bucketsPerElement, targetBucketsPerElem));
+            logger.warn("Cannot provide an optimal BloomFilter for {} elements ({}/{} buckets per element).", numElements, bucketsPerElement, targetBucketsPerElem);
         }
         BloomCalculations.BloomSpecification spec = BloomCalculations.computeBloomSpec(bucketsPerElement);
         return createFilter(spec.K, numElements, spec.bucketsPerElement, offheap, oldBfHashOrder);

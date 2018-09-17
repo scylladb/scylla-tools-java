@@ -122,19 +122,38 @@ public class RangeStreamer
         }
     }
 
+    /**
+     * Source filter which only includes endpoints contained within a provided set.
+     */
+    public static class WhitelistedSourcesFilter implements ISourceFilter
+    {
+        private final Set<InetAddress> whitelistedSources;
+
+        public WhitelistedSourcesFilter(Set<InetAddress> whitelistedSources)
+        {
+            this.whitelistedSources = whitelistedSources;
+        }
+
+        public boolean shouldInclude(InetAddress endpoint)
+        {
+            return whitelistedSources.contains(endpoint);
+        }
+    }
+
     public RangeStreamer(TokenMetadata metadata,
                          Collection<Token> tokens,
                          InetAddress address,
                          String description,
                          boolean useStrictConsistency,
                          IEndpointSnitch snitch,
-                         StreamStateStore stateStore)
+                         StreamStateStore stateStore,
+                         boolean connectSequentially)
     {
         this.metadata = metadata;
         this.tokens = tokens;
         this.address = address;
         this.description = description;
-        this.streamPlan = new StreamPlan(description, true);
+        this.streamPlan = new StreamPlan(description, true, connectSequentially);
         this.useStrictConsistency = useStrictConsistency;
         this.snitch = snitch;
         this.stateStore = stateStore;
@@ -160,7 +179,7 @@ public class RangeStreamer
         if (logger.isTraceEnabled())
         {
             for (Map.Entry<Range<Token>, InetAddress> entry : rangesForKeyspace.entries())
-                logger.trace(String.format("%s: range %s exists on %s", description, entry.getKey(), entry.getValue()));
+                logger.trace("{}: range {} exists on {}", description, entry.getKey(), entry.getValue());
         }
 
         for (Map.Entry<InetAddress, Collection<Range<Token>>> entry : getRangeFetchMap(rangesForKeyspace, sourceFilters, keyspaceName, useStrictConsistency).asMap().entrySet())
@@ -168,7 +187,7 @@ public class RangeStreamer
             if (logger.isTraceEnabled())
             {
                 for (Range<Token> r : entry.getValue())
-                    logger.trace(String.format("%s: range %s from source %s for keyspace %s", description, r, entry.getKey(), keyspaceName));
+                    logger.trace("{}: range {} from source {} for keyspace {}", description, r, entry.getKey(), keyspaceName);
             }
             toFetch.put(keyspaceName, entry);
         }
@@ -322,11 +341,11 @@ public class RangeStreamer
                 if (strat != null && strat.getReplicationFactor() == 1)
                 {
                     if (useStrictConsistency)
-                        throw new IllegalStateException("Unable to find sufficient sources for streaming range " + range + " in keyspace " + keyspace + " with RF=1." +
-                                                        "If you want to ignore this, consider using system property -Dcassandra.consistent.rangemovement=false.");
+                        throw new IllegalStateException("Unable to find sufficient sources for streaming range " + range + " in keyspace " + keyspace + " with RF=1. " +
+                                                        "Ensure this keyspace contains replicas in the source datacenter.");
                     else
-                        logger.warn("Unable to find sufficient sources for streaming range " + range + " in keyspace " + keyspace + " with RF=1. " +
-                                    "Keyspace might be missing data.");
+                        logger.warn("Unable to find sufficient sources for streaming range {} in keyspace {} with RF=1. " +
+                                    "Keyspace might be missing data.", range, keyspace);
                 }
                 else
                     throw new IllegalStateException("Unable to find sufficient sources for streaming range " + range + " in keyspace " + keyspace);

@@ -17,12 +17,16 @@
  */
 package org.apache.cassandra.db;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
 
 import javax.management.openmbean.CompositeData;
 import javax.management.openmbean.OpenDataException;
+
+import org.apache.cassandra.dht.Range;
+import org.apache.cassandra.dht.Token;
 
 /**
  * The MBean interface for ColumnFamilyStore
@@ -44,6 +48,10 @@ public interface ColumnFamilyStoreMBean
      */
     public void forceMajorCompaction(boolean splitOutput) throws ExecutionException, InterruptedException;
 
+    /**
+     * force a major compaction of specified key range in this column family
+     */
+    public void forceCompactionForTokenRange(Collection<Range<Token>> tokenRanges) throws ExecutionException, InterruptedException;
     /**
      * Gets the minimum number of sstables in queue before compaction kicks off
      */
@@ -124,6 +132,14 @@ public interface ColumnFamilyStoreMBean
     public List<String> getSSTablesForKey(String key);
 
     /**
+     * Returns a list of filenames that contain the given key on this node
+     * @param key
+     * @param hexFormat if key is in hex string format
+     * @return list of filenames containing the key
+     */
+    public List<String> getSSTablesForKey(String key, boolean hexFormat);
+
+    /**
      * Scan through Keyspace/ColumnFamily's data directory
      * determine which SSTables should be loaded and load them
      */
@@ -139,6 +155,11 @@ public interface ColumnFamilyStoreMBean
      *         array index corresponds to level(int[0] is for level 0, ...).
      */
     public int[] getSSTableCountPerLevel();
+
+    /**
+     * @return sstable fanout size for level compaction strategy.
+     */
+    public int getLevelFanoutSize();
 
     /**
      * Get the ratio of droppable tombstones to real columns (and non-droppable tombstones)

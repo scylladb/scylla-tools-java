@@ -17,11 +17,7 @@
  */
 package org.apache.cassandra.cql3.validation.entities;
 
-import java.util.Map;
-import java.util.Random;
-import java.util.Set;
-import java.util.Arrays;
-import java.util.UUID;
+import java.util.*;
 
 import org.junit.Test;
 
@@ -118,6 +114,19 @@ public class CollectionsTest extends CQLTester
                    row(set("v7"))
         );
 
+        execute("UPDATE %s SET s += ? WHERE k = 0", set("v5"));
+        execute("UPDATE %s SET s += ? WHERE k = 0", set("v6"));
+
+        assertRows(execute("SELECT s FROM %s WHERE k = 0"),
+                   row(set("v5", "v6", "v7"))
+        );
+
+        execute("UPDATE %s SET s -= ? WHERE k = 0", set("v6", "v5"));
+
+        assertRows(execute("SELECT s FROM %s WHERE k = 0"),
+                   row(set("v7"))
+        );
+
         execute("DELETE s[?] FROM %s WHERE k = 0", set("v7"));
 
         // Deleting an element that does not exist will succeed
@@ -166,7 +175,19 @@ public class CollectionsTest extends CQLTester
                    row(map("v5", 5, "v6", 6, "v7", 7))
         );
 
-        execute("DELETE m[?] FROM %s WHERE k = 0", "v7");
+        execute("UPDATE %s SET m = m - ? WHERE k = 0", set("v7"));
+
+        assertRows(execute("SELECT m FROM %s WHERE k = 0"),
+                   row(map("v5", 5, "v6", 6))
+        );
+
+        execute("UPDATE %s SET m += ? WHERE k = 0", map("v7", 7));
+
+        assertRows(execute("SELECT m FROM %s WHERE k = 0"),
+                   row(map("v5", 5, "v6", 6, "v7", 7))
+        );
+
+        execute("UPDATE %s SET m -= ? WHERE k = 0", set("v7"));
 
         assertRows(execute("SELECT m FROM %s WHERE k = 0"),
                    row(map("v5", 5, "v6", 6))
@@ -233,6 +254,14 @@ public class CollectionsTest extends CQLTester
         execute("UPDATE %s SET l = l - ? WHERE k = 0", list("v5", "v8"));
 
         assertRows(execute("SELECT l FROM %s WHERE k = 0"), row(list("v9", "v6", "v7")));
+
+        execute("UPDATE %s SET l += ? WHERE k = 0", list("v8"));
+
+        assertRows(execute("SELECT l FROM %s WHERE k = 0"), row(list("v9", "v6", "v7", "v8")));
+
+        execute("UPDATE %s SET l -= ? WHERE k = 0", list("v6", "v8"));
+
+        assertRows(execute("SELECT l FROM %s WHERE k = 0"), row(list("v9", "v7")));
 
         execute("DELETE l FROM %s WHERE k = 0");
 
@@ -863,5 +892,183 @@ public class CollectionsTest extends CQLTester
 
          execute("UPDATE %s SET l[0] = null WHERE k=0");
          assertRows(execute("SELECT * FROM %s"), row(0, list(2, 3)));
+    }
+
+    @Test
+    public void testInvalidInputForList() throws Throwable
+    {
+        createTable("CREATE TABLE %s(pk int PRIMARY KEY, l list<text>)");
+        assertInvalidMessage("Not enough bytes to read a list",
+                             "INSERT INTO %s (pk, l) VALUES (?, ?)", 1, "test");
+        assertInvalidMessage("Not enough bytes to read a list",
+                             "INSERT INTO %s (pk, l) VALUES (?, ?)", 1, Long.MAX_VALUE);
+        assertInvalidMessage("Not enough bytes to read a list",
+                             "INSERT INTO %s (pk, l) VALUES (?, ?)", 1, "");
+        assertInvalidMessage("The data cannot be deserialized as a list",
+                             "INSERT INTO %s (pk, l) VALUES (?, ?)", 1, -1);
+    }
+
+    @Test
+    public void testInvalidInputForSet() throws Throwable
+    {
+        createTable("CREATE TABLE %s(pk int PRIMARY KEY, s set<text>)");
+        assertInvalidMessage("Not enough bytes to read a set",
+                             "INSERT INTO %s (pk, s) VALUES (?, ?)", 1, "test");
+        assertInvalidMessage("String didn't validate.",
+                             "INSERT INTO %s (pk, s) VALUES (?, ?)", 1, Long.MAX_VALUE);
+        assertInvalidMessage("Not enough bytes to read a set",
+                             "INSERT INTO %s (pk, s) VALUES (?, ?)", 1, "");
+        assertInvalidMessage("The data cannot be deserialized as a set",
+                             "INSERT INTO %s (pk, s) VALUES (?, ?)", 1, -1);
+    }
+
+    @Test
+    public void testInvalidInputForMap() throws Throwable
+    {
+        createTable("CREATE TABLE %s(pk int PRIMARY KEY, m map<text, text>)");
+        assertInvalidMessage("Not enough bytes to read a map",
+                             "INSERT INTO %s (pk, m) VALUES (?, ?)", 1, "test");
+        assertInvalidMessage("String didn't validate.",
+                             "INSERT INTO %s (pk, m) VALUES (?, ?)", 1, Long.MAX_VALUE);
+        assertInvalidMessage("Not enough bytes to read a map",
+                             "INSERT INTO %s (pk, m) VALUES (?, ?)", 1, "");
+        assertInvalidMessage("The data cannot be deserialized as a map",
+                             "INSERT INTO %s (pk, m) VALUES (?, ?)", 1, -1);
+    }
+
+    @Test
+    public void testMultipleOperationOnListWithinTheSameQuery() throws Throwable
+    {
+        createTable("CREATE TABLE %s (pk int PRIMARY KEY, l list<int>)");
+        execute("INSERT INTO %s (pk, l) VALUES (1, [1, 2, 3, 4])");
+
+        // Checks that when the same element is updated twice the update with the greatest value is the one taken into account
+        execute("UPDATE %s SET l[?] = ?, l[?] = ?  WHERE pk = ?", 2, 7, 2, 8, 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = ?", 1) , row(1, list(1, 2, 8, 4)));
+
+        execute("UPDATE %s SET l[?] = ?, l[?] = ?  WHERE pk = ?", 2, 9, 2, 6, 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = ?", 1) , row(1, list(1, 2, 9, 4)));
+
+        // Checks that deleting twice the same element will result in the deletion of the element with the index
+        // and of the following element.
+        execute("DELETE l[?], l[?] FROM %s WHERE pk = ?", 2, 2, 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = ?", 1) , row(1, list(1, 2)));
+
+        // Checks that the set operation is performed on the added elements and that the greatest value win
+        execute("UPDATE %s SET l = l + ?, l[?] = ?  WHERE pk = ?", list(3, 4), 3, 7, 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = ?", 1) , row(1, list(1, 2, 3, 7)));
+
+        execute("UPDATE %s SET l = l + ?, l[?] = ?  WHERE pk = ?", list(6, 8), 4, 5, 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = ?", 1) , row(1, list(1, 2, 3, 7, 6, 8)));
+
+        // Checks that the order of the operations matters
+        assertInvalidMessage("List index 6 out of bound, list has size 6",
+                             "UPDATE %s SET l[?] = ?, l = l + ? WHERE pk = ?", 6, 5, list(9), 1);
+
+        // Checks that the updated element is deleted.
+        execute("UPDATE %s SET l[?] = ? , l = l - ? WHERE pk = ?", 2, 8, list(8), 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = ?", 1) , row(1, list(1, 2, 7, 6)));
+
+        // Checks that we cannot update an element that has been removed.
+        assertInvalidMessage("List index 3 out of bound, list has size 3",
+                             "UPDATE %s SET l = l - ?, l[?] = ?  WHERE pk = ?", list(6), 3, 4, 1);
+
+        // Checks that the element is updated before the other ones are shifted.
+        execute("UPDATE %s SET l[?] = ? , l = l - ? WHERE pk = ?", 2, 8, list(1), 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = ?", 1) , row(1, list(2, 8, 6)));
+
+        // Checks that the element are shifted before the element is updated.
+        execute("UPDATE %s SET l = l - ?, l[?] = ?  WHERE pk = ?", list(2, 6), 0, 9, 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = ?", 1) , row(1, list(9)));
+    }
+
+    @Test
+    public void testMultipleOperationOnMapWithinTheSameQuery() throws Throwable
+    {
+        createTable("CREATE TABLE %s (pk int PRIMARY KEY, m map<int, int>)");
+        execute("INSERT INTO %s (pk, m) VALUES (1, {0 : 1, 1 : 2, 2 : 3, 3 : 4})");
+
+        // Checks that when the same element is updated twice the update with the greatest value is the one taken into account
+        execute("UPDATE %s SET m[?] = ?, m[?] = ?  WHERE pk = ?", 2, 7, 2, 8, 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = 1") , row(1, map(0, 1, 1, 2, 2, 8, 3, 4)));
+
+        execute("UPDATE %s SET m[?] = ?, m[?] = ?  WHERE pk = ?", 2, 9, 2, 6, 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = 1") , row(1, map(0, 1, 1, 2, 2, 9, 3, 4)));
+
+        // Checks that deleting twice the same element has no side effect
+        execute("DELETE m[?], m[?] FROM %s WHERE pk = ?", 2, 2, 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = ?", 1) , row(1, map(0, 1, 1, 2, 3, 4)));
+
+        // Checks that the set operation is performed on the added elements and that the greatest value win
+        execute("UPDATE %s SET m = m + ?, m[?] = ?  WHERE pk = ?", map(4, 5), 4, 7, 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = ?", 1) , row(1, map(0, 1, 1, 2, 3, 4, 4, 7)));
+
+        execute("UPDATE %s SET m = m + ?, m[?] = ?  WHERE pk = ?", map(4, 8), 4, 6, 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = ?", 1) , row(1, map(0, 1, 1, 2, 3, 4, 4, 8)));
+
+        // Checks that, as tombstones win over updates for the same timestamp, the removed element is not readded
+        execute("UPDATE %s SET m = m - ?, m[?] = ?  WHERE pk = ?", set(4), 4, 9, 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = ?", 1) , row(1, map(0, 1, 1, 2, 3, 4)));
+
+        // Checks that the update is taken into account before the removal
+        execute("UPDATE %s SET m[?] = ?,  m = m - ?  WHERE pk = ?", 5, 9, set(5), 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = ?", 1) , row(1, map(0, 1, 1, 2, 3, 4)));
+
+        // Checks that the set operation is merged with the change of the append and that the greatest value win
+        execute("UPDATE %s SET m[?] = ?, m = m + ?  WHERE pk = ?", 5, 9, map(5, 8, 6, 9), 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = ?", 1) , row(1, map(0, 1, 1, 2, 3, 4, 5, 9, 6, 9)));
+
+        execute("UPDATE %s SET m[?] = ?, m = m + ?  WHERE pk = ?", 7, 1, map(7, 2), 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = ?", 1) , row(1, map(0, 1, 1, 2, 3, 4, 5, 9, 6, 9, 7, 2)));
+    }
+
+    @Test
+    public void testMultipleOperationOnSetWithinTheSameQuery() throws Throwable
+    {
+        createTable("CREATE TABLE %s (pk int PRIMARY KEY, s set<int>)");
+        execute("INSERT INTO %s (pk, s) VALUES (1, {0, 1, 2})");
+
+        // Checks that the two operation are merged and that the tombstone always win
+        execute("UPDATE %s SET s = s + ? , s = s - ?  WHERE pk = ?", set(3, 4), set(3), 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = 1") , row(1, set(0, 1, 2, 4)));
+
+        execute("UPDATE %s SET s = s - ? , s = s + ?  WHERE pk = ?", set(3), set(3, 4), 1);
+        assertRows(execute("SELECT * FROM %s WHERE pk = 1") , row(1, set(0, 1, 2, 4)));
+    }
+
+    @Test
+    public void testInsertingCollectionsWithInvalidElements() throws Throwable
+    {
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, s frozen<set<tuple<int, text, double>>>)");
+        assertInvalidMessage("Invalid remaining data after end of tuple value",
+                             "INSERT INTO %s (k, s) VALUES (0, ?)",
+                             set(tuple(1, "1", 1.0, 1), tuple(2, "2", 2.0, 2)));
+
+        assertInvalidMessage("Invalid set literal for s: value (1, '1', 1.0, 1) is not of type frozen<tuple<int, text, double>>",
+                             "INSERT INTO %s (k, s) VALUES (0, {(1, '1', 1.0, 1)})");
+
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, l frozen<list<tuple<int, text, double>>>)");
+        assertInvalidMessage("Invalid remaining data after end of tuple value",
+                             "INSERT INTO %s (k, l) VALUES (0, ?)",
+                             list(tuple(1, "1", 1.0, 1), tuple(2, "2", 2.0, 2)));
+
+        assertInvalidMessage("Invalid list literal for l: value (1, '1', 1.0, 1) is not of type frozen<tuple<int, text, double>>",
+                             "INSERT INTO %s (k, l) VALUES (0, [(1, '1', 1.0, 1)])");
+
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, m frozen<map<tuple<int, text, double>, int>>)");
+        assertInvalidMessage("Invalid remaining data after end of tuple value",
+                             "INSERT INTO %s (k, m) VALUES (0, ?)",
+                             map(tuple(1, "1", 1.0, 1), 1, tuple(2, "2", 2.0, 2), 2));
+
+        assertInvalidMessage("Invalid map literal for m: key (1, '1', 1.0, 1) is not of type frozen<tuple<int, text, double>>",
+                             "INSERT INTO %s (k, m) VALUES (0, {(1, '1', 1.0, 1) : 1})");
+
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, m frozen<map<int, tuple<int, text, double>>>)");
+        assertInvalidMessage("Invalid remaining data after end of tuple value",
+                             "INSERT INTO %s (k, m) VALUES (0, ?)",
+                             map(1, tuple(1, "1", 1.0, 1), 2, tuple(2, "2", 2.0, 2)));
+
+        assertInvalidMessage("Invalid map literal for m: value (1, '1', 1.0, 1) is not of type frozen<tuple<int, text, double>>",
+                             "INSERT INTO %s (k, m) VALUES (0, {1 : (1, '1', 1.0, 1)})");
     }
 }

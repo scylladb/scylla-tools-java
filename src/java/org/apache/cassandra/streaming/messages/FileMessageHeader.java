@@ -22,10 +22,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.SerializationHeader;
 import org.apache.cassandra.db.TypeSizes;
-import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.compress.CompressionMetadata;
 import org.apache.cassandra.io.sstable.format.SSTableFormat;
 import org.apache.cassandra.io.util.DataInputPlus;
@@ -223,7 +221,7 @@ public class FileMessageHeader
         {
             UUID cfId = UUIDSerializer.serializer.deserialize(in, MessagingService.current_version);
             int sequenceNumber = in.readInt();
-            Version sstableVersion = DatabaseDescriptor.getSSTableFormat().info.getVersion(in.readUTF());
+            Version sstableVersion = SSTableFormat.Type.current().info.getVersion(in.readUTF());
 
             SSTableFormat.Type format = SSTableFormat.Type.LEGACY;
             if (version >= StreamMessage.VERSION_22)

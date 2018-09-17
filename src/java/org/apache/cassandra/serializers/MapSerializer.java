@@ -23,7 +23,7 @@ import java.nio.ByteBuffer;
 import java.util.*;
 
 import org.apache.cassandra.db.marshal.AbstractType;
-import org.apache.cassandra.transport.Server;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.Pair;
 
 public class MapSerializer<K, V> extends CollectionSerializer<Map<K, V>>
@@ -74,7 +74,7 @@ public class MapSerializer<K, V> extends CollectionSerializer<Map<K, V>>
         return value.size();
     }
 
-    public void validateForNativeProtocol(ByteBuffer bytes, int version)
+    public void validateForNativeProtocol(ByteBuffer bytes, ProtocolVersion version)
     {
         try
         {
@@ -94,13 +94,21 @@ public class MapSerializer<K, V> extends CollectionSerializer<Map<K, V>>
         }
     }
 
-    public Map<K, V> deserializeForNativeProtocol(ByteBuffer bytes, int version)
+    public Map<K, V> deserializeForNativeProtocol(ByteBuffer bytes, ProtocolVersion version)
     {
         try
         {
             ByteBuffer input = bytes.duplicate();
             int n = readCollectionSize(input, version);
-            Map<K, V> m = new LinkedHashMap<K, V>(n);
+
+            if (n < 0)
+                throw new MarshalException("The data cannot be deserialized as a map");
+
+            // If the received bytes are not corresponding to a map, n might be a huge number.
+            // In such a case we do not want to initialize the map with that initialCapacity as it can result
+            // in an OOM when put is called (see CASSANDRA-12618). On the other hand we do not want to have to resize
+            // the map if we can avoid it, so we put a reasonable limit on the initialCapacity.
+            Map<K, V> m = new LinkedHashMap<K, V>(Math.min(n, 256));
             for (int i = 0; i < n; i++)
             {
                 ByteBuffer kbb = readValue(input, version);
@@ -133,11 +141,11 @@ public class MapSerializer<K, V> extends CollectionSerializer<Map<K, V>>
         try
         {
             ByteBuffer input = serializedMap.duplicate();
-            int n = readCollectionSize(input, Server.VERSION_3);
+            int n = readCollectionSize(input, ProtocolVersion.V3);
             for (int i = 0; i < n; i++)
             {
-                ByteBuffer kbb = readValue(input, Server.VERSION_3);
-                ByteBuffer vbb = readValue(input, Server.VERSION_3);
+                ByteBuffer kbb = readValue(input, ProtocolVersion.V3);
+                ByteBuffer vbb = readValue(input, ProtocolVersion.V3);
                 int comparison = keyType.compare(kbb, serializedKey);
                 if (comparison == 0)
                     return vbb;

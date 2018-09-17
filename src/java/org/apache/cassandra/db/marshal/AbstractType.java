@@ -30,13 +30,16 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.cql3.AssignmentTestable;
 import org.apache.cassandra.cql3.CQL3Type;
+import org.apache.cassandra.cql3.ColumnSpecification;
 import org.apache.cassandra.cql3.Term;
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.serializers.TypeSerializer;
 import org.apache.cassandra.serializers.MarshalException;
 
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.FastByteOperations;
 import org.github.jamm.Unmetered;
 import org.apache.cassandra.io.util.DataOutputPlus;
@@ -54,7 +57,7 @@ import static org.apache.cassandra.db.marshal.AbstractType.ComparisonType.CUSTOM
  * represent a valid ByteBuffer for the type being compared.
  */
 @Unmetered
-public abstract class AbstractType<T> implements Comparator<ByteBuffer>
+public abstract class AbstractType<T> implements Comparator<ByteBuffer>, AssignmentTestable
 {
     private static final Logger logger = LoggerFactory.getLogger(AbstractType.class);
 
@@ -138,8 +141,17 @@ public abstract class AbstractType<T> implements Comparator<ByteBuffer>
      **/
     public abstract Term fromJSONObject(Object parsed) throws MarshalException;
 
-    /** Converts a value to a JSON string. */
-    public String toJSONString(ByteBuffer buffer, int protocolVersion)
+    /**
+     * Converts the specified value into its JSON representation.
+     * <p>
+     * The buffer position will stay the same.
+     * </p>
+     *
+     * @param buffer the value to convert
+     * @param protocolVersion the protocol version to use for the conversion
+     * @return a JSON string representing the specified value
+     */
+    public String toJSONString(ByteBuffer buffer, ProtocolVersion protocolVersion)
     {
         return '"' + getSerializer().deserialize(buffer).toString() + '"';
     }
@@ -311,12 +323,40 @@ public abstract class AbstractType<T> implements Comparator<ByteBuffer>
         return false;
     }
 
+    public boolean isUDT()
+    {
+        return false;
+    }
+
+    public boolean isTuple()
+    {
+        return false;
+    }
+
     public boolean isMultiCell()
     {
         return false;
     }
 
+    public boolean isFreezable()
+    {
+        return false;
+    }
+
     public AbstractType<?> freeze()
+    {
+        return this;
+    }
+
+    /**
+     * Returns an AbstractType instance that is equivalent to this one, but with all nested UDTs and collections
+     * explicitly frozen.
+     *
+     * This is only necessary for {@code 2.x -> 3.x} schema migrations, and can be removed in Cassandra 4.0.
+     *
+     * See CASSANDRA-11609 and CASSANDRA-11613.
+     */
+    public AbstractType<?> freezeNestedMulticellTypes()
     {
         return this;
     }
@@ -421,6 +461,11 @@ public abstract class AbstractType<T> implements Comparator<ByteBuffer>
         return false;
     }
 
+    public boolean referencesDuration()
+    {
+        return false;
+    }
+
     /**
      * This must be overriden by subclasses if necessary so that for any
      * AbstractType, this == TypeParser.parse(toString()).
@@ -434,6 +479,17 @@ public abstract class AbstractType<T> implements Comparator<ByteBuffer>
         return getClass().getName();
     }
 
+    /**
+     * Checks to see if two types are equal when ignoring or not ignoring differences in being frozen, depending on
+     * the value of the ignoreFreezing parameter.
+     * @param other type to compare
+     * @param ignoreFreezing if true, differences in the types being frozen will be ignored
+     */
+    public boolean equals(Object other, boolean ignoreFreezing)
+    {
+        return this.equals(other);
+    }
+
     public void checkComparable()
     {
         switch (comparisonType)
@@ -441,5 +497,25 @@ public abstract class AbstractType<T> implements Comparator<ByteBuffer>
             case NOT_COMPARABLE:
                 throw new IllegalArgumentException(this + " cannot be used in comparisons, so cannot be used as a clustering column");
         }
+    }
+
+    public final AssignmentTestable.TestResult testAssignment(String keyspace, ColumnSpecification receiver)
+    {
+        // We should ignore the fact that the output type is frozen in our comparison as functions do not support
+        // frozen types for arguments
+        AbstractType<?> receiverType = receiver.type;
+        if (isFreezable() && !isMultiCell())
+            receiverType = receiverType.freeze();
+
+        if (isReversed())
+            receiverType = ReversedType.getInstance(receiverType);
+
+        if (equals(receiverType))
+            return AssignmentTestable.TestResult.EXACT_MATCH;
+
+        if (receiverType.isValueCompatibleWith(this))
+            return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
+
+        return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
     }
 }

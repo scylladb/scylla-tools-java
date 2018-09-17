@@ -41,6 +41,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 
 public class ByteOrderedPartitioner implements IPartitioner
 {
@@ -157,6 +158,11 @@ public class ByteOrderedPartitioner implements IPartitioner
         return new BytesToken(bytesForBig(midpair.left, sigbytes, midpair.right));
     }
 
+    public Token split(Token left, Token right, double ratioToLeft)
+    {
+        throw new UnsupportedOperationException();
+    }
+
     /**
      * Convert a byte array containing the most significant of 'sigbytes' bytes
      * representing a big-endian magnitude into a BigInteger.
@@ -203,13 +209,18 @@ public class ByteOrderedPartitioner implements IPartitioner
 
     public BytesToken getRandomToken()
     {
-        Random r = new Random();
+       return getRandomToken(ThreadLocalRandom.current());
+    }
+
+    public BytesToken getRandomToken(Random random)
+    {
         byte[] buffer = new byte[16];
-        r.nextBytes(buffer);
+        random.nextBytes(buffer);
         return new BytesToken(buffer);
     }
 
-    private final Token.TokenFactory tokenFactory = new Token.TokenFactory() {
+    private final Token.TokenFactory tokenFactory = new Token.TokenFactory() 
+    {
         public ByteBuffer toByteArray(Token token)
         {
             BytesToken bytesToken = (BytesToken) token;

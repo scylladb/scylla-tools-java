@@ -24,8 +24,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.db.filter.TombstoneOverwhelmingException;
+import org.apache.cassandra.exceptions.RequestFailureReason;
 import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.index.IndexNotAvailableException;
+import org.apache.cassandra.io.util.DataOutputBuffer;
 
 public class MessageDeliveryTask implements Runnable
 {
@@ -33,25 +35,22 @@ public class MessageDeliveryTask implements Runnable
 
     private final MessageIn message;
     private final int id;
-    private final long constructionTime;
-    private final boolean isCrossNodeTimestamp;
 
-    public MessageDeliveryTask(MessageIn message, int id, long timestamp, boolean isCrossNodeTimestamp)
+    public MessageDeliveryTask(MessageIn message, int id)
     {
         assert message != null;
         this.message = message;
         this.id = id;
-        this.constructionTime = timestamp;
-        this.isCrossNodeTimestamp = isCrossNodeTimestamp;
     }
 
     public void run()
     {
         MessagingService.Verb verb = message.verb;
+        long timeTaken = message.getLifetimeInMS();
         if (MessagingService.DROPPABLE_VERBS.contains(verb)
-            && System.currentTimeMillis() > constructionTime + message.getTimeout())
+            && timeTaken > message.getTimeout())
         {
-            MessagingService.instance().incrementDroppedMessages(verb, isCrossNodeTimestamp);
+            MessagingService.instance().incrementDroppedMessages(message, timeTaken);
             return;
         }
 
@@ -83,7 +82,7 @@ public class MessageDeliveryTask implements Runnable
         }
 
         if (GOSSIP_VERBS.contains(message.verb))
-            Gossiper.instance.setLastProcessedMessageAt(constructionTime);
+            Gossiper.instance.setLastProcessedMessageAt(message.constructionTime);
     }
 
     private void handleFailure(Throwable t)
@@ -92,6 +91,20 @@ public class MessageDeliveryTask implements Runnable
         {
             MessageOut response = new MessageOut(MessagingService.Verb.INTERNAL_RESPONSE)
                                                 .withParameter(MessagingService.FAILURE_RESPONSE_PARAM, MessagingService.ONE_BYTE);
+
+            if (t instanceof TombstoneOverwhelmingException)
+            {
+                try (DataOutputBuffer out = new DataOutputBuffer())
+                {
+                    out.writeShort(RequestFailureReason.READ_TOO_MANY_TOMBSTONES.code);
+                    response = response.withParameter(MessagingService.FAILURE_REASON_PARAM, out.getData());
+                }
+                catch (IOException ex)
+                {
+                    throw new RuntimeException(ex);
+                }
+            }
+
             MessagingService.instance().sendReply(response, id, message.from);
         }
     }

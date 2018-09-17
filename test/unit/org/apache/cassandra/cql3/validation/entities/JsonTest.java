@@ -17,12 +17,14 @@
  */
 package org.apache.cassandra.cql3.validation.entities;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.Json;
 import org.apache.cassandra.cql3.CQLTester;
+import org.apache.cassandra.cql3.Duration;
 import org.apache.cassandra.dht.ByteOrderedPartitioner;
+
 import org.apache.cassandra.serializers.SimpleDateSerializer;
 import org.apache.cassandra.serializers.TimeSerializer;
+import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 import org.junit.Assert;
@@ -34,11 +36,7 @@ import java.math.BigInteger;
 import java.net.InetAddress;
 import java.text.SimpleDateFormat;
 import java.util.*;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-
+import java.util.concurrent.*;
 import static org.junit.Assert.fail;
 
 public class JsonTest extends CQLTester
@@ -46,7 +44,159 @@ public class JsonTest extends CQLTester
     @BeforeClass
     public static void setUp()
     {
-        DatabaseDescriptor.setPartitionerUnsafe(ByteOrderedPartitioner.instance);
+        StorageService.instance.setPartitionerUnsafe(ByteOrderedPartitioner.instance);
+    }
+
+    @Test
+    public void testSelectJsonWithPagingWithFrozenTuple() throws Throwable
+    {
+        final UUID uuid = UUID.fromString("2dd2cd62-6af3-4cf6-96fc-91b9ab62eedc");
+        final Object partitionKey = tuple(uuid, 2);
+
+        createTable("CREATE TABLE %s (k1 FROZEN<TUPLE<uuid, int>>, c1 frozen<tuple<uuid, int>>, value int, PRIMARY KEY (k1, c1))");
+
+        // prepare data
+        for (int i = 1; i < 5; i++)
+            execute("INSERT INTO %s (k1, c1, value) VALUES (?, ?, ?)", partitionKey, tuple(uuid, i), i);
+
+        for (int pageSize = 1; pageSize < 6; pageSize++)
+        {
+            // SELECT JSON
+            assertRowsNet(executeNetWithPaging("SELECT JSON * FROM %s", pageSize),
+                           row("{\"k1\": [\"" + uuid + "\", 2], \"c1\": [\"" + uuid + "\", 1], \"value\": 1}"),
+                           row("{\"k1\": [\"" + uuid + "\", 2], \"c1\": [\"" + uuid + "\", 2], \"value\": 2}"),
+                           row("{\"k1\": [\"" + uuid + "\", 2], \"c1\": [\"" + uuid + "\", 3], \"value\": 3}"),
+                           row("{\"k1\": [\"" + uuid + "\", 2], \"c1\": [\"" + uuid + "\", 4], \"value\": 4}"));
+
+            // SELECT toJson(column)
+            assertRowsNet(executeNetWithPaging("SELECT toJson(k1), toJson(c1), toJson(value) FROM %s", pageSize),
+                          row("[\"" + uuid + "\", 2]", "[\"" + uuid + "\", 1]", "1"),
+                          row("[\"" + uuid + "\", 2]", "[\"" + uuid + "\", 2]", "2"),
+                          row("[\"" + uuid + "\", 2]", "[\"" + uuid + "\", 3]", "3"),
+                          row("[\"" + uuid + "\", 2]", "[\"" + uuid + "\", 4]", "4"));
+        }
+    }
+
+    @Test
+    public void testSelectJsonWithPagingWithFrozenMap() throws Throwable
+    {
+        final UUID uuid = UUID.fromString("2dd2cd62-6af3-4cf6-96fc-91b9ab62eedc");
+        final Object partitionKey = map(1, tuple(uuid, 1), 2, tuple(uuid, 2));
+
+        createTable("CREATE TABLE %s (k1 FROZEN<map<int, tuple<uuid, int>>>, c1 frozen<tuple<uuid, int>>, value int, PRIMARY KEY (k1, c1))");
+
+        // prepare data
+        for (int i = 1; i < 5; i++)
+            execute("INSERT INTO %s (k1, c1, value) VALUES (?, ?, ?)", partitionKey, tuple(uuid, i), i);
+
+        for (int pageSize = 1; pageSize < 6; pageSize++)
+        {
+            // SELECT JSON
+            assertRowsNet(executeNetWithPaging("SELECT JSON * FROM %s", pageSize),
+                          row("{\"k1\": {\"1\": [\"" + uuid + "\", 1], \"2\": [\"" + uuid + "\", 2]}, \"c1\": [\"" + uuid + "\", 1], \"value\": 1}"),
+                          row("{\"k1\": {\"1\": [\"" + uuid + "\", 1], \"2\": [\"" + uuid + "\", 2]}, \"c1\": [\"" + uuid + "\", 2], \"value\": 2}"),
+                          row("{\"k1\": {\"1\": [\"" + uuid + "\", 1], \"2\": [\"" + uuid + "\", 2]}, \"c1\": [\"" + uuid + "\", 3], \"value\": 3}"),
+                          row("{\"k1\": {\"1\": [\"" + uuid + "\", 1], \"2\": [\"" + uuid + "\", 2]}, \"c1\": [\"" + uuid + "\", 4], \"value\": 4}"));
+
+            // SELECT toJson(column)
+            assertRowsNet(executeNetWithPaging("SELECT toJson(k1), toJson(c1), toJson(value) FROM %s", pageSize),
+                          row("{\"1\": [\"" + uuid + "\", 1], \"2\": [\"" + uuid + "\", 2]}", "[\"" + uuid + "\", 1]", "1"),
+                          row("{\"1\": [\"" + uuid + "\", 1], \"2\": [\"" + uuid + "\", 2]}", "[\"" + uuid + "\", 2]", "2"),
+                          row("{\"1\": [\"" + uuid + "\", 1], \"2\": [\"" + uuid + "\", 2]}", "[\"" + uuid + "\", 3]", "3"),
+                          row("{\"1\": [\"" + uuid + "\", 1], \"2\": [\"" + uuid + "\", 2]}", "[\"" + uuid + "\", 4]", "4"));
+        }
+    }
+
+    @Test
+    public void testSelectJsonWithPagingWithFrozenSet() throws Throwable
+    {
+        final UUID uuid = UUID.fromString("2dd2cd62-6af3-4cf6-96fc-91b9ab62eedc");
+        final Object partitionKey = set(tuple(list(1, 2), 1), tuple(list(2, 3), 2));
+
+        createTable("CREATE TABLE %s (k1 frozen<set<tuple<list<int>, int>>>, c1 frozen<tuple<uuid, int>>, value int, PRIMARY KEY (k1, c1))");
+
+        // prepare data
+        for (int i = 1; i < 5; i++)
+            execute("INSERT INTO %s (k1, c1, value) VALUES (?, ?, ?)", partitionKey, tuple(uuid, i), i);
+
+        for (int pageSize = 1; pageSize < 6; pageSize++)
+        {
+            // SELECT JSON
+            assertRowsNet(executeNetWithPaging("SELECT JSON * FROM %s", pageSize),
+                          row("{\"k1\": [[[1, 2], 1], [[2, 3], 2]], \"c1\": [\"" + uuid + "\", 1], \"value\": 1}"),
+                          row("{\"k1\": [[[1, 2], 1], [[2, 3], 2]], \"c1\": [\"" + uuid + "\", 2], \"value\": 2}"),
+                          row("{\"k1\": [[[1, 2], 1], [[2, 3], 2]], \"c1\": [\"" + uuid + "\", 3], \"value\": 3}"),
+                          row("{\"k1\": [[[1, 2], 1], [[2, 3], 2]], \"c1\": [\"" + uuid + "\", 4], \"value\": 4}"));
+
+            // SELECT toJson(column)
+            assertRowsNet(executeNetWithPaging("SELECT toJson(k1), toJson(c1), toJson(value) FROM %s", pageSize),
+                          row("[[[1, 2], 1], [[2, 3], 2]]", "[\"" + uuid + "\", 1]", "1"),
+                          row("[[[1, 2], 1], [[2, 3], 2]]", "[\"" + uuid + "\", 2]", "2"),
+                          row("[[[1, 2], 1], [[2, 3], 2]]", "[\"" + uuid + "\", 3]", "3"),
+                          row("[[[1, 2], 1], [[2, 3], 2]]", "[\"" + uuid + "\", 4]", "4"));
+        }
+    }
+
+    @Test
+    public void testSelectJsonWithPagingWithFrozenList() throws Throwable
+    {
+        final UUID uuid = UUID.fromString("2dd2cd62-6af3-4cf6-96fc-91b9ab62eedc");
+        final Object partitionKey = list(tuple(uuid, 2), tuple(uuid, 3));
+
+        createTable("CREATE TABLE %s (k1 frozen<list<tuple<uuid, int>>>, c1 frozen<tuple<uuid, int>>, value int, PRIMARY KEY (k1, c1))");
+
+        // prepare data
+        for (int i = 1; i < 5; i++)
+            execute("INSERT INTO %s (k1, c1, value) VALUES (?, ?, ?)", partitionKey, tuple(uuid, i), i);
+
+        for (int pageSize = 1; pageSize < 6; pageSize++)
+        {
+        // SELECT JSON
+        assertRowsNet(executeNetWithPaging("SELECT JSON * FROM %s", pageSize),
+                      row("{\"k1\": [[\"" + uuid + "\", 2], [\"" + uuid + "\", 3]], \"c1\": [\"" + uuid + "\", 1], \"value\": 1}"),
+                      row("{\"k1\": [[\"" + uuid + "\", 2], [\"" + uuid + "\", 3]], \"c1\": [\"" + uuid + "\", 2], \"value\": 2}"),
+                      row("{\"k1\": [[\"" + uuid + "\", 2], [\"" + uuid + "\", 3]], \"c1\": [\"" + uuid + "\", 3], \"value\": 3}"),
+                      row("{\"k1\": [[\"" + uuid + "\", 2], [\"" + uuid + "\", 3]], \"c1\": [\"" + uuid + "\", 4], \"value\": 4}"));
+
+        // SELECT toJson(column)
+        assertRowsNet(executeNetWithPaging("SELECT toJson(k1), toJson(c1), toJson(value) FROM %s", pageSize),
+                      row("[[\"" + uuid + "\", 2], [\"" + uuid + "\", 3]]", "[\"" + uuid + "\", 1]", "1"),
+                      row("[[\"" + uuid + "\", 2], [\"" + uuid + "\", 3]]", "[\"" + uuid + "\", 2]", "2"),
+                      row("[[\"" + uuid + "\", 2], [\"" + uuid + "\", 3]]", "[\"" + uuid + "\", 3]", "3"),
+                      row("[[\"" + uuid + "\", 2], [\"" + uuid + "\", 3]]", "[\"" + uuid + "\", 4]", "4"));
+        }
+    }
+
+    @Test
+    public void testSelectJsonWithPagingWithFrozenUDT() throws Throwable
+    {
+        final UUID uuid = UUID.fromString("2dd2cd62-6af3-4cf6-96fc-91b9ab62eedc");
+
+        String typeName = createType("CREATE TYPE %s (a int, b int, c list<text>)");
+        createTable("CREATE TABLE %s (k1 frozen<" + typeName + ">, c1 frozen<tuple<uuid, int>>, value int, PRIMARY KEY (k1, c1))");
+
+        final Object partitionKey = userType("a", 1, "b", 2, "c", list("1", "2"));
+
+        // prepare data
+        for (int i = 1; i < 5; i++)
+        execute("INSERT INTO %s (k1, c1, value) VALUES (?, ?, ?)", partitionKey, tuple(uuid, i), i);
+
+        for (int pageSize = 1; pageSize < 6; pageSize++)
+        {
+            // SELECT JSON
+            assertRowsNet(executeNetWithPaging("SELECT JSON * FROM %s", pageSize),
+                          row("{\"k1\": {\"a\": 1, \"b\": 2, \"c\": [\"1\", \"2\"]}, \"c1\": [\"" + uuid + "\", 1], \"value\": 1}"),
+                          row("{\"k1\": {\"a\": 1, \"b\": 2, \"c\": [\"1\", \"2\"]}, \"c1\": [\"" + uuid + "\", 2], \"value\": 2}"),
+                          row("{\"k1\": {\"a\": 1, \"b\": 2, \"c\": [\"1\", \"2\"]}, \"c1\": [\"" + uuid + "\", 3], \"value\": 3}"),
+                          row("{\"k1\": {\"a\": 1, \"b\": 2, \"c\": [\"1\", \"2\"]}, \"c1\": [\"" + uuid + "\", 4], \"value\": 4}"));
+
+            // SELECT toJson(column)
+            assertRowsNet(executeNetWithPaging("SELECT toJson(k1), toJson(c1), toJson(value) FROM %s", pageSize),
+                          row("{\"a\": 1, \"b\": 2, \"c\": [\"1\", \"2\"]}", "[\"" + uuid + "\", 1]", "1"),
+                          row("{\"a\": 1, \"b\": 2, \"c\": [\"1\", \"2\"]}", "[\"" + uuid + "\", 2]", "2"),
+                          row("{\"a\": 1, \"b\": 2, \"c\": [\"1\", \"2\"]}", "[\"" + uuid + "\", 3]", "3"),
+                          row("{\"a\": 1, \"b\": 2, \"c\": [\"1\", \"2\"]}", "[\"" + uuid + "\", 4]", "4"));
+        }
     }
 
     @Test
@@ -81,8 +231,8 @@ public class JsonTest extends CQLTester
                 "mapval map<ascii, int>," +
                 "frozenmapval frozen<map<ascii, int>>," +
                 "tupleval frozen<tuple<int, ascii, uuid>>," +
-                "udtval frozen<" + typeName + ">)");
-
+                "udtval frozen<" + typeName + ">," +
+                "durationval duration)");
 
         // fromJson() can only be used when the receiver type is known
         assertInvalidMessage("fromJson() cannot be used in the selection clause", "SELECT fromJson(asciival) FROM %s", 0, 0);
@@ -99,6 +249,13 @@ public class JsonTest extends CQLTester
 
         // handle nulls
         execute("INSERT INTO %s (k, asciival) VALUES (?, fromJson(?))", 0, null);
+        assertRows(execute("SELECT k, asciival FROM %s WHERE k = ?", 0), row(0, null));
+
+        execute("INSERT INTO %s (k, frozenmapval) VALUES (?, fromJson(?))", 0, null);
+        assertRows(execute("SELECT k, frozenmapval FROM %s WHERE k = ?", 0), row(0, null));
+
+        execute("INSERT INTO %s (k, udtval) VALUES (?, fromJson(?))", 0, null);
+        assertRows(execute("SELECT k, udtval FROM %s WHERE k = ?", 0), row(0, null));
 
         // ================ ascii ================
         execute("INSERT INTO %s (k, asciival) VALUES (?, fromJson(?))", 0, "\"ascii text\"");
@@ -508,6 +665,16 @@ public class JsonTest extends CQLTester
                 row(0, 1, UUID.fromString("6bddc89a-5644-11e4-97fc-56847afe9799"), set("bar", "foo"))
         );
 
+        // ================ duration ================
+        execute("INSERT INTO %s (k, durationval) VALUES (?, fromJson(?))", 0, "\"53us\"");
+        assertRows(execute("SELECT k, durationval FROM %s WHERE k = ?", 0), row(0, Duration.newInstance(0, 0, 53000L)));
+
+        execute("INSERT INTO %s (k, durationval) VALUES (?, fromJson(?))", 0, "\"P2W\"");
+        assertRows(execute("SELECT k, durationval FROM %s WHERE k = ?", 0), row(0, Duration.newInstance(0, 14, 0)));
+
+        assertInvalidMessage("Unable to convert 'xyz' to a duration",
+                             "INSERT INTO %s (k, durationval) VALUES (?, fromJson(?))", 0, "\"xyz\"");
+
         // order of fields shouldn't matter
         execute("INSERT INTO %s (k, udtval) VALUES (?, fromJson(?))", 0, "{\"b\": \"6bddc89a-5644-11e4-97fc-56847afe9799\", \"a\": 1, \"c\": [\"foo\", \"bar\"]}");
         assertRows(execute("SELECT k, udtval.a, udtval.b, udtval.c FROM %s WHERE k = ?", 0),
@@ -563,7 +730,8 @@ public class JsonTest extends CQLTester
                 "mapval map<ascii, int>, " +
                 "frozenmapval frozen<map<ascii, int>>, " +
                 "tupleval frozen<tuple<int, ascii, uuid>>," +
-                "udtval frozen<" + typeName + ">)");
+                "udtval frozen<" + typeName + ">," +
+                "durationval duration)");
 
         // toJson() can only be used in selections
         assertInvalidMessage("toJson() may only be used within the selection clause",
@@ -679,9 +847,12 @@ public class JsonTest extends CQLTester
         execute("INSERT INTO %s (k, textval) VALUES (?, ?)", 0, "\u0000");
         assertRows(execute("SELECT k, toJson(textval) FROM %s WHERE k = ?", 0), row(0, "\"\\u0000\""));
 
-        // ================ timestamp ================
+        // ================ time ================
         execute("INSERT INTO %s (k, timeval) VALUES (?, ?)", 0, 123L);
         assertRows(execute("SELECT k, toJson(timeval) FROM %s WHERE k = ?", 0), row(0, "\"00:00:00.000000123\""));
+
+        execute("INSERT INTO %s (k, timeval) VALUES (?, fromJson(?))", 0, "\"07:35:07.000111222\"");
+        assertRows(execute("SELECT k, toJson(timeval) FROM %s WHERE k = ?", 0), row(0, "\"07:35:07.000111222\""));
 
         // ================ timestamp ================
         SimpleDateFormat sdf = new SimpleDateFormat("y-M-d");
@@ -760,6 +931,38 @@ public class JsonTest extends CQLTester
         execute("INSERT INTO %s (k, udtval) VALUES (?, {a: ?, b: ?})", 0, 1, UUID.fromString("6bddc89a-5644-11e4-97fc-56847afe9799"));
         assertRows(execute("SELECT k, toJson(udtval) FROM %s WHERE k = ?", 0),
                 row(0, "{\"a\": 1, \"b\": \"6bddc89a-5644-11e4-97fc-56847afe9799\", \"c\": null}")
+        );
+
+        // ================ duration ================
+        execute("INSERT INTO %s (k, durationval) VALUES (?, 12µs)", 0);
+        assertRows(execute("SELECT k, toJson(durationval) FROM %s WHERE k = ?", 0), row(0, "12us"));
+
+        execute("INSERT INTO %s (k, durationval) VALUES (?, P1Y1M2DT10H5M)", 0);
+        assertRows(execute("SELECT k, toJson(durationval) FROM %s WHERE k = ?", 0), row(0, "1y1mo2d10h5m"));
+    }
+
+    @Test
+    public void testJsonWithGroupBy() throws Throwable
+    {
+        // tests SELECT JSON statements
+        createTable("CREATE TABLE %s (k int, c int, v int, PRIMARY KEY (k, c))");
+        execute("INSERT INTO %s (k, c, v) VALUES (0, 0, 0)");
+        execute("INSERT INTO %s (k, c, v) VALUES (0, 1, 1)");
+        execute("INSERT INTO %s (k, c, v) VALUES (1, 0, 1)");
+
+        assertRows(execute("SELECT JSON * FROM %s GROUP BY k"),
+                   row("{\"k\": 0, \"c\": 0, \"v\": 0}"),
+                   row("{\"k\": 1, \"c\": 0, \"v\": 1}")
+        );
+
+        assertRows(execute("SELECT JSON k, c, v FROM %s GROUP BY k"),
+                   row("{\"k\": 0, \"c\": 0, \"v\": 0}"),
+                   row("{\"k\": 1, \"c\": 0, \"v\": 1}")
+        );
+
+        assertRows(execute("SELECT JSON count(*) FROM %s GROUP BY k"),
+                row("{\"count\": 2}"),
+                row("{\"count\": 1}")
         );
     }
 
@@ -857,6 +1060,52 @@ public class JsonTest extends CQLTester
         assertInvalidMessage("Unable to make int from",
                 "INSERT INTO %s JSON ?",
                 "{\"k\": 0, \"v\": \"notanint\"}");
+    }
+
+    @Test
+    public void testInsertJsonSyntaxDefaultUnset() throws Throwable
+    {
+        createTable("CREATE TABLE %s (k int primary key, v1 int, v2 int)");
+        execute("INSERT INTO %s JSON ?", "{\"k\": 0, \"v1\": 0, \"v2\": 0}");
+
+        // leave v1 unset
+        execute("INSERT INTO %s JSON ? DEFAULT UNSET", "{\"k\": 0, \"v2\": 2}");
+        assertRows(execute("SELECT * FROM %s"),
+                row(0, 0, 2)
+        );
+
+        // explicit specification DEFAULT NULL
+        execute("INSERT INTO %s JSON ? DEFAULT NULL", "{\"k\": 0, \"v2\": 2}");
+        assertRows(execute("SELECT * FROM %s"),
+                row(0, null, 2)
+        );
+
+        // implicitly setting v2 to null
+        execute("INSERT INTO %s JSON ? DEFAULT NULL", "{\"k\": 0}");
+        assertRows(execute("SELECT * FROM %s"),
+                row(0, null, null)
+        );
+
+        // mix setting null explicitly with default unset:
+        // set values for all fields
+        execute("INSERT INTO %s JSON ?", "{\"k\": 1, \"v1\": 1, \"v2\": 1}");
+        // explicitly set v1 to null while leaving v2 unset which retains its value
+        execute("INSERT INTO %s JSON ? DEFAULT UNSET", "{\"k\": 1, \"v1\": null}");
+        assertRows(execute("SELECT * FROM %s WHERE k=1"),
+                row(1, null, 1)
+        );
+
+        // test string literal instead of bind marker
+        execute("INSERT INTO %s JSON '{\"k\": 2, \"v1\": 2, \"v2\": 2}'");
+        // explicitly set v1 to null while leaving v2 unset which retains its value
+        execute("INSERT INTO %s JSON '{\"k\": 2, \"v1\": null}' DEFAULT UNSET");
+        assertRows(execute("SELECT * FROM %s WHERE k=2"),
+                row(2, null, 2)
+        );
+        execute("INSERT INTO %s JSON '{\"k\": 2}' DEFAULT NULL");
+        assertRows(execute("SELECT * FROM %s WHERE k=2"),
+                row(2, null, null)
+        );
     }
 
     @Test
@@ -1105,5 +1354,58 @@ public class JsonTest extends CQLTester
 
         executor.shutdown();
         Assert.assertTrue(executor.awaitTermination(30, TimeUnit.SECONDS));
+    }
+
+   @Test
+    public void emptyStringJsonSerializationTest() throws Throwable
+    {
+        createTable("create table %s(id INT, name TEXT, PRIMARY KEY(id));");
+        execute("insert into %s(id, name) VALUES (0, 'Foo');");
+        execute("insert into %s(id, name) VALUES (2, '');");
+        execute("insert into %s(id, name) VALUES (3, null);");
+
+        assertRows(execute("SELECT JSON * FROM %s"),
+                   row("{\"id\": 0, \"name\": \"Foo\"}"),
+                   row("{\"id\": 2, \"name\": \"\"}"),
+                   row("{\"id\": 3, \"name\": null}"));
+    }
+
+    // CASSANDRA-14286
+    @Test
+    public void testJsonOrdering() throws Throwable
+    {
+        createTable("CREATE TABLE %s( PRIMARY KEY (a, b), a INT, b INT);");
+        execute("INSERT INTO %s(a, b) VALUES (20, 30);");
+        execute("INSERT INTO %s(a, b) VALUES (100, 200);");
+
+        assertRows(execute("SELECT JSON a, b FROM %s WHERE a IN (20, 100) ORDER BY b"),
+                   row("{\"a\": 20, \"b\": 30}"),
+                   row("{\"a\": 100, \"b\": 200}"));
+
+        assertRows(execute("SELECT JSON a, b FROM %s WHERE a IN (20, 100) ORDER BY b DESC"),
+                   row("{\"a\": 100, \"b\": 200}"),
+                   row("{\"a\": 20, \"b\": 30}"));
+
+        assertRows(execute("SELECT JSON a FROM %s WHERE a IN (20, 100) ORDER BY b DESC"),
+                   row("{\"a\": 100}"),
+                   row("{\"a\": 20}"));
+
+        // Check ordering with alias 
+        assertRows(execute("SELECT JSON a, b as c FROM %s WHERE a IN (20, 100) ORDER BY b"),
+                   row("{\"a\": 20, \"c\": 30}"),
+                   row("{\"a\": 100, \"c\": 200}"));
+
+        assertRows(execute("SELECT JSON a, b as c FROM %s WHERE a IN (20, 100) ORDER BY b DESC"),
+                   row("{\"a\": 100, \"c\": 200}"),
+                   row("{\"a\": 20, \"c\": 30}"));
+
+        // Check ordering with CAST 
+        assertRows(execute("SELECT JSON a, CAST(b AS FLOAT) FROM %s WHERE a IN (20, 100) ORDER BY b"),
+                   row("{\"a\": 20, \"cast(b as float)\": 30.0}"),
+                   row("{\"a\": 100, \"cast(b as float)\": 200.0}"));
+
+        assertRows(execute("SELECT JSON a, CAST(b AS FLOAT) FROM %s WHERE a IN (20, 100) ORDER BY b DESC"),
+                   row("{\"a\": 100, \"cast(b as float)\": 200.0}"),
+                   row("{\"a\": 20, \"cast(b as float)\": 30.0}"));
     }
 }

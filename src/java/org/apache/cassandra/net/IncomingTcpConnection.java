@@ -29,6 +29,7 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import io.netty.util.concurrent.FastThreadLocalThread;
 import net.jpountz.lz4.LZ4BlockInputStream;
 import net.jpountz.lz4.LZ4FastDecompressor;
 import net.jpountz.lz4.LZ4Factory;
@@ -38,11 +39,12 @@ import org.apache.cassandra.config.Config;
 import org.xerial.snappy.SnappyInputStream;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.UnknownColumnFamilyException;
+import org.apache.cassandra.db.monitoring.ApproximateTime;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataInputPlus.DataInputStreamPlus;
 import org.apache.cassandra.io.util.NIODataInputStream;
 
-public class IncomingTcpConnection extends Thread implements Closeable
+public class IncomingTcpConnection extends FastThreadLocalThread implements Closeable
 {
     private static final Logger logger = LoggerFactory.getLogger(IncomingTcpConnection.class);
 
@@ -61,7 +63,7 @@ public class IncomingTcpConnection extends Thread implements Closeable
         this.compressed = compressed;
         this.socket = socket;
         this.group = group;
-        if (DatabaseDescriptor.getInternodeRecvBufferSize() != null)
+        if (DatabaseDescriptor.getInternodeRecvBufferSize() > 0)
         {
             try
             {
@@ -186,19 +188,8 @@ public class IncomingTcpConnection extends Thread implements Closeable
             id = Integer.parseInt(input.readUTF());
         else
             id = input.readInt();
-
-        long timestamp = System.currentTimeMillis();
-        boolean isCrossNodeTimestamp = false;
-        // make sure to readInt, even if cross_node_to is not enabled
-        int partial = input.readInt();
-        if (DatabaseDescriptor.hasCrossNodeTimeout())
-        {
-            long crossNodeTimestamp = (timestamp & 0xFFFFFFFF00000000L) | (((partial & 0xFFFFFFFFL) << 2) >> 2);
-            isCrossNodeTimestamp = (timestamp != crossNodeTimestamp);
-            timestamp = crossNodeTimestamp;
-        }
-
-        MessageIn message = MessageIn.read(input, version, id);
+        long currentTime = ApproximateTime.currentTimeMillis();
+        MessageIn message = MessageIn.read(input, version, id, MessageIn.readConstructionTime(from, input, currentTime));
         if (message == null)
         {
             // callback expired; nothing to do
@@ -206,7 +197,7 @@ public class IncomingTcpConnection extends Thread implements Closeable
         }
         if (version <= MessagingService.current_version)
         {
-            MessagingService.instance().receive(message, id, timestamp, isCrossNodeTimestamp);
+            MessagingService.instance().receive(message, id);
         }
         else
         {

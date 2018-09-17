@@ -62,6 +62,11 @@ public class StreamingTransferTest
 {
     private static final Logger logger = LoggerFactory.getLogger(StreamingTransferTest.class);
 
+    static
+    {
+        DatabaseDescriptor.daemonInitialization();
+    }
+
     public static final InetAddress LOCAL = FBUtilities.getBroadcastAddress();
     public static final String KEYSPACE1 = "StreamingTransferTest1";
     public static final String CF_STANDARD = "Standard1";
@@ -270,7 +275,7 @@ public class StreamingTransferTest
     {
         //after stream session is finished, message handlers may take several milliseconds to be closed
         outer:
-        for (int i = 0; i <= 10; i++)
+        for (int i = 0; i <= 100; i++)
         {
             for (MessagingService.SocketThread socketThread : MessagingService.instance().getSocketThreads())
                 if (!socketThread.connections.isEmpty())
@@ -363,7 +368,7 @@ public class StreamingTransferTest
 
 
         updates = new RowUpdateBuilder(cfs.metadata, FBUtilities.timestampMicros() + 1, key);
-        updates.addRangeTombstone(Slice.make(comparator.make(5), comparator.make(7)))
+        updates.addRangeTombstone(5, 7)
                 .build()
                 .apply();
 

@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.apache.cassandra.config.EncryptionOptions;
+import org.apache.cassandra.stress.util.ResultLogger;
 import org.apache.cassandra.thrift.ITransportFactory;
 import org.apache.cassandra.thrift.SSLTransportFactory;
 import org.apache.cassandra.thrift.TFramedTransportFactory;
@@ -115,6 +116,7 @@ public class SettingsTransport implements Serializable
             {
                 // mandatory for SSLFactory.createSSLContext(), see CASSANDRA-9325
                 encOptions.keystore = encOptions.truststore;
+                encOptions.keystore_password = encOptions.truststore_password;
             }
             encOptions.algorithm = options.alg.value();
             encOptions.protocol = options.protocol.value();
@@ -145,6 +147,10 @@ public class SettingsTransport implements Serializable
     }
 
     // CLI Utility Methods
+    public void printSettings(ResultLogger out)
+    {
+        out.println("  " + options.getOptionAsString());
+    }
 
     public static SettingsTransport get(Map<String, String[]> clArgs)
     {

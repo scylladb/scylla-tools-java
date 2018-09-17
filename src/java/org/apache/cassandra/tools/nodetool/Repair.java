@@ -31,8 +31,8 @@ import java.util.Set;
 
 import com.google.common.collect.Sets;
 
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.repair.RepairParallelism;
-import org.apache.cassandra.repair.SystemDistributedKeyspace;
 import org.apache.cassandra.repair.messages.RepairOption;
 import org.apache.cassandra.tools.NodeProbe;
 import org.apache.cassandra.tools.NodeTool.NodeToolCmd;
@@ -41,7 +41,7 @@ import org.apache.commons.lang3.StringUtils;
 @Command(name = "repair", description = "Repair one or more tables")
 public class Repair extends NodeToolCmd
 {
-    public final static Set<String> ONLY_EXPLICITLY_REPAIRED = Sets.newHashSet(SystemDistributedKeyspace.NAME);
+    public final static Set<String> ONLY_EXPLICITLY_REPAIRED = Sets.newHashSet(SchemaConstants.DISTRIBUTED_KEYSPACE_NAME);
 
     @Arguments(usage = "[<keyspace> <tables>...]", description = "The keyspace followed by one or many tables")
     private List<String> args = new ArrayList<>();
@@ -81,6 +81,9 @@ public class Repair extends NodeToolCmd
     @Option(title = "trace_repair", name = {"-tr", "--trace"}, description = "Use -tr to trace the repair. Traces are logged to system_traces.events.")
     private boolean trace = false;
 
+    @Option(title = "pull_repair", name = {"-pl", "--pull"}, description = "Use --pull to perform a one way repair where data is only streamed from a remote node to this node.")
+    private boolean pullRepair = false;
+
     @Override
     public void execute(NodeProbe probe)
     {
@@ -112,6 +115,7 @@ public class Repair extends NodeToolCmd
             options.put(RepairOption.JOB_THREADS_KEY, Integer.toString(numJobThreads));
             options.put(RepairOption.TRACE_KEY, Boolean.toString(trace));
             options.put(RepairOption.COLUMNFAMILIES_KEY, StringUtils.join(cfnames, ","));
+            options.put(RepairOption.PULL_REPAIR_KEY, Boolean.toString(pullRepair));
             if (!startToken.isEmpty() || !endToken.isEmpty())
             {
                 options.put(RepairOption.RANGES_KEY, startToken + ":" + endToken);

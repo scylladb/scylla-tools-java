@@ -18,13 +18,16 @@
 package org.apache.cassandra.utils;
 
 import java.net.InetAddress;
+import java.nio.ByteBuffer;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 import com.datastax.driver.core.*;
 
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.config.ColumnDefinition.ClusteringOrder;
 import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.dht.*;
@@ -107,7 +110,7 @@ public class NativeSSTableLoaderClient extends SSTableLoader.Client
 
     private static Types fetchTypes(String keyspace, Session session)
     {
-        String query = String.format("SELECT * FROM %s.%s WHERE keyspace_name = ?", SchemaKeyspace.NAME, SchemaKeyspace.TYPES);
+        String query = String.format("SELECT * FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspace.TYPES);
 
         Types.RawBuilder types = Types.rawBuilder(keyspace);
         for (Row row : session.execute(query, keyspace))
@@ -132,7 +135,7 @@ public class NativeSSTableLoaderClient extends SSTableLoader.Client
     private static Map<String, CFMetaData> fetchTables(String keyspace, Session session, IPartitioner partitioner, Types types)
     {
         Map<String, CFMetaData> tables = new HashMap<>();
-        String query = String.format("SELECT * FROM %s.%s WHERE keyspace_name = ?", SchemaKeyspace.NAME, SchemaKeyspace.TABLES);
+        String query = String.format("SELECT * FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspace.TABLES);
 
         for (Row row : session.execute(query, keyspace))
         {
@@ -149,7 +152,7 @@ public class NativeSSTableLoaderClient extends SSTableLoader.Client
     private static Map<String, CFMetaData> fetchViews(String keyspace, Session session, IPartitioner partitioner, Types types)
     {
         Map<String, CFMetaData> tables = new HashMap<>();
-        String query = String.format("SELECT * FROM %s.%s WHERE keyspace_name = ?", SchemaKeyspace.NAME, SchemaKeyspace.VIEWS);
+        String query = String.format("SELECT * FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspace.VIEWS);
 
         for (Row row : session.execute(query, keyspace))
         {
@@ -177,36 +180,59 @@ public class NativeSSTableLoaderClient extends SSTableLoader.Client
         boolean isCompound = isView || flags.contains(CFMetaData.Flag.COMPOUND);
 
         String columnsQuery = String.format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND table_name = ?",
-                                            SchemaKeyspace.NAME,
+                                            SchemaConstants.SCHEMA_KEYSPACE_NAME,
                                             SchemaKeyspace.COLUMNS);
 
         List<ColumnDefinition> defs = new ArrayList<>();
         for (Row colRow : session.execute(columnsQuery, keyspace, name))
             defs.add(createDefinitionFromRow(colRow, keyspace, name, types));
 
-        return CFMetaData.create(keyspace,
-                                 name,
-                                 id,
-                                 isDense,
-                                 isCompound,
-                                 isSuper,
-                                 isCounter,
-                                 isView,
-                                 defs,
-                                 partitioner);
+        CFMetaData metadata = CFMetaData.create(keyspace,
+                                                name,
+                                                id,
+                                                isDense,
+                                                isCompound,
+                                                isSuper,
+                                                isCounter,
+                                                isView,
+                                                defs,
+                                                partitioner);
+
+        String droppedColumnsQuery = String.format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND table_name = ?",
+                                                   SchemaConstants.SCHEMA_KEYSPACE_NAME,
+                                                   SchemaKeyspace.DROPPED_COLUMNS);
+        Map<ByteBuffer, CFMetaData.DroppedColumn> droppedColumns = new HashMap<>();
+        for (Row colRow : session.execute(droppedColumnsQuery, keyspace, name))
+        {
+            CFMetaData.DroppedColumn droppedColumn = createDroppedColumnFromRow(colRow, keyspace);
+            droppedColumns.put(UTF8Type.instance.decompose(droppedColumn.name), droppedColumn);
+        }
+        metadata.droppedColumns(droppedColumns);
+
+        return metadata;
     }
 
     private static ColumnDefinition createDefinitionFromRow(Row row, String keyspace, String table, Types types)
     {
-        ColumnIdentifier name = ColumnIdentifier.getInterned(row.getBytes("column_name_bytes"), row.getString("column_name"));
-
         ClusteringOrder order = ClusteringOrder.valueOf(row.getString("clustering_order").toUpperCase());
         AbstractType<?> type = CQLTypeParser.parse(keyspace, row.getString("type"), types);
         if (order == ClusteringOrder.DESC)
             type = ReversedType.getInstance(type);
 
+        ColumnIdentifier name = ColumnIdentifier.getInterned(type,
+                                                             row.getBytes("column_name_bytes"),
+                                                             row.getString("column_name"));
+
         int position = row.getInt("position");
         ColumnDefinition.Kind kind = ColumnDefinition.Kind.valueOf(row.getString("kind").toUpperCase());
         return new ColumnDefinition(keyspace, table, name, type, position, kind);
+    }
+
+    private static CFMetaData.DroppedColumn createDroppedColumnFromRow(Row row, String keyspace)
+    {
+        String name = row.getString("column_name");
+        AbstractType<?> type = CQLTypeParser.parse(keyspace, row.getString("type"), Types.none());
+        long droppedTime = TimeUnit.MILLISECONDS.toMicros(row.getTimestamp("dropped_time").getTime());
+        return new CFMetaData.DroppedColumn(name, type, droppedTime);
     }
 }

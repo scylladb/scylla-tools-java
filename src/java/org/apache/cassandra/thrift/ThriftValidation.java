@@ -28,6 +28,7 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.cql3.Attributes;
 import org.apache.cassandra.cql3.Operator;
 import org.apache.cassandra.db.*;
@@ -105,6 +106,11 @@ public class ThriftValidation
     // To be used when the operation should be authorized whether this is a counter CF or not
     public static CFMetaData validateColumnFamily(String keyspaceName, String cfName) throws org.apache.cassandra.exceptions.InvalidRequestException
     {
+        return validateColumnFamilyWithCompactMode(keyspaceName, cfName, false);
+    }
+
+    public static CFMetaData validateColumnFamilyWithCompactMode(String keyspaceName, String cfName, boolean noCompactMode) throws org.apache.cassandra.exceptions.InvalidRequestException
+    {
         validateKeyspace(keyspaceName);
         if (cfName.isEmpty())
             throw new org.apache.cassandra.exceptions.InvalidRequestException("non-empty table is required");
@@ -113,7 +119,10 @@ public class ThriftValidation
         if (metadata == null)
             throw new org.apache.cassandra.exceptions.InvalidRequestException("unconfigured table " + cfName);
 
-        return metadata;
+        if (metadata.isCompactTable() && noCompactMode)
+            return metadata.asNonCompact();
+        else
+            return metadata;
     }
 
     /**
@@ -324,7 +333,7 @@ public class ThriftValidation
             if (isCommutative)
                 throw new org.apache.cassandra.exceptions.InvalidRequestException("invalid operation for commutative table " + metadata.cfName);
 
-            validateTtl(cosc.column);
+            validateTtl(metadata, cosc.column);
             validateColumnPath(metadata, new ColumnPath(metadata.cfName).setSuper_column((ByteBuffer)null).setColumn(cosc.column.name));
             validateColumnData(metadata, null, cosc.column);
         }
@@ -359,18 +368,20 @@ public class ThriftValidation
         }
     }
 
-    private static void validateTtl(Column column) throws org.apache.cassandra.exceptions.InvalidRequestException
+    private static void validateTtl(CFMetaData metadata, Column column) throws org.apache.cassandra.exceptions.InvalidRequestException
     {
         if (column.isSetTtl())
         {
-            if (column.ttl <= 0)
-                throw new org.apache.cassandra.exceptions.InvalidRequestException("ttl must be positive");
+            if (column.ttl < 0)
+                throw new org.apache.cassandra.exceptions.InvalidRequestException("ttl must be greater or equal to 0");
 
             if (column.ttl > Attributes.MAX_TTL)
                 throw new org.apache.cassandra.exceptions.InvalidRequestException(String.format("ttl is too large. requested (%d) maximum (%d)", column.ttl, Attributes.MAX_TTL));
+            ExpirationDateOverflowHandling.maybeApplyExpirationDateOverflowPolicy(metadata, column.ttl, false);
         }
         else
         {
+            ExpirationDateOverflowHandling.maybeApplyExpirationDateOverflowPolicy(metadata, metadata.params.defaultTimeToLive, true);
             // if it's not set, then it should be zero -- here we are just checking to make sure Thrift doesn't change that contract with us.
             assert column.ttl == 0;
         }
@@ -444,7 +455,7 @@ public class ThriftValidation
      */
     public static void validateColumnData(CFMetaData metadata, ByteBuffer scName, Column column) throws org.apache.cassandra.exceptions.InvalidRequestException
     {
-        validateTtl(column);
+        validateTtl(metadata, column);
         if (!column.isSetValue())
             throw new org.apache.cassandra.exceptions.InvalidRequestException("Column value is required");
         if (!column.isSetTimestamp())
@@ -453,8 +464,7 @@ public class ThriftValidation
         try
         {
             LegacyLayout.LegacyCellName cn = LegacyLayout.decodeCellName(metadata, scName, column.name);
-            cn.column.validateCellValue(column.value);
-
+            cn.column.type.validateCellValue(column.value);
         }
         catch (UnknownColumnException e)
         {
@@ -636,7 +646,7 @@ public class ThriftValidation
 
     public static void validateKeyspaceNotSystem(String modifiedKeyspace) throws org.apache.cassandra.exceptions.InvalidRequestException
     {
-        if (Schema.isSystemKeyspace(modifiedKeyspace))
+        if (SchemaConstants.isLocalSystemKeyspace(modifiedKeyspace))
             throw new org.apache.cassandra.exceptions.InvalidRequestException(String.format("%s keyspace is not user-modifiable", modifiedKeyspace));
     }
 

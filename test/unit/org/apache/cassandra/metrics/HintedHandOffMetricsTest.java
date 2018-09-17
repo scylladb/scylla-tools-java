@@ -24,6 +24,7 @@ import java.net.InetAddress;
 import java.util.Map;
 import java.util.UUID;
 
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import com.google.common.collect.Iterators;
@@ -40,13 +41,19 @@ import static org.apache.cassandra.cql3.QueryProcessor.executeInternal;
 
 public class HintedHandOffMetricsTest
 {
+    @BeforeClass
+    public static void initDD()
+    {
+        DatabaseDescriptor.daemonInitialization();
+    }
+
     @Test
     public void testHintsMetrics() throws Exception
     {
         DatabaseDescriptor.getHintsDirectory().mkdirs();
 
         for (int i = 0; i < 99; i++)
-            HintsService.instance.metrics.incrPastWindow(InetAddress.getLocalHost());
+            HintsService.instance.metrics.incrPastWindow(InetAddress.getByName("127.0.0.1"));
         HintsService.instance.metrics.log();
 
         UntypedResultSet rows = executeInternal("SELECT hints_dropped FROM system." + SystemKeyspace.PEER_EVENTS);

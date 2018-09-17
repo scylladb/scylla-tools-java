@@ -26,8 +26,6 @@ import java.util.stream.Collectors;
 
 import javax.naming.OperationNotSupportedException;
 
-import com.google.common.util.concurrent.RateLimiter;
-
 import com.datastax.driver.core.ColumnMetadata;
 import com.datastax.driver.core.PagingState;
 import com.datastax.driver.core.ResultSet;
@@ -37,18 +35,19 @@ import com.datastax.driver.core.Statement;
 import com.datastax.driver.core.TableMetadata;
 import com.datastax.driver.core.Token;
 import com.datastax.driver.core.TokenRange;
+import io.netty.util.concurrent.FastThreadLocal;
 import org.apache.cassandra.stress.Operation;
 import org.apache.cassandra.stress.StressYaml;
 import org.apache.cassandra.stress.WorkManager;
 import org.apache.cassandra.stress.generate.TokenRangeIterator;
+import org.apache.cassandra.stress.report.Timer;
 import org.apache.cassandra.stress.settings.StressSettings;
 import org.apache.cassandra.stress.util.JavaDriverClient;
 import org.apache.cassandra.stress.util.ThriftClient;
-import org.apache.cassandra.stress.util.Timer;
 
 public class TokenRangeQuery extends Operation
 {
-    private final ThreadLocal<State> currentState = new ThreadLocal<>();
+    private final FastThreadLocal<State> currentState = new FastThreadLocal<>();
 
     private final TableMetadata tableMetadata;
     private final TokenRangeIterator tokenRangeIterator;
@@ -248,18 +247,16 @@ public class TokenRangeQuery extends Operation
         timeWithRetry(new ThriftRun(client));
     }
 
-    public boolean ready(WorkManager workManager, RateLimiter rateLimiter)
+    public int ready(WorkManager workManager)
     {
         tokenRangeIterator.update();
 
         if (tokenRangeIterator.exhausted() && currentState.get() == null)
-            return false;
+            return 0;
 
         int numLeft = workManager.takePermits(1);
-        if (rateLimiter != null && numLeft > 0 )
-            rateLimiter.acquire(numLeft);
 
-        return numLeft > 0;
+        return numLeft > 0 ? 1 : 0;
     }
 
     public String key()

@@ -36,7 +36,7 @@ import org.apache.cassandra.service.MigrationManager;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.thrift.ThriftValidation;
 import org.apache.cassandra.transport.Event;
-import org.apache.cassandra.transport.Server;
+import org.apache.cassandra.transport.ProtocolVersion;
 
 /**
  * A {@code CREATE AGGREGATE} statement parsed from a CQL query.
@@ -78,7 +78,7 @@ public final class CreateAggregateStatement extends SchemaAlteringStatement
         this.ifNotExists = ifNotExists;
     }
 
-    public Prepared prepare()
+    public Prepared prepare(ClientState clientState)
     {
         argTypes = new ArrayList<>(argRawTypes.size());
         for (CQL3Type.Raw rawType : argRawTypes)
@@ -129,14 +129,14 @@ public final class CreateAggregateStatement extends SchemaAlteringStatement
             }
 
             // Sanity check that converts the initcond to a CQL literal and parse it back to avoid getting in CASSANDRA-11064.
-            String initcondAsCql = stateType.asCQL3Type().toCQLLiteral(initcond, Server.CURRENT_VERSION);
+            String initcondAsCql = stateType.asCQL3Type().toCQLLiteral(initcond, ProtocolVersion.CURRENT);
             assert Objects.equals(initcond, Terms.asBytes(functionName.keyspace, initcondAsCql, stateType));
 
             if (Constants.NULL_LITERAL != ival && UDHelper.isNullOrEmpty(stateType, initcond))
                 throw new InvalidRequestException("INITCOND must not be empty for all types except TEXT, ASCII, BLOB");
         }
 
-        return super.prepare();
+        return super.prepare(clientState);
     }
 
     private AbstractType<?> prepareType(String typeName, CQL3Type.Raw rawType)
@@ -208,7 +208,7 @@ public final class CreateAggregateStatement extends SchemaAlteringStatement
             throw new InvalidRequestException(String.format("Cannot add aggregate '%s' to non existing keyspace '%s'.", functionName.name, functionName.keyspace));
     }
 
-    public Event.SchemaChange announceMigration(boolean isLocalOnly) throws RequestValidationException
+    public Event.SchemaChange announceMigration(QueryState queryState, boolean isLocalOnly) throws RequestValidationException
     {
         Function old = Schema.instance.findFunction(functionName, argTypes).orElse(null);
         boolean replaced = old != null;

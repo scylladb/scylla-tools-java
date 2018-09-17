@@ -29,6 +29,7 @@ import org.apache.cassandra.exceptions.UnauthorizedException;
 import org.apache.cassandra.schema.TableParams;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.MigrationManager;
+import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.transport.Event;
 
 import static org.apache.cassandra.thrift.ThriftValidation.validateColumnFamily;
@@ -55,7 +56,7 @@ public class AlterViewStatement extends SchemaAlteringStatement
         // validated in announceMigration()
     }
 
-    public Event.SchemaChange announceMigration(boolean isLocalOnly) throws RequestValidationException
+    public Event.SchemaChange announceMigration(QueryState queryState, boolean isLocalOnly) throws RequestValidationException
     {
         CFMetaData meta = validateColumnFamily(keyspace(), columnFamily());
         if (!meta.isView())
@@ -75,6 +76,14 @@ public class AlterViewStatement extends SchemaAlteringStatement
                                               "value is used to TTL undelivered updates. Setting gc_grace_seconds too " +
                                               "low might cause undelivered updates to expire before being replayed.");
         }
+
+        if (params.defaultTimeToLive > 0)
+        {
+            throw new InvalidRequestException("Cannot set or alter default_time_to_live for a materialized view. " +
+                                              "Data in a materialized view always expire at the same time than " +
+                                              "the corresponding data in the parent table.");
+        }
+
         viewCopy.metadata.params(params);
 
         MigrationManager.announceViewUpdate(viewCopy, isLocalOnly);

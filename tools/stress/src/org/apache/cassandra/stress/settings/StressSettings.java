@@ -1,6 +1,6 @@
 package org.apache.cassandra.stress.settings;
 /*
- * 
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -8,16 +8,16 @@ package org.apache.cassandra.stress.settings;
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *   http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
  * KIND, either express or implied.  See the License for the
  * specific language governing permissions and limitations
  * under the License.
- * 
+ *
  */
 
 
@@ -28,6 +28,7 @@ import com.datastax.driver.core.Metadata;
 import com.google.common.collect.ImmutableMap;
 import org.apache.cassandra.config.EncryptionOptions;
 import org.apache.cassandra.stress.util.JavaDriverClient;
+import org.apache.cassandra.stress.util.ResultLogger;
 import org.apache.cassandra.stress.util.SimpleThriftClient;
 import org.apache.cassandra.stress.util.SmartThriftClient;
 import org.apache.cassandra.stress.util.ThriftClient;
@@ -45,7 +46,6 @@ public class StressSettings implements Serializable
     public final SettingsPopulation generate;
     public final SettingsInsert insert;
     public final SettingsColumn columns;
-    public final SettingsSamples samples;
     public final SettingsErrors errors;
     public final SettingsLog log;
     public final SettingsMode mode;
@@ -54,16 +54,30 @@ public class StressSettings implements Serializable
     public final SettingsTransport transport;
     public final SettingsPort port;
     public final String sendToDaemon;
-
+    public final SettingsGraph graph;
     public final SettingsTokenRange tokenRange;
-    public StressSettings(SettingsCommand command, SettingsRate rate, SettingsPopulation generate, SettingsInsert insert, SettingsColumn columns, SettingsSamples samples, SettingsErrors errors, SettingsLog log, SettingsMode mode, SettingsNode node, SettingsSchema schema, SettingsTransport transport, SettingsPort port, String sendToDaemon, SettingsTokenRange tokenRange)
+
+    public StressSettings(SettingsCommand command,
+                          SettingsRate rate,
+                          SettingsPopulation generate,
+                          SettingsInsert insert,
+                          SettingsColumn columns,
+                          SettingsErrors errors,
+                          SettingsLog log,
+                          SettingsMode mode,
+                          SettingsNode node,
+                          SettingsSchema schema,
+                          SettingsTransport transport,
+                          SettingsPort port,
+                          String sendToDaemon,
+                          SettingsGraph graph,
+                          SettingsTokenRange tokenRange)
     {
         this.command = command;
         this.rate = rate;
         this.insert = insert;
         this.generate = generate;
         this.columns = columns;
-        this.samples = samples;
         this.errors = errors;
         this.log = log;
         this.mode = mode;
@@ -72,6 +86,7 @@ public class StressSettings implements Serializable
         this.transport = transport;
         this.port = port;
         this.sendToDaemon = sendToDaemon;
+        this.graph = graph;
         this.tokenRange = tokenRange;
     }
 
@@ -167,6 +182,8 @@ public class StressSettings implements Serializable
     }
 
     private static volatile JavaDriverClient client;
+    private static volatile int numFailures;
+    private static int MAX_NUM_FAILURES = 10;
 
     public JavaDriverClient getJavaDriverClient()
     {
@@ -178,9 +195,12 @@ public class StressSettings implements Serializable
         if (client != null)
             return client;
 
-        try
+        synchronized (this)
         {
-            synchronized (this)
+            if (numFailures >= MAX_NUM_FAILURES)
+                throw new RuntimeException("Failed to create client too many times");
+
+            try
             {
                 String currentNode = node.randomNode();
                 if (client != null)
@@ -194,10 +214,11 @@ public class StressSettings implements Serializable
 
                 return client = c;
             }
-        }
-        catch (Exception e)
-        {
-            throw new RuntimeException(e);
+            catch (Exception e)
+            {
+                numFailures +=1;
+                throw new RuntimeException(e);
+            }
         }
     }
 
@@ -211,22 +232,14 @@ public class StressSettings implements Serializable
 
     public static StressSettings parse(String[] args)
     {
-        try
-        {
-            args = repairParams(args);
-            final Map<String, String[]> clArgs = parseMap(args);
-            if (clArgs.containsKey("legacy"))
-                return Legacy.build(Arrays.copyOfRange(args, 1, args.length));
-            if (SettingsMisc.maybeDoSpecial(clArgs))
-                System.exit(1);
-            return get(clArgs);
-        }
-        catch (IllegalArgumentException e)
-        {
-            System.out.println(e.getMessage());
-            System.exit(1);
-            throw new AssertionError();
-        }
+        args = repairParams(args);
+        final Map<String, String[]> clArgs = parseMap(args);
+        if (clArgs.containsKey("legacy"))
+            return Legacy.build(Arrays.copyOfRange(args, 1, args.length));
+        if (SettingsMisc.maybeDoSpecial(clArgs))
+            return null;
+        return get(clArgs);
+
     }
 
     private static String[] repairParams(String[] args)
@@ -258,13 +271,13 @@ public class StressSettings implements Serializable
         SettingsTokenRange tokenRange = SettingsTokenRange.get(clArgs);
         SettingsInsert insert = SettingsInsert.get(clArgs);
         SettingsColumn columns = SettingsColumn.get(clArgs);
-        SettingsSamples samples = SettingsSamples.get(clArgs);
         SettingsErrors errors = SettingsErrors.get(clArgs);
         SettingsLog log = SettingsLog.get(clArgs);
         SettingsMode mode = SettingsMode.get(clArgs);
         SettingsNode node = SettingsNode.get(clArgs);
         SettingsSchema schema = SettingsSchema.get(clArgs, command);
         SettingsTransport transport = SettingsTransport.get(clArgs);
+        SettingsGraph graph = SettingsGraph.get(clArgs, command);
         if (!clArgs.isEmpty())
         {
             printHelp();
@@ -281,7 +294,8 @@ public class StressSettings implements Serializable
             }
             System.exit(1);
         }
-        return new StressSettings(command, rate, generate, insert, columns, samples, errors, log, mode, node, schema, transport, port, sendToDaemon, tokenRange);
+
+        return new StressSettings(command, rate, generate, insert, columns, errors, log, mode, node, schema, transport, port, sendToDaemon, graph, tokenRange);
     }
 
     private static Map<String, String[]> parseMap(String[] args)
@@ -322,6 +336,54 @@ public class StressSettings implements Serializable
     public static void printHelp()
     {
         SettingsMisc.printHelp();
+    }
+
+    public void printSettings(ResultLogger out)
+    {
+        out.println("******************** Stress Settings ********************");
+        // done
+        out.println("Command:");
+        command.printSettings(out);
+        out.println("Rate:");
+        rate.printSettings(out);
+        out.println("Population:");
+        generate.printSettings(out);
+        out.println("Insert:");
+        insert.printSettings(out);
+        if (command.type != Command.USER)
+        {
+            out.println("Columns:");
+            columns.printSettings(out);
+        }
+        out.println("Errors:");
+        errors.printSettings(out);
+        out.println("Log:");
+        log.printSettings(out);
+        out.println("Mode:");
+        mode.printSettings(out);
+        out.println("Node:");
+        node.printSettings(out);
+        out.println("Schema:");
+        schema.printSettings(out);
+        out.println("Transport:");
+        transport.printSettings(out);
+        out.println("Port:");
+        port.printSettings(out);
+        out.println("Send To Daemon:");
+        out.printf("  " + (sendToDaemon != null ? sendToDaemon : "*not set*") + "%n");
+        out.println("Graph:");
+        graph.printSettings(out);
+        out.println("TokenRange:");
+        tokenRange.printSettings(out);
+
+        if (command.type == Command.USER)
+        {
+            out.println();
+            out.println("******************** Profile ********************");
+            ((SettingsCommandUser) command).profile.printSettings(out, this);
+        }
+        out.println();
+
     }
 
     public synchronized void disconnect()

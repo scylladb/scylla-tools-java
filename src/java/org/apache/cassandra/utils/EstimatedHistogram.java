@@ -84,7 +84,7 @@ public class EstimatedHistogram
         buckets = new AtomicLongArray(bucketData);
     }
 
-    private static long[] newOffsets(int size, boolean considerZeroes)
+    public static long[] newOffsets(int size, boolean considerZeroes)
     {
         long[] result = new long[size + (considerZeroes ? 1 : 0)];
         int i = 0;
@@ -372,7 +372,8 @@ public class EstimatedHistogram
             long[] offsets = new long[size - 1];
             long[] buckets = new long[size];
 
-            for (int i = 0; i < size; i++) {
+            for (int i = 0; i < size; i++)
+            {
                 offsets[i == 0 ? 0 : i - 1] = in.readLong();
                 buckets[i] = in.readLong();
             }

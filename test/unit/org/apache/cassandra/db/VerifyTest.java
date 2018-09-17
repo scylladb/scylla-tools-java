@@ -23,7 +23,9 @@ import com.google.common.base.Charsets;
 import org.apache.cassandra.OrderedJUnit4ClassRunner;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
+import org.apache.cassandra.cache.ChunkCache;
 import org.apache.cassandra.UpdateBuilder;
+import org.apache.cassandra.db.compaction.AbstractCompactionStrategy;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.compaction.Verifier;
 import org.apache.cassandra.db.marshal.UUIDType;
@@ -44,9 +46,14 @@ import org.junit.runner.RunWith;
 
 import java.io.*;
 import java.nio.file.Files;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.ExecutionException;
 import java.util.zip.CRC32;
 import java.util.zip.CheckedInputStream;
 
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 @RunWith(OrderedJUnit4ClassRunner.class)
@@ -275,11 +282,12 @@ public class VerifyTest
         SSTableReader sstable = cfs.getLiveSSTables().iterator().next();
 
 
-        RandomAccessFile file = new RandomAccessFile(sstable.descriptor.filenameFor(sstable.descriptor.digestComponent), "rw");
-        Long correctChecksum = Long.parseLong(file.readLine());
-        file.close();
-
-        writeChecksum(++correctChecksum, sstable.descriptor.filenameFor(sstable.descriptor.digestComponent));
+        try (RandomAccessFile file = new RandomAccessFile(sstable.descriptor.filenameFor(sstable.descriptor.digestComponent), "rw"))
+        {
+            Long correctChecksum = Long.valueOf(file.readLine());
+    
+            writeChecksum(++correctChecksum, sstable.descriptor.filenameFor(sstable.descriptor.digestComponent));
+        }
 
         try (Verifier verifier = new Verifier(cfs, sstable, false))
         {
@@ -313,6 +321,8 @@ public class VerifyTest
         file.seek(startPosition);
         file.writeBytes(StringUtils.repeat('z', (int) 2));
         file.close();
+        if (ChunkCache.instance != null)
+            ChunkCache.instance.invalidateFile(sstable.getFilename());
 
         // Update the Digest to have the right Checksum
         writeChecksum(simpleFullChecksum(sstable.getFilename()), sstable.descriptor.filenameFor(sstable.descriptor.digestComponent));
@@ -341,8 +351,66 @@ public class VerifyTest
             }
             fail("Expected a CorruptSSTableException to be thrown");
         }
-
     }
+
+    @Test(expected = CorruptSSTableException.class)
+    public void testVerifyBrokenSSTableMetadata() throws IOException, WriteTimeoutException
+    {
+        CompactionManager.instance.disableAutoCompaction();
+        Keyspace keyspace = Keyspace.open(KEYSPACE);
+        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(CORRUPT_CF2);
+
+        fillCF(cfs, 2);
+
+        Util.getAll(Util.cmd(cfs).build());
+
+        SSTableReader sstable = cfs.getLiveSSTables().iterator().next();
+
+        String filenameToCorrupt = sstable.descriptor.filenameFor(Component.STATS);
+        RandomAccessFile file = new RandomAccessFile(filenameToCorrupt, "rw");
+        file.seek(0);
+        file.writeBytes(StringUtils.repeat('z', 2));
+        file.close();
+
+        try (Verifier verifier = new Verifier(cfs, sstable, false))
+        {
+            verifier.verify(false);
+        }
+    }
+
+    @Test
+    public void testMutateRepair() throws IOException, ExecutionException, InterruptedException
+    {
+        CompactionManager.instance.disableAutoCompaction();
+        Keyspace keyspace = Keyspace.open(KEYSPACE);
+        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(CORRUPT_CF2);
+
+        fillCF(cfs, 2);
+
+        SSTableReader sstable = cfs.getLiveSSTables().iterator().next();
+        sstable.descriptor.getMetadataSerializer().mutateRepairedAt(sstable.descriptor, 1);
+        sstable.reloadSSTableMetadata();
+        cfs.getTracker().notifySSTableRepairedStatusChanged(Collections.singleton(sstable));
+        assertTrue(sstable.isRepaired());
+        cfs.forceMajorCompaction();
+
+        sstable = cfs.getLiveSSTables().iterator().next();
+        Long correctChecksum;
+        try (RandomAccessFile file = new RandomAccessFile(sstable.descriptor.filenameFor(sstable.descriptor.digestComponent), "rw"))
+        {
+            correctChecksum = Long.parseLong(file.readLine());
+        }
+        writeChecksum(++correctChecksum, sstable.descriptor.filenameFor(sstable.descriptor.digestComponent));
+        try (Verifier verifier = new Verifier(cfs, sstable, false))
+        {
+            verifier.verify(false);
+            fail("should be corrupt");
+        }
+        catch (CorruptSSTableException e)
+        {}
+        assertFalse(sstable.isRepaired());
+    }
+
 
     protected void fillCF(ColumnFamilyStore cfs, int partitionsPerSSTable)
     {
@@ -371,13 +439,15 @@ public class VerifyTest
 
     protected long simpleFullChecksum(String filename) throws IOException
     {
-        FileInputStream inputStream = new FileInputStream(filename);
-        CRC32 checksum = new CRC32();
-        CheckedInputStream cinStream = new CheckedInputStream(inputStream, checksum);
-        byte[] b = new byte[128];
-        while (cinStream.read(b) >= 0) {
+        try (FileInputStream inputStream = new FileInputStream(filename))
+        {
+            CRC32 checksum = new CRC32();
+            CheckedInputStream cinStream = new CheckedInputStream(inputStream, checksum);
+            byte[] b = new byte[128];
+            while (cinStream.read(b) >= 0) {
+            }
+            return cinStream.getChecksum().getValue();
         }
-        return cinStream.getChecksum().getValue();
     }
 
     protected void writeChecksum(long checksum, String filePath)

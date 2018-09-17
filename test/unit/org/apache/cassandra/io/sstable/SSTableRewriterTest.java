@@ -33,6 +33,7 @@ import org.junit.Test;
 
 import org.apache.cassandra.Util;
 import org.apache.cassandra.UpdateBuilder;
+import org.apache.cassandra.concurrent.NamedThreadFactory;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.DecoratedKey;
@@ -87,7 +88,7 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
         int nowInSec = FBUtilities.nowInSeconds();
         try (AbstractCompactionStrategy.ScannerList scanners = cfs.getCompactionStrategyManager().getScanners(sstables);
              LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN);
-             SSTableRewriter writer = new SSTableRewriter(txn, 1000, false);
+             SSTableRewriter writer = SSTableRewriter.constructKeepingOriginals(txn, false, 1000);
              CompactionController controller = new CompactionController(cfs, sstables, cfs.gcBefore(nowInSec));
              CompactionIterator ci = new CompactionIterator(OperationType.COMPACTION, scanners.scanners, controller, nowInSec, UUIDGen.getTimeUUID()))
         {
@@ -99,9 +100,9 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
             writer.finish();
         }
         LifecycleTransaction.waitForDeletions();
+        assertEquals(1, assertFileCounts(sstables.iterator().next().descriptor.directory.list()));
+
         validateCFS(cfs);
-        int filecounts = assertFileCounts(sstables.iterator().next().descriptor.directory.list());
-        assertEquals(1, filecounts);
         truncate(cfs);
     }
     @Test
@@ -119,7 +120,7 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
         int nowInSec = FBUtilities.nowInSeconds();
         try (AbstractCompactionStrategy.ScannerList scanners = cfs.getCompactionStrategyManager().getScanners(sstables);
              LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN);
-             SSTableRewriter writer = new SSTableRewriter(txn, 1000, false, 10000000, false);
+             SSTableRewriter writer = new SSTableRewriter(txn, 1000, 10000000, false);
              CompactionController controller = new CompactionController(cfs, sstables, cfs.gcBefore(nowInSec));
              CompactionIterator ci = new CompactionIterator(OperationType.COMPACTION, scanners.scanners, controller, nowInSec, UUIDGen.getTimeUUID()))
         {
@@ -131,9 +132,9 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
             writer.finish();
         }
         LifecycleTransaction.waitForDeletions();
+        assertEquals(1, assertFileCounts(sstables.iterator().next().descriptor.directory.list()));
+
         validateCFS(cfs);
-        int filecounts = assertFileCounts(sstables.iterator().next().descriptor.directory.list());
-        assertEquals(1, filecounts);
     }
 
     @Test
@@ -152,7 +153,7 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
         boolean checked = false;
         try (AbstractCompactionStrategy.ScannerList scanners = cfs.getCompactionStrategyManager().getScanners(sstables);
              LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN);
-             SSTableRewriter writer = new SSTableRewriter(txn, 1000, false, 10000000, false);
+             SSTableRewriter writer = new SSTableRewriter(txn, 1000, 10000000, false);
              CompactionController controller = new CompactionController(cfs, sstables, cfs.gcBefore(nowInSec));
              CompactionIterator ci = new CompactionIterator(OperationType.COMPACTION, scanners.scanners, controller, nowInSec, UUIDGen.getTimeUUID()))
         {
@@ -186,9 +187,9 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
             writer.finish();
         }
         LifecycleTransaction.waitForDeletions();
+        assertEquals(1, assertFileCounts(sstables.iterator().next().descriptor.directory.list()));
+
         validateCFS(cfs);
-        int filecounts = assertFileCounts(sstables.iterator().next().descriptor.directory.list());
-        assertEquals(1, filecounts);
         truncate(cfs);
     }
 
@@ -210,7 +211,7 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
         try (ISSTableScanner scanner = s.getScanner();
              CompactionController controller = new CompactionController(cfs, compacting, 0);
              LifecycleTransaction txn = cfs.getTracker().tryModify(compacting, OperationType.UNKNOWN);
-             SSTableRewriter rewriter = new SSTableRewriter(txn, 1000, false, 10000000, false);
+             SSTableRewriter rewriter = new SSTableRewriter(txn, 1000, 10000000, false);
              CompactionIterator ci = new CompactionIterator(OperationType.COMPACTION, Collections.singletonList(scanner), controller, FBUtilities.nowInSeconds(), UUIDGen.getTimeUUID()))
         {
             rewriter.switchWriter(getWriter(cfs, s.descriptor.directory, txn));
@@ -265,7 +266,7 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
         try (ISSTableScanner scanner = s.getScanner();
              CompactionController controller = new CompactionController(cfs, compacting, 0);
              LifecycleTransaction txn = cfs.getTracker().tryModify(compacting, OperationType.UNKNOWN);
-             SSTableRewriter rewriter = new SSTableRewriter(txn, 1000, false, 10000000, false);
+             SSTableRewriter rewriter = new SSTableRewriter(txn, 1000, 10000000, false);
              CompactionIterator ci = new CompactionIterator(OperationType.COMPACTION, Collections.singletonList(scanner), controller, FBUtilities.nowInSeconds(), UUIDGen.getTimeUUID()))
         {
             rewriter.switchWriter(getWriter(cfs, s.descriptor.directory, txn));
@@ -416,7 +417,7 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
         try (ISSTableScanner scanner = s.getScanner();
              CompactionController controller = new CompactionController(cfs, compacting, 0);
              LifecycleTransaction txn = cfs.getTracker().tryModify(compacting, OperationType.UNKNOWN);
-             SSTableRewriter rewriter = new SSTableRewriter(txn, 1000, false, 10000000, false))
+             SSTableRewriter rewriter = new SSTableRewriter(txn, 1000, 10000000, false))
         {
             rewriter.switchWriter(getWriter(cfs, s.descriptor.directory, txn));
             test.run(scanner, controller, s, cfs, rewriter, txn);
@@ -448,7 +449,7 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
         try (ISSTableScanner scanner = s.getScanner();
              CompactionController controller = new CompactionController(cfs, compacting, 0);
              LifecycleTransaction txn = cfs.getTracker().tryModify(compacting, OperationType.UNKNOWN);
-             SSTableRewriter rewriter = new SSTableRewriter(txn, 1000, false, 10000000, false);
+             SSTableRewriter rewriter = new SSTableRewriter(txn, 1000, 10000000, false);
              CompactionIterator ci = new CompactionIterator(OperationType.COMPACTION, Collections.singletonList(scanner), controller, FBUtilities.nowInSeconds(), UUIDGen.getTimeUUID()))
         {
             rewriter.switchWriter(getWriter(cfs, s.descriptor.directory, txn));
@@ -494,7 +495,7 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
         try (ISSTableScanner scanner = s.getScanner();
              CompactionController controller = new CompactionController(cfs, compacting, 0);
              LifecycleTransaction txn = cfs.getTracker().tryModify(compacting, OperationType.UNKNOWN);
-             SSTableRewriter rewriter = new SSTableRewriter(txn, 1000, false, 10000000, false);
+             SSTableRewriter rewriter = new SSTableRewriter(txn, 1000, 10000000, false);
              CompactionIterator ci = new CompactionIterator(OperationType.COMPACTION, Collections.singletonList(scanner), controller, FBUtilities.nowInSeconds(), UUIDGen.getTimeUUID()))
         {
             rewriter.switchWriter(getWriter(cfs, s.descriptor.directory, txn));
@@ -534,7 +535,7 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
         try (ISSTableScanner scanner = s.getScanner();
              CompactionController controller = new CompactionController(cfs, compacting, 0);
              LifecycleTransaction txn = cfs.getTracker().tryModify(compacting, OperationType.UNKNOWN);
-             SSTableRewriter rewriter = new SSTableRewriter(txn, 1000, false, 1000000, false);
+             SSTableRewriter rewriter = new SSTableRewriter(txn, 1000, 1000000, false);
              CompactionIterator ci = new CompactionIterator(OperationType.COMPACTION, Collections.singletonList(scanner), controller, FBUtilities.nowInSeconds(), UUIDGen.getTimeUUID()))
         {
             rewriter.switchWriter(getWriter(cfs, s.descriptor.directory, txn));
@@ -620,7 +621,7 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
              CompactionController controller = new CompactionController(cfs, compacting, 0);
              LifecycleTransaction txn = offline ? LifecycleTransaction.offline(OperationType.UNKNOWN, compacting)
                                        : cfs.getTracker().tryModify(compacting, OperationType.UNKNOWN);
-             SSTableRewriter rewriter = new SSTableRewriter(txn, 1000, offline, 10000000, false);
+             SSTableRewriter rewriter = new SSTableRewriter(txn, 100, 10000000, false);
              CompactionIterator ci = new CompactionIterator(OperationType.COMPACTION, Collections.singletonList(scanner), controller, FBUtilities.nowInSeconds(), UUIDGen.getTimeUUID())
         )
         {
@@ -710,7 +711,7 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
         try (ISSTableScanner scanner = compacting.iterator().next().getScanner();
              CompactionController controller = new CompactionController(cfs, compacting, 0);
              LifecycleTransaction txn = cfs.getTracker().tryModify(compacting, OperationType.UNKNOWN);
-             SSTableRewriter rewriter = new SSTableRewriter(txn, 1000, false, 1, false);
+             SSTableRewriter rewriter = new SSTableRewriter(txn, 1000, 1, false);
              CompactionIterator ci = new CompactionIterator(OperationType.COMPACTION, Collections.singletonList(scanner), controller, FBUtilities.nowInSeconds(), UUIDGen.getTimeUUID())
         )
         {
@@ -748,7 +749,7 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
         try (ISSTableScanner scanner = sstables.iterator().next().getScanner();
              CompactionController controller = new CompactionController(cfs, sstables, 0);
              LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN);
-             SSTableRewriter writer = new SSTableRewriter(txn, 1000, false, 10000000, false);
+             SSTableRewriter writer = new SSTableRewriter(txn, 1000, 10000000, false);
              CompactionIterator ci = new CompactionIterator(OperationType.COMPACTION, Collections.singletonList(scanner), controller, FBUtilities.nowInSeconds(), UUIDGen.getTimeUUID())
         )
         {
@@ -813,7 +814,7 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
                 }
             }
         };
-        Thread t = new Thread(r);
+        Thread t = NamedThreadFactory.createThread(r);
         try
         {
             t.start();
@@ -850,8 +851,8 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
         int nowInSec = FBUtilities.nowInSeconds();
         try (AbstractCompactionStrategy.ScannerList scanners = cfs.getCompactionStrategyManager().getScanners(sstables);
              LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN);
-             SSTableRewriter writer = new SSTableRewriter(txn, 1000, false, false);
-             SSTableRewriter writer2 = new SSTableRewriter(txn, 1000, false, false);
+             SSTableRewriter writer = SSTableRewriter.constructWithoutEarlyOpening(txn, false, 1000);
+             SSTableRewriter writer2 = SSTableRewriter.constructWithoutEarlyOpening(txn, false, 1000);
              CompactionController controller = new CompactionController(cfs, sstables, cfs.gcBefore(nowInSec));
              CompactionIterator ci = new CompactionIterator(OperationType.COMPACTION, scanners.scanners, controller, nowInSec, UUIDGen.getTimeUUID())
              )
@@ -895,7 +896,7 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
                 }
             }
         };
-        Thread t = new Thread(r);
+        Thread t = NamedThreadFactory.createThread(r);
         try
         {
             t.start();

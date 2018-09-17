@@ -19,7 +19,6 @@
 package org.apache.cassandra.db.compaction;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
@@ -67,12 +66,13 @@ public class TimeWindowCompactionStrategy extends AbstractCompactionStrategy
         }
         else
             logger.debug("Enabling tombstone compactions for TWCS");
-
     }
 
     @Override
+    @SuppressWarnings("resource") // transaction is closed by AbstractCompactionTask::execute
     public AbstractCompactionTask getNextBackgroundTask(int gcBefore)
     {
+        List<SSTableReader> previousCandidate = null;
         while (true)
         {
             List<SSTableReader> latestBucket = getNextBackgroundSSTables(gcBefore);
@@ -80,9 +80,20 @@ public class TimeWindowCompactionStrategy extends AbstractCompactionStrategy
             if (latestBucket.isEmpty())
                 return null;
 
+            // Already tried acquiring references without success. It means there is a race with
+            // the tracker but candidate SSTables were not yet replaced in the compaction strategy manager
+            if (latestBucket.equals(previousCandidate))
+            {
+                logger.warn("Could not acquire references for compacting SSTables {} which is not a problem per se," +
+                            "unless it happens frequently, in which case it must be reported. Will retry later.",
+                            latestBucket);
+                return null;
+            }
+
             LifecycleTransaction modifier = cfs.getTracker().tryModify(latestBucket, OperationType.COMPACTION);
             if (modifier != null)
-                return new CompactionTask(cfs, modifier, gcBefore);
+                return new TimeWindowCompactionTask(cfs, modifier, gcBefore, options.ignoreOverlaps);
+            previousCandidate = latestBucket;
         }
     }
 
@@ -104,7 +115,8 @@ public class TimeWindowCompactionStrategy extends AbstractCompactionStrategy
         if (System.currentTimeMillis() - lastExpiredCheck > options.expiredSSTableCheckFrequency)
         {
             logger.debug("TWCS expired check sufficiently far in the past, checking for fully expired SSTables");
-            expired = CompactionController.getFullyExpiredSSTables(cfs, uncompacting, cfs.getOverlappingLiveSSTables(uncompacting), gcBefore);
+            expired = CompactionController.getFullyExpiredSSTables(cfs, uncompacting, options.ignoreOverlaps ? Collections.emptySet() : cfs.getOverlappingLiveSSTables(uncompacting),
+                                                                   gcBefore, options.ignoreOverlaps);
             lastExpiredCheck = System.currentTimeMillis();
         }
         else
@@ -144,7 +156,7 @@ public class TimeWindowCompactionStrategy extends AbstractCompactionStrategy
         if (sstablesWithTombstones.isEmpty())
             return Collections.emptyList();
 
-        return Collections.singletonList(Collections.min(sstablesWithTombstones, new SSTableReader.SizeComparator()));
+        return Collections.singletonList(Collections.min(sstablesWithTombstones, SSTableReader.sizeComparator));
     }
 
     private List<SSTableReader> getCompactionCandidates(Iterable<SSTableReader> candidateSSTables)
@@ -158,8 +170,6 @@ public class TimeWindowCompactionStrategy extends AbstractCompactionStrategy
         List<SSTableReader> mostInteresting = newestBucket(buckets.left,
                                                            cfs.getMinimumCompactionThreshold(),
                                                            cfs.getMaximumCompactionThreshold(),
-                                                           options.sstableWindowUnit,
-                                                           options.sstableWindowSize,
                                                            options.stcsOptions,
                                                            this.highestWindowSeen);
         if (!mostInteresting.isEmpty())
@@ -192,16 +202,16 @@ public class TimeWindowCompactionStrategy extends AbstractCompactionStrategy
         switch(windowTimeUnit)
         {
             case MINUTES:
-                lowerTimestamp = timestampInSeconds - ((timestampInSeconds) % (60 * windowTimeSize));
+                lowerTimestamp = timestampInSeconds - ((timestampInSeconds) % (60L * windowTimeSize));
                 upperTimestamp = (lowerTimestamp + (60L * (windowTimeSize - 1L))) + 59L;
                 break;
             case HOURS:
-                lowerTimestamp = timestampInSeconds - ((timestampInSeconds) % (3600 * windowTimeSize));
+                lowerTimestamp = timestampInSeconds - ((timestampInSeconds) % (3600L * windowTimeSize));
                 upperTimestamp = (lowerTimestamp + (3600L * (windowTimeSize - 1L))) + 3599L;
                 break;
             case DAYS:
             default:
-                lowerTimestamp = timestampInSeconds - ((timestampInSeconds) % (86400 * windowTimeSize));
+                lowerTimestamp = timestampInSeconds - ((timestampInSeconds) % (86400L * windowTimeSize));
                 upperTimestamp = (lowerTimestamp + (86400L * (windowTimeSize - 1L))) + 86399L;
                 break;
         }
@@ -239,7 +249,7 @@ public class TimeWindowCompactionStrategy extends AbstractCompactionStrategy
                 maxTimestamp = bounds.left;
         }
 
-        logger.trace("buckets {}, max timestamp", buckets, maxTimestamp);
+        logger.trace("buckets {}, max timestamp {}", buckets, maxTimestamp);
         return Pair.create(buckets, maxTimestamp);
     }
 
@@ -267,7 +277,7 @@ public class TimeWindowCompactionStrategy extends AbstractCompactionStrategy
      * @return a bucket (list) of sstables to compact.
      */
     @VisibleForTesting
-    static List<SSTableReader> newestBucket(HashMultimap<Long, SSTableReader> buckets, int minThreshold, int maxThreshold, TimeUnit sstableWindowUnit, int sstableWindowSize, SizeTieredCompactionStrategyOptions stcsOptions, long now)
+    static List<SSTableReader> newestBucket(HashMultimap<Long, SSTableReader> buckets, int minThreshold, int maxThreshold, SizeTieredCompactionStrategyOptions stcsOptions, long now)
     {
         // If the current bucket has at least minThreshold SSTables, choose that one.
         // For any other bucket, at least 2 SSTables is enough.
@@ -317,12 +327,13 @@ public class TimeWindowCompactionStrategy extends AbstractCompactionStrategy
         List<SSTableReader> ssTableReaders = new ArrayList<>(bucket);
 
         // Trim the largest sstables off the end to meet the maxThreshold
-        Collections.sort(ssTableReaders, new SSTableReader.SizeComparator());
+        Collections.sort(ssTableReaders, SSTableReader.sizeComparator);
 
         return ImmutableList.copyOf(Iterables.limit(ssTableReaders, maxThreshold));
     }
 
     @Override
+    @SuppressWarnings("resource") // transaction is closed by AbstractCompactionTask::execute
     public synchronized Collection<AbstractCompactionTask> getMaximalTask(int gcBefore, boolean splitOutput)
     {
         Iterable<SSTableReader> filteredSSTables = filterSuspectSSTables(sstables);
@@ -331,10 +342,11 @@ public class TimeWindowCompactionStrategy extends AbstractCompactionStrategy
         LifecycleTransaction txn = cfs.getTracker().tryModify(filteredSSTables, OperationType.COMPACTION);
         if (txn == null)
             return null;
-        return Collections.singleton(new CompactionTask(cfs, txn, gcBefore));
+        return Collections.singleton(new TimeWindowCompactionTask(cfs, txn, gcBefore, options.ignoreOverlaps));
     }
 
     @Override
+    @SuppressWarnings("resource") // transaction is closed by AbstractCompactionTask::execute
     public synchronized AbstractCompactionTask getUserDefinedTask(Collection<SSTableReader> sstables, int gcBefore)
     {
         assert !sstables.isEmpty(); // checked for by CM.submitUserDefined
@@ -346,7 +358,7 @@ public class TimeWindowCompactionStrategy extends AbstractCompactionStrategy
             return null;
         }
 
-        return new CompactionTask(cfs, modifier, gcBefore).setUserDefined(true);
+        return new TimeWindowCompactionTask(cfs, modifier, gcBefore, options.ignoreOverlaps).setUserDefined(true);
     }
 
     public int getEstimatedRemainingTasks()

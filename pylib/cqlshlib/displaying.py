@@ -99,6 +99,7 @@ class FormattedValue:
         """
         return self.coloredval + self._pad(width, fill)
 
+
 DEFAULT_VALUE_COLORS = dict(
     default=YELLOW,
     text=YELLOW,
@@ -113,6 +114,7 @@ DEFAULT_VALUE_COLORS = dict(
     inet=GREEN,
     boolean=GREEN,
     uuid=GREEN,
+    duration=GREEN,
     collection=BLUE,
     reset=ANSI_RESET,
 )

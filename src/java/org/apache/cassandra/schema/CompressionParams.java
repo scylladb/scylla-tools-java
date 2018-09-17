@@ -62,7 +62,7 @@ public final class CompressionParams
     public static final String CHUNK_LENGTH_IN_KB = "chunk_length_in_kb";
     public static final String ENABLED = "enabled";
 
-    public static final CompressionParams DEFAULT = new CompressionParams(LZ4Compressor.instance,
+    public static final CompressionParams DEFAULT = new CompressionParams(LZ4Compressor.create(Collections.<String, String>emptyMap()),
                                                                           DEFAULT_CHUNK_LENGTH,
                                                                           Collections.emptyMap());
 
@@ -145,7 +145,7 @@ public final class CompressionParams
 
     public static CompressionParams lz4(Integer chunkLength)
     {
-        return new CompressionParams(LZ4Compressor.instance, chunkLength, Collections.emptyMap());
+        return new CompressionParams(LZ4Compressor.create(Collections.emptyMap()), chunkLength, Collections.emptyMap());
     }
 
     public CompressionParams(String sstableCompressorClass, Integer chunkLength, Map<String, String> otherOptions) throws ConfigurationException
@@ -271,14 +271,15 @@ public final class CompressionParams
         }
     }
 
-    public static ICompressor createCompressor(ParameterizedClass compression) throws ConfigurationException {
+    public static ICompressor createCompressor(ParameterizedClass compression) throws ConfigurationException
+    {
         return createCompressor(parseCompressorClass(compression.class_name), copyOptions(compression.parameters));
     }
 
     private static Map<String, String> copyOptions(Map<? extends CharSequence, ? extends CharSequence> co)
     {
         if (co == null || co.isEmpty())
-            return Collections.<String, String>emptyMap();
+            return Collections.emptyMap();
 
         Map<String, String> compressionOptions = new HashMap<>();
         for (Map.Entry<? extends CharSequence, ? extends CharSequence> entry : co.entrySet())
@@ -288,7 +289,7 @@ public final class CompressionParams
 
     /**
      * Parse the chunk length (in KB) and returns it as bytes.
-     * 
+     *
      * @param chLengthKB the length of the chunk to parse
      * @return the chunk length in bytes
      * @throws ConfigurationException if the chunk size is too large
@@ -336,9 +337,9 @@ public final class CompressionParams
             if (!hasLoggedChunkLengthWarning)
             {
                 hasLoggedChunkLengthWarning = true;
-                logger.warn(format("The %s option has been deprecated. You should use %s instead",
+                logger.warn("The {} option has been deprecated. You should use {} instead",
                                    CHUNK_LENGTH_KB,
-                                   CHUNK_LENGTH_IN_KB));
+                                   CHUNK_LENGTH_IN_KB);
             }
 
             return parseChunkLength(options.remove(CHUNK_LENGTH_KB));
@@ -385,9 +386,9 @@ public final class CompressionParams
         if (options.containsKey(SSTABLE_COMPRESSION) && !hasLoggedSsTableCompressionWarning)
         {
             hasLoggedSsTableCompressionWarning = true;
-            logger.warn(format("The %s option has been deprecated. You should use %s instead",
+            logger.warn("The {} option has been deprecated. You should use {} instead",
                                SSTABLE_COMPRESSION,
-                               CLASS));
+                               CLASS);
         }
 
         return options.remove(SSTABLE_COMPRESSION);

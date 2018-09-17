@@ -227,32 +227,6 @@ public class CompositeType extends AbstractCompositeType
         return null;
     }
 
-    public static class CompositeComponent
-    {
-        public ByteBuffer value;
-        public byte eoc;
-
-        public CompositeComponent(ByteBuffer value, byte eoc)
-        {
-            this.value = value;
-            this.eoc = eoc;
-        }
-    }
-
-    public static List<CompositeComponent> deconstruct(ByteBuffer bytes)
-    {
-        List<CompositeComponent> list = new ArrayList<>();
-        ByteBuffer bb = bytes.duplicate();
-        readStatic(bb);
-        while (bb.remaining() > 0)
-        {
-            ByteBuffer value = ByteBufferUtil.readBytesWithShortLength(bb);
-            byte eoc = bb.get();
-            list.add(new CompositeComponent(value, eoc));
-        }
-        return list;
-    }
-
     // Extract CQL3 column name from the full column name.
     public ByteBuffer extractLastComponent(ByteBuffer bb)
     {
@@ -384,7 +358,9 @@ public class CompositeType extends AbstractCompositeType
         for (ByteBuffer bb : buffers)
         {
             ByteBufferUtil.writeShortLength(out, bb.remaining());
-            out.put(bb.duplicate());
+            int toCopy = bb.remaining();
+            ByteBufferUtil.arrayCopy(bb, bb.position(), out, out.position(), toCopy);
+            out.position(out.position() + toCopy);
             out.put((byte) 0);
         }
         out.flip();

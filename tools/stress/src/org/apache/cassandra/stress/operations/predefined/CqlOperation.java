@@ -31,12 +31,12 @@ import com.datastax.driver.core.ResultSet;
 import com.datastax.driver.core.Row;
 import org.apache.cassandra.stress.generate.PartitionGenerator;
 import org.apache.cassandra.stress.generate.SeedManager;
+import org.apache.cassandra.stress.report.Timer;
 import org.apache.cassandra.stress.settings.Command;
 import org.apache.cassandra.stress.settings.ConnectionStyle;
 import org.apache.cassandra.stress.settings.StressSettings;
 import org.apache.cassandra.stress.util.JavaDriverClient;
 import org.apache.cassandra.stress.util.ThriftClient;
-import org.apache.cassandra.stress.util.Timer;
 import org.apache.cassandra.thrift.Compression;
 import org.apache.cassandra.thrift.CqlResult;
 import org.apache.cassandra.thrift.CqlRow;
@@ -48,6 +48,9 @@ import org.apache.thrift.TException;
 
 public abstract class CqlOperation<V> extends PredefinedOperation
 {
+
+    public static final ByteBuffer[][] EMPTY_BYTE_BUFFERS = new ByteBuffer[0][];
+    public static final byte[][] EMPTY_BYTE_ARRAYS = new byte[0][];
 
     protected abstract List<Object> getQueryParameters(byte[] key);
     protected abstract String buildQuery();
@@ -458,7 +461,7 @@ public abstract class CqlOperation<V> extends PredefinedOperation
                 public ByteBuffer[][] apply(ResultSet result)
                 {
                     if (result == null)
-                        return new ByteBuffer[0][];
+                        return EMPTY_BYTE_BUFFERS;
                     List<Row> rows = result.all();
 
                     ByteBuffer[][] r = new ByteBuffer[rows.size()][];
@@ -484,7 +487,7 @@ public abstract class CqlOperation<V> extends PredefinedOperation
                 public ByteBuffer[][] apply(ResultMessage result)
                 {
                     if (!(result instanceof ResultMessage.Rows))
-                        return new ByteBuffer[0][];
+                        return EMPTY_BYTE_BUFFERS;
 
                     ResultMessage.Rows rows = ((ResultMessage.Rows) result);
                     ByteBuffer[][] r = new ByteBuffer[rows.result.size()][];
@@ -539,7 +542,7 @@ public abstract class CqlOperation<V> extends PredefinedOperation
                 {
 
                     if (result == null)
-                        return new byte[0][];
+                        return EMPTY_BYTE_ARRAYS;
                     List<Row> rows = result.all();
                     byte[][] r = new byte[rows.size()][];
                     for (int i = 0 ; i < r.length ; i++)

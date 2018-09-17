@@ -23,11 +23,12 @@ import java.util.Set;
 
 import javax.annotation.Nullable;
 
+import com.google.common.base.MoreObjects;
 import com.google.common.base.Objects;
 import com.google.common.collect.Iterables;
 
 import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.config.ViewDefinition;
 import org.apache.cassandra.exceptions.ConfigurationException;
 
@@ -154,14 +155,14 @@ public final class KeyspaceMetadata
     @Override
     public String toString()
     {
-        return Objects.toStringHelper(this)
-                      .add("name", name)
-                      .add("params", params)
-                      .add("tables", tables)
-                      .add("views", views)
-                      .add("functions", functions)
-                      .add("types", types)
-                      .toString();
+        return MoreObjects.toStringHelper(this)
+                          .add("name", name)
+                          .add("params", params)
+                          .add("tables", tables)
+                          .add("views", views)
+                          .add("functions", functions)
+                          .add("types", types)
+                          .toString();
     }
 
     public void validate()
@@ -169,7 +170,7 @@ public final class KeyspaceMetadata
         if (!CFMetaData.isNameValid(name))
             throw new ConfigurationException(String.format("Keyspace name must not be empty, more than %s characters long, "
                                                            + "or contain non-alphanumeric-underscore characters (got \"%s\")",
-                                                           Schema.NAME_LENGTH,
+                                                           SchemaConstants.NAME_LENGTH,
                                                            name));
         params.validate(name);
         tablesAndViews().forEach(CFMetaData::validate);

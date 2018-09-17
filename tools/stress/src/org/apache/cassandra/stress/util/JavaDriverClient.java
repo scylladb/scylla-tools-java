@@ -24,6 +24,8 @@ import javax.net.ssl.SSLContext;
 
 import com.datastax.driver.core.*;
 import com.datastax.driver.core.policies.DCAwareRoundRobinPolicy;
+import com.datastax.driver.core.policies.LoadBalancingPolicy;
+import com.datastax.driver.core.policies.TokenAwarePolicy;
 import com.datastax.driver.core.policies.WhiteListPolicy;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 import io.netty.util.internal.logging.Slf4JLoggerFactory;
@@ -51,7 +53,7 @@ public class JavaDriverClient
     private final EncryptionOptions.ClientEncryptionOptions encryptionOptions;
     private Cluster cluster;
     private Session session;
-    private final WhiteListPolicy whitelist;
+    private final LoadBalancingPolicy loadBalancingPolicy;
 
     private static final ConcurrentMap<String, PreparedStatement> stmts = new ConcurrentHashMap<>();
 
@@ -69,11 +71,8 @@ public class JavaDriverClient
         this.password = settings.mode.password;
         this.authProvider = settings.mode.authProvider;
         this.encryptionOptions = encryptionOptions;
-        if (settings.node.isWhiteList)
-            whitelist = new WhiteListPolicy(DCAwareRoundRobinPolicy.builder().build(), settings.node.resolveAll(settings.port.nativePort));
-        else
-            whitelist = null;
-        connectionsPerHost = settings.mode.connectionsPerHost == null ? 8 : settings.mode.connectionsPerHost;
+        this.loadBalancingPolicy = loadBalancingPolicy(settings);
+        this.connectionsPerHost = settings.mode.connectionsPerHost == null ? 8 : settings.mode.connectionsPerHost;
 
         int maxThreadCount = 0;
         if (settings.rate.auto)
@@ -86,6 +85,22 @@ public class JavaDriverClient
         int requestsPerConnection = (maxThreadCount / connectionsPerHost) + connectionsPerHost;
 
         maxPendingPerConnection = settings.mode.maxPendingPerConnection == null ? Math.max(128, requestsPerConnection ) : settings.mode.maxPendingPerConnection;
+    }
+
+    private LoadBalancingPolicy loadBalancingPolicy(StressSettings settings)
+    {
+        DCAwareRoundRobinPolicy.Builder policyBuilder = DCAwareRoundRobinPolicy.builder();
+        if (settings.node.datacenter != null)
+            policyBuilder.withLocalDc(settings.node.datacenter);
+
+        LoadBalancingPolicy ret = null;
+        if (settings.node.datacenter != null)
+            ret = policyBuilder.build();
+
+        if (settings.node.isWhiteList)
+            ret = new WhiteListPolicy(ret == null ? policyBuilder.build() : ret, settings.node.resolveAll(settings.port.nativePort));
+
+        return new TokenAwarePolicy(ret == null ? policyBuilder.build() : ret);
     }
 
     public PreparedStatement prepare(String query)
@@ -118,8 +133,8 @@ public class JavaDriverClient
                                                 .withoutJMXReporting()
                                                 .withProtocolVersion(protocolVersion)
                                                 .withoutMetrics(); // The driver uses metrics 3 with conflict with our version
-        if (whitelist != null)
-            clusterBuilder.withLoadBalancingPolicy(whitelist);
+        if (loadBalancingPolicy != null)
+            clusterBuilder.withLoadBalancingPolicy(loadBalancingPolicy);
         clusterBuilder.withCompression(compression);
         if (encryptionOptions.enabled)
         {
@@ -175,7 +190,6 @@ public class JavaDriverClient
 
     public ResultSet executePrepared(PreparedStatement stmt, List<Object> queryParams, org.apache.cassandra.db.ConsistencyLevel consistency)
     {
-
         stmt.setConsistencyLevel(from(consistency));
         BoundStatement bstmt = stmt.bind((Object[]) queryParams.toArray(new Object[queryParams.size()]));
         return getSession().execute(bstmt);

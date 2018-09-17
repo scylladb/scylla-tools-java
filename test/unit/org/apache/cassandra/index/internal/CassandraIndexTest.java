@@ -28,6 +28,7 @@ import org.junit.Test;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.cql3.restrictions.StatementRestrictions;
@@ -47,6 +48,7 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 /**
@@ -59,7 +61,6 @@ public class CassandraIndexTest extends CQLTester
     {
         new TestScript().tableDefinition("CREATE TABLE %s (k int, c int, v int, PRIMARY KEY (k, c));")
                         .target("v")
-                        .indexName("v_index")
                         .withFirstRow(row(0, 0, 0))
                         .withSecondRow(row(1, 1, 1))
                         .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
@@ -76,7 +77,6 @@ public class CassandraIndexTest extends CQLTester
         // No update allowed on primary key columns, so this script has no update expression
         new TestScript().tableDefinition("CREATE TABLE %s (k int, c int, v int, PRIMARY KEY (k, c));")
                         .target("c")
-                        .indexName("c_index")
                         .withFirstRow(row(0, 0, 0))
                         .withSecondRow(row(1, 1, 1))
                         .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
@@ -91,7 +91,6 @@ public class CassandraIndexTest extends CQLTester
         // No update allowed on primary key columns, so this script has no update expression
         new TestScript().tableDefinition("CREATE TABLE %s (k int, c1 int, c2 int, v int, PRIMARY KEY (k, c1, c2));")
                         .target("c2")
-                        .indexName("c2_index")
                         .withFirstRow(row(0, 0, 0, 0))
                         .withSecondRow(row(1, 1, 1, 1))
                         .missingIndexMessage(String.format("PRIMARY KEY column \"%s\" cannot be restricted " +
@@ -108,10 +107,9 @@ public class CassandraIndexTest extends CQLTester
         // No update allowed on primary key columns, so this script has no update expression
         new TestScript().tableDefinition("CREATE TABLE %s (k1 int, k2 int, c1 int, c2 int, v int, PRIMARY KEY ((k1, k2), c1, c2));")
                         .target("k1")
-                        .indexName("k1_index")
                         .withFirstRow(row(0, 0, 0, 0, 0))
                         .withSecondRow(row(1, 1, 1, 1, 1))
-                        .missingIndexMessage("Partition key parts: k2 must be restricted as other parts are")
+                        .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
                         .firstQueryExpression("k1=0")
                         .secondQueryExpression("k1=1")
                         .run();
@@ -123,10 +121,9 @@ public class CassandraIndexTest extends CQLTester
         // No update allowed on primary key columns, so this script has no update expression
         new TestScript().tableDefinition("CREATE TABLE %s (k1 int, k2 int, c1 int, c2 int, v int, PRIMARY KEY ((k1, k2), c1, c2));")
                         .target("k2")
-                        .indexName("k2_index")
                         .withFirstRow(row(0, 0, 0, 0, 0))
                         .withSecondRow(row(1, 1, 1, 1, 1))
-                        .missingIndexMessage("Partition key parts: k1 must be restricted as other parts are")
+                        .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
                         .firstQueryExpression("k2=0")
                         .secondQueryExpression("k2=1")
                         .run();
@@ -137,7 +134,6 @@ public class CassandraIndexTest extends CQLTester
     {
         new TestScript().tableDefinition("CREATE TABLE %s (k int, c int, l list<int>, PRIMARY KEY (k, c));")
                         .target("l")
-                        .indexName("l_index1")
                         .withFirstRow(row(0, 0, Lists.newArrayList(10, 20, 30)))
                         .withSecondRow(row(1, 1, Lists.newArrayList(11, 21, 31)))
                         .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
@@ -153,7 +149,6 @@ public class CassandraIndexTest extends CQLTester
     {
         new TestScript().tableDefinition("CREATE TABLE %s (k int, c int, l list<int>, PRIMARY KEY (k, c));")
                         .target("l")
-                        .indexName("l_index2")
                         .withFirstRow(row(0, 0, Lists.newArrayList(10, 20, 30)))
                         .withSecondRow(row(1, 1, Lists.newArrayList(11, 21, 31)))
                         .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
@@ -169,7 +164,6 @@ public class CassandraIndexTest extends CQLTester
     {
         new TestScript().tableDefinition("CREATE TABLE %s (k int, c int, s set<int>, PRIMARY KEY (k, c));")
                         .target("s")
-                        .indexName("s_index1")
                         .withFirstRow(row(0, 0, Sets.newHashSet(10, 20, 30)))
                         .withSecondRow(row(1, 1, Sets.newHashSet(11, 21, 31)))
                         .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
@@ -185,7 +179,6 @@ public class CassandraIndexTest extends CQLTester
     {
         new TestScript().tableDefinition("CREATE TABLE %s (k int, c int, s set<int>, PRIMARY KEY (k, c));")
                         .target("s")
-                        .indexName("s_index2")
                         .withFirstRow(row(0, 0, Sets.newHashSet(10, 20, 30)))
                         .withSecondRow(row(1, 1, Sets.newHashSet(11, 21, 31)))
                         .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
@@ -201,7 +194,6 @@ public class CassandraIndexTest extends CQLTester
     {
         new TestScript().tableDefinition("CREATE TABLE %s (k int, c int, m map<text,int>, PRIMARY KEY (k, c));")
                         .target("m")
-                        .indexName("m_index1")
                         .withFirstRow(row(0, 0, ImmutableMap.of("a", 10, "b", 20, "c", 30)))
                         .withSecondRow(row(1, 1, ImmutableMap.of("d", 11, "e", 21, "f", 31)))
                         .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
@@ -217,7 +209,6 @@ public class CassandraIndexTest extends CQLTester
     {
         new TestScript().tableDefinition("CREATE TABLE %s (k int, c int, m map<text,int>, PRIMARY KEY (k, c));")
                         .target("m")
-                        .indexName("m_index2")
                         .withFirstRow(row(0, 0, ImmutableMap.of("a", 10, "b", 20, "c", 30)))
                         .withSecondRow(row(1, 1, ImmutableMap.of("d", 11, "e", 21, "f", 31)))
                         .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
@@ -233,7 +224,6 @@ public class CassandraIndexTest extends CQLTester
     {
         new TestScript().tableDefinition("CREATE TABLE %s (k int, c int, m map<text,int>, PRIMARY KEY (k, c));")
                         .target("keys(m)")
-                        .indexName("m_index3")
                         .withFirstRow(row(0, 0, ImmutableMap.of("a", 10, "b", 20, "c", 30)))
                         .withSecondRow(row(1, 1, ImmutableMap.of("d", 11, "e", 21, "f", 31)))
                         .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
@@ -249,7 +239,6 @@ public class CassandraIndexTest extends CQLTester
     {
         new TestScript().tableDefinition("CREATE TABLE %s (k int, c int, m map<text,int>, PRIMARY KEY (k, c));")
                         .target("keys(m)")
-                        .indexName("m_index4")
                         .withFirstRow(row(0, 0, ImmutableMap.of("a", 10, "b", 20, "c", 30)))
                         .withSecondRow(row(1, 1, ImmutableMap.of("d", 11, "e", 21, "f", 31)))
                         .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
@@ -265,7 +254,6 @@ public class CassandraIndexTest extends CQLTester
     {
         new TestScript().tableDefinition("CREATE TABLE %s (k int, c int, m map<text,int>, PRIMARY KEY (k, c));")
                         .target("entries(m)")
-                        .indexName("m_index5")
                         .withFirstRow(row(0, 0, ImmutableMap.of("a", 10, "b", 20, "c", 30)))
                         .withSecondRow(row(1, 1, ImmutableMap.of("d", 11, "e", 21, "f", 31)))
                         .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
@@ -281,7 +269,6 @@ public class CassandraIndexTest extends CQLTester
     {
         new TestScript().tableDefinition("CREATE TABLE %s (k int, c int, m map<text,int>, PRIMARY KEY (k, c));")
                         .target("entries(m)")
-                        .indexName("m_index6")
                         .withFirstRow(row(0, 0, ImmutableMap.of("a", 10, "b", 20, "c", 30)))
                         .withSecondRow(row(1, 1, ImmutableMap.of("d", 11, "e", 21, "f", 31)))
                         .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
@@ -297,7 +284,6 @@ public class CassandraIndexTest extends CQLTester
     {
         new TestScript().tableDefinition("CREATE TABLE %s (k int, c int, l frozen<list<int>>, PRIMARY KEY (k, c));")
                         .target("full(l)")
-                        .indexName("fl_index")
                         .withFirstRow(row(0, 0, Lists.newArrayList(10, 20, 30)))
                         .withSecondRow(row(1, 1, Lists.newArrayList(11, 21, 31)))
                         .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
@@ -313,7 +299,6 @@ public class CassandraIndexTest extends CQLTester
     {
         new TestScript().tableDefinition("CREATE TABLE %s (k int, c int, s frozen<set<int>>, PRIMARY KEY (k, c));")
                         .target("full(s)")
-                        .indexName("fs_index")
                         .withFirstRow(row(0, 0, Sets.newHashSet(10, 20, 30)))
                         .withSecondRow(row(1, 1, Sets.newHashSet(11, 21, 31)))
                         .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
@@ -329,7 +314,6 @@ public class CassandraIndexTest extends CQLTester
     {
         new TestScript().tableDefinition("CREATE TABLE %s (k int, c int, m frozen<map<text,int>>, PRIMARY KEY (k, c));")
                         .target("full(m)")
-                        .indexName("fm_index")
                         .withFirstRow(row(0, 0, ImmutableMap.of("a", 10, "b", 20, "c", 30)))
                         .withSecondRow(row(1, 1, ImmutableMap.of("d", 11, "e", 21, "f", 31)))
                         .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
@@ -345,7 +329,6 @@ public class CassandraIndexTest extends CQLTester
     {
         new TestScript().tableDefinition("CREATE TABLE %s (k int, v int, PRIMARY KEY (k)) WITH COMPACT STORAGE;")
                         .target("v")
-                        .indexName("cv_index")
                         .withFirstRow(row(0, 0))
                         .withSecondRow(row(1,1))
                         .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
@@ -357,13 +340,67 @@ public class CassandraIndexTest extends CQLTester
     }
 
     @Test
+    public void indexOnStaticColumn() throws Throwable
+    {
+        Object[] row1 = row("k0", "c0", "s0");
+        Object[] row2 = row("k0", "c1", "s0");
+        Object[] row3 = row("k1", "c0", "s1");
+        Object[] row4 = row("k1", "c1", "s1");
+
+        createTable("CREATE TABLE %s (k text, c text, s text static, PRIMARY KEY (k, c));");
+        createIndex("CREATE INDEX sc_index on %s(s)");
+
+        execute("INSERT INTO %s (k, c, s) VALUES (?, ?, ?)", row1);
+        execute("INSERT INTO %s (k, c, s) VALUES (?, ?, ?)", row2);
+        execute("INSERT INTO %s (k, c, s) VALUES (?, ?, ?)", row3);
+        execute("INSERT INTO %s (k, c, s) VALUES (?, ?, ?)", row4);
+
+        assertRows(execute("SELECT * FROM %s WHERE s = ?", "s0"), row1, row2);
+        assertRows(execute("SELECT * FROM %s WHERE s = ?", "s1"), row3, row4);
+
+        assertRows(execute("SELECT * FROM %s WHERE s = ? AND token(k) >= token(?)", "s0", "k0"), row1, row2);
+        assertRows(execute("SELECT * FROM %s WHERE s = ? AND token(k) >= token(?)", "s1", "k1"), row3, row4);
+
+        assertEmpty(execute("SELECT * FROM %s WHERE s = ? AND token(k) < token(?)", "s0", "k0"));
+        assertEmpty(execute("SELECT * FROM %s WHERE s = ? AND token(k) < token(?)", "s1", "k1"));
+    }
+
+    @Test
+    public void indexOnClusteringColumnWithoutRegularColumns() throws Throwable
+    {
+        Object[] row1 = row("k0", "c0");
+        Object[] row2 = row("k0", "c1");
+        Object[] row3 = row("k1", "c0");
+        Object[] row4 = row("k1", "c1");
+        String tableName = createTable("CREATE TABLE %s (k text, c text, PRIMARY KEY(k, c))");
+        createIndex("CREATE INDEX no_regulars_idx ON %s(c)");
+
+        execute("INSERT INTO %s (k, c) VALUES (?, ?)", row1);
+        execute("INSERT INTO %s (k, c) VALUES (?, ?)", row2);
+        execute("INSERT INTO %s (k, c) VALUES (?, ?)", row3);
+        execute("INSERT INTO %s (k, c) VALUES (?, ?)", row4);
+
+        assertRowsIgnoringOrder(execute("SELECT * FROM %s WHERE c = ?", "c0"), row1, row3);
+        assertRowsIgnoringOrder(execute("SELECT * FROM %s WHERE c = ?", "c1"), row2, row4);
+        assertEmpty(execute("SELECT * FROM %s WHERE c = ?", "c3"));
+
+        dropIndex("DROP INDEX %s.no_regulars_idx");
+        createIndex("CREATE INDEX no_regulars_idx ON %s(c)");
+        assertTrue(waitForIndex(keyspace(), tableName, "no_regulars_idx"));
+
+        assertRowsIgnoringOrder(execute("SELECT * FROM %s WHERE c = ?", "c0"), row1, row3);
+        assertRowsIgnoringOrder(execute("SELECT * FROM %s WHERE c = ?", "c1"), row2, row4);
+        assertEmpty(execute("SELECT * FROM %s WHERE c = ?", "c3"));
+    }
+
+    @Test
     public void createIndexesOnMultipleMapDimensions() throws Throwable
     {
         Object[] row1 = row(0, 0, ImmutableMap.of("a", 10, "b", 20, "c", 30));
         Object[] row2 = row(1, 1, ImmutableMap.of("d", 11, "e", 21, "f", 32));
         createTable("CREATE TABLE %s (k int, c int, m map<text, int>, PRIMARY KEY(k, c))");
-        createIndex("CREATE INDEX mkey_index on %s(keys(m))");
-        createIndex("CREATE INDEX mval_index on %s(m)");
+        createIndex("CREATE INDEX ON %s(keys(m))");
+        createIndex("CREATE INDEX ON %s(m)");
 
         execute("INSERT INTO %s (k, c, m) VALUES (?, ?, ?)", row1);
         execute("INSERT INTO %s (k, c, m) VALUES (?, ?, ?)", row2);
@@ -380,7 +417,7 @@ public class CassandraIndexTest extends CQLTester
         int key = 0;
         int indexedValue = 99;
         createTable("CREATE TABLE %s (k int, v int, PRIMARY KEY(k))");
-        createIndex("CREATE INDEX v_index on %s(v)");
+        createIndex("CREATE INDEX ON %s(v)");
         execute("INSERT INTO %s (k, v) VALUES (?, ?)", key, indexedValue);
 
         assertRows(execute("SELECT * FROM %s WHERE v = ?", indexedValue), row(key, indexedValue));
@@ -395,7 +432,7 @@ public class CassandraIndexTest extends CQLTester
         int indexedVal = 2;
         int initialTtl = 3600;
         createTable("CREATE TABLE %s (k int, c int, v int, PRIMARY KEY(k,c))");
-        createIndex("CREATE INDEX c_index on %s(c)");
+        createIndex("CREATE INDEX ON %s(c)");
         execute("INSERT INTO %s (k, c, v) VALUES (?, ?, 0) USING TTL ?", basePk, indexedVal, initialTtl);
         ColumnFamilyStore baseCfs = getCurrentColumnFamilyStore();
         ColumnFamilyStore indexCfs = baseCfs.indexManager.listIndexes()
@@ -474,7 +511,7 @@ public class CassandraIndexTest extends CQLTester
         createIndex(String.format("CREATE INDEX %s ON %%s(c)", indexName));
         waitForIndex(KEYSPACE, tableName, indexName);
         // check that there are no other rows in the built indexes table
-        assertRows(execute(String.format("SELECT * FROM %s.\"%s\"", SystemKeyspace.NAME, SystemKeyspace.BUILT_INDEXES)),
+        assertRows(execute(String.format("SELECT * FROM %s.\"%s\"", SchemaConstants.SYSTEM_KEYSPACE_NAME, SystemKeyspace.BUILT_INDEXES)),
                    row(KEYSPACE, indexName));
 
         // rebuild the index and verify the built status table
@@ -482,7 +519,7 @@ public class CassandraIndexTest extends CQLTester
         waitForIndex(KEYSPACE, tableName, indexName);
 
         // check that there are no other rows in the built indexes table
-        assertRows(execute(String.format("SELECT * FROM %s.\"%s\"", SystemKeyspace.NAME, SystemKeyspace.BUILT_INDEXES)),
+        assertRows(execute(String.format("SELECT * FROM %s.\"%s\"", SchemaConstants.SYSTEM_KEYSPACE_NAME, SystemKeyspace.BUILT_INDEXES)),
                    row(KEYSPACE, indexName));
     }
 
@@ -502,8 +539,8 @@ public class CassandraIndexTest extends CQLTester
                                                                                indexKey,
                                                                                ColumnFilter.all(indexCfs.metadata),
                                                                                filter);
-        try (ReadOrderGroup orderGroup = ReadOrderGroup.forCommand(command);
-             UnfilteredRowIterator iter = command.queryMemtableAndDisk(indexCfs, orderGroup.indexReadOpOrderGroup()))
+        try (ReadExecutionController executionController = command.executionController();
+             UnfilteredRowIterator iter = command.queryMemtableAndDisk(indexCfs, executionController))
         {
             while( iter.hasNext())
             {
@@ -514,6 +551,9 @@ public class CassandraIndexTest extends CQLTester
             }
         }
     }
+
+    // Used in order to generate the unique names for indexes
+    private static int indexCounter;
 
     private class TestScript
     {
@@ -528,12 +568,6 @@ public class CassandraIndexTest extends CQLTester
 
         Object[] firstRow;
         Object[] secondRow;
-
-        TestScript indexName(String indexName)
-        {
-            this.indexName = indexName;
-            return this;
-        }
 
         TestScript target(String indexTarget)
         {
@@ -592,7 +626,6 @@ public class CassandraIndexTest extends CQLTester
         void run() throws Throwable
         {
             // check minimum required setup
-            assertNotNull(indexName);
             assertNotNull(indexTarget);
             assertNotNull(queryExpression1);
             assertNotNull(queryExpression2);
@@ -603,7 +636,9 @@ public class CassandraIndexTest extends CQLTester
                 assertNotNull(postUpdateQueryExpression);
 
             // first, create the table as we need the CFMetaData to build the other cql statements
-            createTable(tableDefinition);
+            String tableName = createTable(tableDefinition);
+
+            indexName = String.format("index_%s_%d", tableName, indexCounter++);
 
             // now setup the cql statements the test will run through. Some are dependent on
             // the table definition, others are not.

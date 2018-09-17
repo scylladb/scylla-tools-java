@@ -28,7 +28,10 @@ import org.junit.runner.RunWith;
 
 import org.apache.cassandra.*;
 import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.db.rows.RowIterator;
 import org.apache.cassandra.db.filter.*;
@@ -38,9 +41,9 @@ import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.service.pager.QueryPager;
 import org.apache.cassandra.service.pager.PagingState;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.transport.Server;
 
 import static org.apache.cassandra.cql3.QueryProcessor.executeInternal;
 import static org.apache.cassandra.utils.ByteBufferUtil.bytes;
@@ -53,6 +56,7 @@ public class QueryPagerTest
     public static final String CF_STANDARD = "Standard1";
     public static final String KEYSPACE_CQL = "cql_keyspace";
     public static final String CF_CQL = "table2";
+    public static final String CF_CQL_WITH_STATIC = "with_static";
     public static final int nowInSec = FBUtilities.nowInSeconds();
 
     @BeforeClass
@@ -65,10 +69,17 @@ public class QueryPagerTest
         SchemaLoader.createKeyspace(KEYSPACE_CQL,
                                     KeyspaceParams.simple(1),
                                     CFMetaData.compile("CREATE TABLE " + CF_CQL + " ("
-                                            + "k text,"
-                                            + "c text,"
-                                            + "v text,"
-                                            + "PRIMARY KEY (k, c))", KEYSPACE_CQL));
+                                                     + "k text,"
+                                                     + "c text,"
+                                                     + "v text,"
+                                                     + "PRIMARY KEY (k, c))", KEYSPACE_CQL),
+                                    CFMetaData.compile("CREATE TABLE " + CF_CQL_WITH_STATIC + " ("
+                                                     + "pk text, "
+                                                     + "ck int, "
+                                                     + "st int static, "
+                                                     + "v1 int, "
+                                                     + "v2 int, "
+                                                     + "PRIMARY KEY(pk, ck))", KEYSPACE_CQL));
         addData();
     }
 
@@ -122,7 +133,8 @@ public class QueryPagerTest
         StringBuilder sb = new StringBuilder();
         List<FilteredPartition> partitionList = new ArrayList<>();
         int rows = 0;
-        try (ReadOrderGroup orderGroup = pager.startOrderGroup(); PartitionIterator iterator = pager.fetchPageInternal(toQuery, orderGroup))
+        try (ReadExecutionController executionController = pager.executionController();
+             PartitionIterator iterator = pager.fetchPageInternal(toQuery, executionController))
         {
             while (iterator.hasNext())
             {
@@ -206,7 +218,7 @@ public class QueryPagerTest
         }
     }
 
-    private QueryPager maybeRecreate(QueryPager pager, ReadQuery command, boolean testPagingState, int protocolVersion)
+    private QueryPager maybeRecreate(QueryPager pager, ReadQuery command, boolean testPagingState, ProtocolVersion protocolVersion)
     {
         if (!testPagingState)
             return pager;
@@ -218,7 +230,7 @@ public class QueryPagerTest
     @Test
     public void namesQueryTest() throws Exception
     {
-        QueryPager pager = namesQuery("k0", "c1", "c5", "c7", "c8").getPager(null, Server.CURRENT_VERSION);
+        QueryPager pager = namesQuery("k0", "c1", "c5", "c7", "c8").getPager(null, ProtocolVersion.CURRENT);
 
         assertFalse(pager.isExhausted());
         List<FilteredPartition> partition = query(pager, 5, 4);
@@ -230,13 +242,13 @@ public class QueryPagerTest
     @Test
     public void sliceQueryTest() throws Exception
     {
-        sliceQueryTest(false, Server.VERSION_3);
-        sliceQueryTest(true, Server.VERSION_4);
-        sliceQueryTest(false, Server.VERSION_3);
-        sliceQueryTest(true, Server.VERSION_4);
+        sliceQueryTest(false, ProtocolVersion.V3);
+        sliceQueryTest(true, ProtocolVersion.V4);
+        sliceQueryTest(false, ProtocolVersion.V3);
+        sliceQueryTest(true, ProtocolVersion.V4);
     }
 
-    public void sliceQueryTest(boolean testPagingState, int protocolVersion) throws Exception
+    public void sliceQueryTest(boolean testPagingState, ProtocolVersion protocolVersion) throws Exception
     {
         ReadCommand command = sliceQuery("k0", "c1", "c8", 10);
         QueryPager pager = command.getPager(null, protocolVersion);
@@ -263,13 +275,13 @@ public class QueryPagerTest
     @Test
     public void reversedSliceQueryTest() throws Exception
     {
-        reversedSliceQueryTest(false, Server.VERSION_3);
-        reversedSliceQueryTest(true, Server.VERSION_4);
-        reversedSliceQueryTest(false, Server.VERSION_3);
-        reversedSliceQueryTest(true, Server.VERSION_4);
+        reversedSliceQueryTest(false, ProtocolVersion.V3);
+        reversedSliceQueryTest(true, ProtocolVersion.V4);
+        reversedSliceQueryTest(false, ProtocolVersion.V3);
+        reversedSliceQueryTest(true, ProtocolVersion.V4);
     }
 
-    public void reversedSliceQueryTest(boolean testPagingState, int protocolVersion) throws Exception
+    public void reversedSliceQueryTest(boolean testPagingState, ProtocolVersion protocolVersion) throws Exception
     {
         ReadCommand command = sliceQuery("k0", "c1", "c8", true, 10);
         QueryPager pager = command.getPager(null, protocolVersion);
@@ -296,13 +308,13 @@ public class QueryPagerTest
     @Test
     public void multiQueryTest() throws Exception
     {
-        multiQueryTest(false, Server.VERSION_3);
-        multiQueryTest(true, Server.VERSION_4);
-        multiQueryTest(false, Server.VERSION_3);
-        multiQueryTest(true, Server.VERSION_4);
+        multiQueryTest(false, ProtocolVersion.V3);
+        multiQueryTest(true, ProtocolVersion.V4);
+        multiQueryTest(false, ProtocolVersion.V3);
+        multiQueryTest(true, ProtocolVersion.V4);
     }
 
-    public void multiQueryTest(boolean testPagingState, int protocolVersion) throws Exception
+    public void multiQueryTest(boolean testPagingState, ProtocolVersion protocolVersion) throws Exception
     {
         ReadQuery command = new SinglePartitionReadCommand.Group(new ArrayList<SinglePartitionReadCommand>()
         {{
@@ -334,13 +346,13 @@ public class QueryPagerTest
     @Test
     public void rangeNamesQueryTest() throws Exception
     {
-        rangeNamesQueryTest(false, Server.VERSION_3);
-        rangeNamesQueryTest(true, Server.VERSION_4);
-        rangeNamesQueryTest(false, Server.VERSION_3);
-        rangeNamesQueryTest(true, Server.VERSION_4);
+        rangeNamesQueryTest(false, ProtocolVersion.V3);
+        rangeNamesQueryTest(true, ProtocolVersion.V4);
+        rangeNamesQueryTest(false, ProtocolVersion.V3);
+        rangeNamesQueryTest(true, ProtocolVersion.V4);
     }
 
-    public void rangeNamesQueryTest(boolean testPagingState, int protocolVersion) throws Exception
+    public void rangeNamesQueryTest(boolean testPagingState, ProtocolVersion protocolVersion) throws Exception
     {
         ReadCommand command = rangeNamesQuery("k0", "k5", 100, "c1", "c4", "c8");
         QueryPager pager = command.getPager(null, protocolVersion);
@@ -363,13 +375,13 @@ public class QueryPagerTest
     @Test
     public void rangeSliceQueryTest() throws Exception
     {
-        rangeSliceQueryTest(false, Server.VERSION_3);
-        rangeSliceQueryTest(true, Server.VERSION_4);
-        rangeSliceQueryTest(false, Server.VERSION_3);
-        rangeSliceQueryTest(true, Server.VERSION_4);
+        rangeSliceQueryTest(false, ProtocolVersion.V3);
+        rangeSliceQueryTest(true, ProtocolVersion.V4);
+        rangeSliceQueryTest(false, ProtocolVersion.V3);
+        rangeSliceQueryTest(true, ProtocolVersion.V4);
     }
 
-    public void rangeSliceQueryTest(boolean testPagingState, int protocolVersion) throws Exception
+    public void rangeSliceQueryTest(boolean testPagingState, ProtocolVersion protocolVersion) throws Exception
     {
         ReadCommand command = rangeSliceQuery("k1", "k5", 100, "c1", "c7");
         QueryPager pager = command.getPager(null, protocolVersion);
@@ -428,7 +440,7 @@ public class QueryPagerTest
 
         ReadCommand command = SinglePartitionReadCommand.create(cfs.metadata, nowInSec, Util.dk("k0"), Slice.ALL);
 
-        QueryPager pager = command.getPager(null, Server.CURRENT_VERSION);
+        QueryPager pager = command.getPager(null, ProtocolVersion.CURRENT);
 
         for (int i = 0; i < 5; i++)
         {
@@ -436,5 +448,68 @@ public class QueryPagerTest
             // The only live cell we should have each time is the row marker
             assertRow(partitions.get(0), "k0", "c" + i);
         }
+    }
+
+    @Test
+    public void pagingReversedQueriesWithStaticColumnsTest() throws Exception
+    {
+        // There was a bug in paging for reverse queries when the schema includes static columns in
+        // 2.1 & 2.2. This was never a problem in 3.0, so this test just guards against regressions
+        // see CASSANDRA-13222
+
+        // insert some rows into a single partition
+        for (int i=0; i < 5; i++)
+            executeInternal(String.format("INSERT INTO %s.%s (pk, ck, st, v1, v2) VALUES ('k0', %3$s, %3$s, %3$s, %3$s)",
+                                          KEYSPACE_CQL, CF_CQL_WITH_STATIC, i));
+
+        // query the table in reverse with page size = 1 & check that the returned rows contain the correct cells
+        CFMetaData cfm = Keyspace.open(KEYSPACE_CQL).getColumnFamilyStore(CF_CQL_WITH_STATIC).metadata;
+        queryAndVerifyCells(cfm, true, "k0");
+    }
+
+    private void queryAndVerifyCells(CFMetaData cfm, boolean reversed, String key) throws Exception
+    {
+        ClusteringIndexFilter rowfilter = new ClusteringIndexSliceFilter(Slices.ALL, reversed);
+        ReadCommand command = SinglePartitionReadCommand.create(cfm, nowInSec, Util.dk(key), ColumnFilter.all(cfm), rowfilter);
+        QueryPager pager = command.getPager(null, ProtocolVersion.CURRENT);
+
+        ColumnDefinition staticColumn = cfm.partitionColumns().statics.getSimple(0);
+        assertEquals(staticColumn.name.toCQLString(), "st");
+
+        for (int i=0; i<5; i++)
+        {
+            try (ReadExecutionController controller = pager.executionController();
+                 PartitionIterator partitions = pager.fetchPageInternal(1, controller))
+            {
+                try (RowIterator partition = partitions.next())
+                {
+                    assertCell(partition.staticRow(), staticColumn, 4);
+
+                    Row row = partition.next();
+                    int cellIndex = !reversed ? i : 4 - i;
+
+                    assertEquals(row.clustering().get(0), ByteBufferUtil.bytes(cellIndex));
+                    assertCell(row, cfm.getColumnDefinition(new ColumnIdentifier("v1", false)), cellIndex);
+                    assertCell(row, cfm.getColumnDefinition(new ColumnIdentifier("v2", false)), cellIndex);
+
+                    // the partition/page should contain just a single regular row
+                    assertFalse(partition.hasNext());
+                }
+            }
+        }
+
+        // After processing the 5 rows there should be no more rows to return
+        try ( ReadExecutionController controller = pager.executionController();
+              PartitionIterator partitions = pager.fetchPageInternal(1, controller))
+        {
+            assertFalse(partitions.hasNext());
+        }
+    }
+
+    private void assertCell(Row row, ColumnDefinition column, int value)
+    {
+        Cell cell = row.getCell(column);
+        assertNotNull(cell);
+        assertEquals(value, ByteBufferUtil.toInt(cell.value()));
     }
 }

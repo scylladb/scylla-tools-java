@@ -1,6 +1,5 @@
-<link rel="StyleSheet" href="CQL.css" type="text/css" media="screen">
 
-h1. Cassandra Query Language (CQL) v3.4.0
+h1. Cassandra Query Language (CQL) v3.4.3
 
 
 
@@ -397,16 +396,16 @@ __Syntax:__
 bc(syntax).. 
 <alter-table-stmt> ::= ALTER (TABLE | COLUMNFAMILY) <tablename> <instruction>
 
-<instruction> ::= ALTER <identifier> TYPE <type>
-                | ADD   <identifier> <type>
+<instruction> ::= ADD   <identifier> <type>
+                | ADD   ( <identifier> <type> ( , <identifier> <type> )* )
                 | DROP  <identifier>
+                | DROP  ( <identifier> ( , <identifier> )* )
                 | WITH  <option> ( AND <option> )*
 p. 
 __Sample:__
 
 bc(sample).. 
 ALTER TABLE addamsFamily
-ALTER lastKnownLocation TYPE uuid;
 
 ALTER TABLE addamsFamily
 ADD gravesite varchar;
@@ -415,13 +414,34 @@ ALTER TABLE addamsFamily
 WITH comment = 'A most excellent and useful column family'
  AND read_repair_chance = 0.2;
 p. 
-The @ALTER@ statement is used to manipulate table definitions. It allows for adding new columns, dropping existing ones, changing the type of existing columns, or updating the table options. As with table creation, @ALTER COLUMNFAMILY@ is allowed as an alias for @ALTER TABLE@.
+The @ALTER@ statement is used to manipulate table definitions. It allows for adding new columns, dropping existing ones, or updating the table options. As with table creation, @ALTER COLUMNFAMILY@ is allowed as an alias for @ALTER TABLE@.
 
 The @<tablename>@ is the table name optionally preceded by the keyspace name.  The @<instruction>@ defines the alteration to perform:
-* @ALTER@: Update the type of a given defined column. Note that the type of the "clustering columns":#createTablepartitionClustering cannot be modified as it induces the on-disk ordering of rows. Columns on which a "secondary index":#createIndexStmt is defined have the same restriction. Other columns are free from those restrictions (no validation of existing data is performed), but it is usually a bad idea to change the type to a non-compatible one, unless no data have been inserted for that column yet, as this could confuse CQL drivers/tools.
 * @ADD@: Adds a new column to the table. The @<identifier>@ for the new column must not conflict with an existing column. Moreover, columns cannot be added to tables defined with the @COMPACT STORAGE@ option.
 * @DROP@: Removes a column from the table. Dropped columns will immediately become unavailable in the queries and will not be included in compacted sstables in the future. If a column is readded, queries won't return values written before the column was last dropped. It is assumed that timestamps represent actual time, so if this is not your case, you should NOT readd previously dropped columns. Columns can't be dropped from tables defined with the @COMPACT STORAGE@ option.
 * @WITH@: Allows to update the options of the table. The "supported @<option>@":#createTableOptions (and syntax) are the same as for the @CREATE TABLE@ statement except that @COMPACT STORAGE@ is not supported. Note that setting any @compaction@ sub-options has the effect of erasing all previous @compaction@ options, so you  need to re-specify all the sub-options if you want to keep them. The same note applies to the set of @compression@ sub-options.
+
+h4. CQL type compatibility:
+
+CQL data types may be converted only as the following table.
+
+|_. Data type may be altered to:|_.Data type|
+|timestamp|bigint|
+|ascii, bigint, boolean, date, decimal, double, float, inet, int, smallint, text, time, timestamp, timeuuid, tinyint, uuid, varchar, varint|blob|
+|int|date|
+|ascii, varchar|text|
+|bigint|time|
+|bigint|timestamp|
+|timeuuid|uuid|
+|ascii, text|varchar|
+|bigint, int, timestamp|varint|
+
+Clustering columns have stricter requirements, only the below conversions are allowed.
+
+|_. Data type may be altered to:|_.Data type|
+|ascii, text, varchar|blob|
+|ascii, varchar|text|
+|ascii, text|varchar|
 
 h3(#dropTableStmt). DROP TABLE
 
@@ -527,6 +547,12 @@ h4(#createMVWhere). @WHERE@ Clause
 
 The @<where-clause>@ is similar to the "where clause of a @SELECT@ statement":#selectWhere, with a few differences.  First, the where clause must contain an expression that disallows @NULL@ values in columns in the view's primary key.  If no other restriction is desired, this can be accomplished with an @IS NOT NULL@ expression.  Second, only columns which are in the base table's primary key may be restricted with expressions other than @IS NOT NULL@.  (Note that this second restriction may be lifted in the future.)
 
+h4. MV Limitations
+
+__Note:__
+Removal of columns not selected in the Materialized View (via `UPDATE base SET unselected_column = null` or `DELETE unselected_column FROM base`) may shadow missed updates to other columns received by hints or repair.
+For this reason, we advise against doing deletions on base columns not selected in views until this is fixed on CASSANDRA-13826.
+
 h3(#alterMVStmt). ALTER MATERIALIZED VIEW
 
 __Syntax:__
@@ -598,22 +624,17 @@ __Syntax:__
 bc(syntax).. 
 <alter-type-stmt> ::= ALTER TYPE <typename> <instruction>
 
-<instruction> ::= ALTER <field-name> TYPE <type>
-                | ADD <field-name> <type>
+<instruction> ::= ADD <field-name> <type>
                 | RENAME <field-name> TO <field-name> ( AND <field-name> TO <field-name> )*
 p. 
 __Sample:__
 
 bc(sample).. 
-ALTER TYPE address ALTER zip TYPE varint
-
 ALTER TYPE address ADD country text
 
 ALTER TYPE address RENAME zip TO zipcode AND street_name TO street
 p. 
 The @ALTER TYPE@ statement is used to manipulate type definitions. It allows for adding new fields, renaming existing fields, or changing the type of existing fields.
-
-When altering the type of a column, the new type must be compatible with the previous type.
 
 h3(#dropTypeStmt). DROP TYPE
 
@@ -829,10 +850,7 @@ bc(syntax)..
 
 <names-list> ::= '(' <identifier> ( ',' <identifier> )* ')'
 
-<value-list> ::= '(' <term-or-literal> ( ',' <term-or-literal> )* ')'
-
-<term-or-literal> ::= <term>
-                    | <collection-literal>
+<value-list> ::= '(' <term> ( ',' <term> )* ')'
 
 <option> ::= TIMESTAMP <integer>
            | TTL <integer>
@@ -871,13 +889,17 @@ bc(syntax)..
                | <identifier> '=' <identifier> ('+' | '-') (<int-term> | <set-literal> | <list-literal>)
                | <identifier> '=' <identifier> '+' <map-literal>
                | <identifier> '[' <term> ']' '=' <term>
+               | <identifier> '.' <field> '=' <term>
 
 <condition> ::= <identifier> <op> <term>
-              | <identifier> IN (<variable> | '(' ( <term> ( ',' <term> )* )? ')')
+              | <identifier> IN <in-values>
               | <identifier> '[' <term> ']' <op> <term>
-              | <identifier> '[' <term> ']' IN <term>
+              | <identifier> '[' <term> ']' IN <in-values>
+              | <identifier> '.' <field> <op> <term>
+              | <identifier> '.' <field> IN <in-values>
 
 <op> ::= '<' | '<=' | '=' | '!=' | '>=' | '>'
+<in-values> ::= (<variable> | '(' ( <term> ( ',' <term> )* )? ')')
 
 <where-clause> ::= <relation> ( AND <relation> )*
 
@@ -914,11 +936,13 @@ The @c = c + 3@ form of @<assignment>@ is used to increment/decrement counters. 
 
 The @id = id + <collection-literal>@ and @id[value1] = value2@ forms of @<assignment>@ are for collections. Please refer to the "relevant section":#collections for more details.
 
+The @id.field = <term>@ form of @<assignemt>@ is for setting the value of a single field on a non-frozen user-defined types.
+
 h4(#updateOptions). @<options>@
 
 The @UPDATE@ and @INSERT@ statements support the following options:
 * @TIMESTAMP@: sets the timestamp for the operation. If not specified, the coordinator will use the current time (in microseconds) at the start of statement execution as the timestamp. This is usually a suitable default.
-* @TTL@: specifies an optional Time To Live (in seconds) for the inserted values. If set, the inserted values are automatically removed from the database after the specified time. Note that the TTL concerns the inserted values, not the columns themselves. This means that any subsequent update of the column will also reset the TTL (to whatever TTL is specified in that update). By default, values never expire. A TTL of 0 or a negative value is equivalent to no TTL.
+* @TTL@: specifies an optional Time To Live (in seconds) for the inserted values. If set, the inserted values are automatically removed from the database after the specified time. Note that the TTL concerns the inserted values, not the columns themselves. This means that any subsequent update of the column will also reset the TTL (to whatever TTL is specified in that update). By default, values never expire. A TTL of 0 is equivalent to no TTL. If the table has a default_time_to_live, a TTL of 0 will remove the TTL for the inserted or updated values.
 
 
 h3(#deleteStmt). DELETE
@@ -932,7 +956,9 @@ bc(syntax)..
                   WHERE <where-clause>
                   ( IF ( EXISTS | ( <condition> ( AND <condition> )*) ) )?
 
-<selection> ::= <identifier> ( '[' <term> ']' )?
+<selection> ::= <identifier>
+              | <identifier> '[' <term> ']'
+              | <identifier> '.' <field>
 
 <where-clause> ::= <relation> ( AND <relation> )*
 
@@ -944,11 +970,14 @@ bc(syntax)..
              | '(' <identifier> (',' <identifier>)* ')' IN <variable>
 
 <op> ::= '=' | '<' | '>' | '<=' | '>='
+<in-values> ::= (<variable> | '(' ( <term> ( ',' <term> )* )? ')')
 
 <condition> ::= <identifier> (<op> | '!=') <term>
-              | <identifier> IN (<variable> | '(' ( <term> ( ',' <term> )* )? ')')
+              | <identifier> IN <in-values>
               | <identifier> '[' <term> ']' (<op> | '!=') <term>
-              | <identifier> '[' <term> ']' IN <term>
+              | <identifier> '[' <term> ']' IN <in-values>
+              | <identifier> '.' <field> (<op> | '!=') <term>
+              | <identifier> '.' <field> IN <in-values>
 
 p. 
 __Sample:__
@@ -958,7 +987,7 @@ DELETE FROM NerdMovies USING TIMESTAMP 1240003134 WHERE movie = 'Serenity';
 
 DELETE phone FROM Users WHERE userid IN (C73DE1D3-AF08-40F3-B124-3FF3E5109F22, B70DE1D0-9908-4AE3-BE34-5573E5B09F14);
 p. 
-The @DELETE@ statement deletes columns and rows. If column names are provided directly after the @DELETE@ keyword, only those columns are deleted from the row indicated by the @<where-clause>@ (the @id[value]@ syntax in @<selection>@ is for collection, please refer to the "collection section":#collections for more details).  Otherwise, whole rows are removed. The @<where-clause>@ specifies which rows are to be deleted.  Multiple rows may be deleted with one statement by using an @IN@ clause.  A range of rows may be deleted using an inequality operator (such as @>=@).
+The @DELETE@ statement deletes columns and rows. If column names are provided directly after the @DELETE@ keyword, only those columns are deleted from the row indicated by the @<where-clause>@.  The @id[value]@ syntax in @<selection>@ is for non-frozen collections (please refer to the "collection section":#collections for more details).  The @id.field@ syntax is for the deletion of non-frozen user-defined types.  Otherwise, whole rows are removed. The @<where-clause>@ specifies which rows are to be deleted.  Multiple rows may be deleted with one statement by using an @IN@ clause.  A range of rows may be deleted using an inequality operator (such as @>=@).
 
 @DELETE@ supports the @TIMESTAMP@ option with the same semantics as the "@UPDATE@":#updateStmt statement.
 
@@ -1029,19 +1058,23 @@ bc(syntax)..
 <select-stmt> ::= SELECT ( JSON )? <select-clause>
                   FROM <tablename>
                   ( WHERE <where-clause> )?
+                  ( GROUP BY <group-by>)?
                   ( ORDER BY <order-by> )?
+                  ( PER PARTITION LIMIT <integer> )?
                   ( LIMIT <integer> )?
                   ( ALLOW FILTERING )?
 
 <select-clause> ::= DISTINCT? <selection-list>
-                  | COUNT '(' ( '*' | '1' ) ')' (AS <identifier>)?
 
 <selection-list> ::= <selector> (AS <identifier>)? ( ',' <selector> (AS <identifier>)? )*
                    | '*'
 
 <selector> ::= <identifier>
+             | <term>
              | WRITETIME '(' <identifier> ')'
+             | COUNT '(' '*' ')'
              | TTL '(' <identifier> ')'
+             | CAST '(' <selector> AS <type> ')'
              | <function> '(' (<selector> (',' <selector>)*)? ')'
 
 <where-clause> ::= <relation> ( AND <relation> )*
@@ -1053,6 +1086,7 @@ bc(syntax)..
              | TOKEN '(' <identifier> ( ',' <identifer>)* ')' <op> <term>
 
 <op> ::= '=' | '<' | '>' | '<=' | '>=' | CONTAINS | CONTAINS KEY
+<group-by> ::= <identifier> (',' <identifier>)*
 <order-by> ::= <ordering> ( ',' <odering> )*
 <ordering> ::= <identifer> ( ASC | DESC )?
 <term-tuple> ::= '(' <term> (',' <term>)* ')'
@@ -1083,7 +1117,7 @@ h4(#selectSelection). @<select-clause>@
 
 The @<select-clause>@ determines which columns needs to be queried and returned in the result-set. It consists of either the comma-separated list of <selector> or the wildcard character (@*@) to select all the columns defined for the table.
 
-A @<selector>@ is either a column name to retrieve or a @<function>@ of one or more @<term>@s. The function allowed are the same as for @<term>@ and are described in the "function section":#functions. In addition to these generic functions, the @WRITETIME@ (resp. @TTL@) function allows to select the timestamp of when the column was inserted (resp. the time to live (in seconds) for the column (or null if the column has no expiration set)).
+A @<selector>@ is either a column name to retrieve or a @<function>@ of one or more @<term>@s. The function allowed are the same as for @<term>@ and are described in the "function section":#functions. In addition to these generic functions, the @WRITETIME@ (resp. @TTL@) function allows to select the timestamp of when the column was inserted (resp. the time to live (in seconds) for the column (or null if the column has no expiration set)) and the "@CAST@":#castFun function can be used to convert one data type to another.
 
 Any @<selector>@ can be aliased using @AS@ keyword (see examples). Please note that @<where-clause>@ and @<order-by>@ clause should refer to the columns by their original names and not by their aliases.
 
@@ -1147,9 +1181,19 @@ The @ORDER BY@ option allows to select the order of the returned results. It tak
 * if the table has been defined without any specific @CLUSTERING ORDER@, then then allowed orderings are the order induced by the clustering columns and the reverse of that one.
 * otherwise, the orderings allowed are the order of the @CLUSTERING ORDER@ option and the reversed one.
 
-h4(#selectLimit). @LIMIT@
+h4(#selectGroupBy). @<group-by>@
 
-The @LIMIT@ option to a @SELECT@ statement limits the number of rows returned by a query.
+The @GROUP BY@ option allows to condense into a single row all selected rows that share the same values for a set of columns.
+
+Using the @GROUP BY@ option, it is only possible to group rows at the partition key level or at a clustering column level. By consequence, the @GROUP BY@ option only accept as arguments primary key column names in the primary key order. If a primary key column is restricted by an equality restriction it is not required to be present in the @GROUP BY@ clause.
+
+Aggregate functions will produce a separate value for each group. If no @GROUP BY@ clause is specified, aggregates functions will produce a single value for all the rows.
+
+If a column is selected without an aggregate function, in a statement with a @GROUP BY@, the first value encounter in each group will be returned.
+
+h4(#selectLimit). @LIMIT@ and @PER PARTITION LIMIT@
+
+The @LIMIT@ option to a @SELECT@ statement limits the number of rows returned by a query, while the @PER PARTITION LIMIT@ option limits the number of rows returned for a given partition by the query. Note that both type of limit can used in the same statement.
 
 h4(#selectAllowFiltering). @ALLOW FILTERING@
 
@@ -1440,6 +1484,7 @@ Permissions on resources are granted to roles; there are several different types
 * The hierarchy of Data resources, Keyspaces and Tables has the structure @ALL KEYSPACES@ -> @KEYSPACE@ -> @TABLE@
 * Function resources have the structure @ALL FUNCTIONS@ -> @KEYSPACE@ -> @FUNCTION@
 * Resources representing roles have the structure @ALL ROLES@ -> @ROLE@
+* Resources representing JMX ObjectNames, which map to sets of MBeans/MXBeans, have the structure @ALL MBEANS@ -> @MBEAN@
 
 Permissions can be granted at any level of these hierarchies and they flow downwards. So granting a permission on a resource higher up the chain automatically grants that same permission on all resources lower down. For example, granting @SELECT@ on a @KEYSPACE@ automatically grants it on all @TABLES@ in that @KEYSPACE@. Likewise, granting a permission on @ALL FUNCTIONS@ grants it on every defined function, regardless of which keyspace it is scoped in. It is also possible to grant permissions on all functions scoped to a particular keyspace. 
 
@@ -1455,7 +1500,7 @@ The full set of available permissions is:
 * @DESCRIBE@
 * @EXECUTE@
 
-Not all permissions are applicable to every type of resource. For instance, @EXECUTE@ is only relevant in the context of functions; granting @EXECUTE@ on a resource representing a table is nonsensical. Attempting to @GRANT@ a permission on resource to which it cannot be applied results in an error response. The following illustrates which permissions can be granted on which types of resource, and which statements are enabled by that permission.
+Not all permissions are applicable to every type of resource. For instance, @EXECUTE@ is only relevant in the context of functions or mbeans; granting @EXECUTE@ on a resource representing a table is nonsensical. Attempting to @GRANT@ a permission on resource to which it cannot be applied results in an error response. The following illustrates which permissions can be granted on which types of resource, and which statements are enabled by that permission.
 
 |_. permission |_. resource                   |_. operations        |
 | @CREATE@     | @ALL KEYSPACES@              |@CREATE KEYSPACE@ ==<br>== @CREATE TABLE@ in any keyspace|
@@ -1482,9 +1527,15 @@ Not all permissions are applicable to every type of resource. For instance, @EXE
 | @SELECT@     | @ALL KEYSPACES@              |@SELECT@ on any table|
 | @SELECT@     | @KEYSPACE@                   |@SELECT@ on any table in keyspace|
 | @SELECT@     | @TABLE@                      |@SELECT@ on specified table|
+| @SELECT@     | @ALL MBEANS@                 |Call getter methods on any mbean|
+| @SELECT@     | @MBEANS@                     |Call getter methods on any mbean matching a wildcard pattern|
+| @SELECT@     | @MBEAN@                      |Call getter methods on named mbean|
 | @MODIFY@     | @ALL KEYSPACES@              |@INSERT@ on any table ==<br>== @UPDATE@ on any table ==<br>== @DELETE@ on any table ==<br>== @TRUNCATE@ on any table|
-| @MODIFY@     | @KEYSPACE@                  |@INSERT@ on any table in keyspace ==<br>== @UPDATE@ on any table in keyspace ==<br>  == @DELETE@ on any table in keyspace ==<br>== @TRUNCATE@ on any table in keyspace
+| @MODIFY@     | @KEYSPACE@                   |@INSERT@ on any table in keyspace ==<br>== @UPDATE@ on any table in keyspace ==<br>  == @DELETE@ on any table in keyspace ==<br>== @TRUNCATE@ on any table in keyspace
 | @MODIFY@     | @TABLE@                      |@INSERT@ ==<br>== @UPDATE@ ==<br>== @DELETE@ ==<br>== @TRUNCATE@|
+| @MODIFY@     | @ALL MBEANS@                 |Call setter methods on any mbean|
+| @MODIFY@     | @MBEANS@                     |Call setter methods on any mbean matching a wildcard pattern|
+| @MODIFY@     | @MBEAN@                      |Call setter methods on named mbean|
 | @AUTHORIZE@  | @ALL KEYSPACES@              |@GRANT PERMISSION@ on any table ==<br>== @REVOKE PERMISSION@ on any table|
 | @AUTHORIZE@  | @KEYSPACE@                   |@GRANT PERMISSION@ on table in keyspace ==<br>== @REVOKE PERMISSION@ on table in keyspace|
 | @AUTHORIZE@  | @TABLE@                      |@GRANT PERMISSION@ ==<br>== @REVOKE PERMISSION@ |
@@ -1492,12 +1543,21 @@ Not all permissions are applicable to every type of resource. For instance, @EXE
 | @AUTHORIZE@  | @ALL FUNCTIONS IN KEYSPACE@  |@GRANT PERMISSION@ in keyspace ==<br>== @REVOKE PERMISSION@ in keyspace|
 | @AUTHORIZE@  | @ALL FUNCTIONS IN KEYSPACE@  |@GRANT PERMISSION@ in keyspace ==<br>== @REVOKE PERMISSION@ in keyspace|
 | @AUTHORIZE@  | @FUNCTION@                   |@GRANT PERMISSION@ ==<br>== @REVOKE PERMISSION@|
+| @AUTHORIZE@  | @ALL MBEANS@                 |@GRANT PERMISSION@ on any mbean ==<br>== @REVOKE PERMISSION@ on any mbean|
+| @AUTHORIZE@  | @MBEANS@                     |@GRANT PERMISSION@ on any mbean matching a wildcard pattern ==<br>== @REVOKE PERMISSION@ on any mbean matching a wildcard pattern|
+| @AUTHORIZE@  | @MBEAN@                      |@GRANT PERMISSION@ on named mbean ==<br>== @REVOKE PERMISSION@ on named mbean|
 | @AUTHORIZE@  | @ALL ROLES@                  |@GRANT ROLE@ grant any role ==<br>== @REVOKE ROLE@ revoke any role|
 | @AUTHORIZE@  | @ROLES@                      |@GRANT ROLE@ grant role ==<br>== @REVOKE ROLE@ revoke role|
 | @DESCRIBE@   | @ALL ROLES@                  |@LIST ROLES@ all roles or only roles granted to another, specified role|
+| @DESCRIBE@   | @ALL MBEANS                  |Retrieve metadata about any mbean from the platform's MBeanServer|
+| @DESCRIBE@   | @MBEANS                      |Retrieve metadata about any mbean matching a wildcard patter from the platform's MBeanServer|
+| @DESCRIBE@   | @MBEAN                       |Retrieve metadata about a named mbean from the platform's MBeanServer|
 | @EXECUTE@    | @ALL FUNCTIONS@              |@SELECT@, @INSERT@, @UPDATE@ using any function ==<br>== use of any function in @CREATE AGGREGATE@|
 | @EXECUTE@    | @ALL FUNCTIONS IN KEYSPACE@  |@SELECT@, @INSERT@, @UPDATE@ using any function in keyspace ==<br>== use of any function in keyspace in @CREATE AGGREGATE@|
 | @EXECUTE@    | @FUNCTION@                   |@SELECT@, @INSERT@, @UPDATE@ using function ==<br>== use of function in @CREATE AGGREGATE@|
+| @EXECUTE@    | @ALL MBEANS@                 |Execute operations on any mbean|
+| @EXECUTE@    | @MBEANS@                     |Execute operations on any mbean matching a wildcard pattern|
+| @EXECUTE@    | @MBEAN@                      |Execute operations on named mbean|
 
 
 h3(#grantPermissionsStmt). GRANT PERMISSION
@@ -1516,6 +1576,8 @@ bc(syntax)..
              | ROLE <identifier>
              | ALL FUNCTIONS ( IN KEYSPACE <identifier> )?
              | FUNCTION <functionname>
+             | ALL MBEANS
+             | ( MBEAN | MBEANS ) <objectName>
 p. 
 
 __Sample:__ 
@@ -1570,7 +1632,9 @@ bc(syntax)..
              | ROLE <identifier>
              | ALL FUNCTIONS ( IN KEYSPACE <identifier> )?
              | FUNCTION <functionname>
-p. 
+             | ALL MBEANS
+             | ( MBEAN | MBEANS ) <objectName>
+p.
 
 __Sample:__ 
 
@@ -1598,7 +1662,9 @@ bc(syntax)..
              | ROLE <identifier>
              | ALL FUNCTIONS ( IN KEYSPACE <identifier> )?
              | FUNCTION <functionname>
-p. 
+             | ALL MBEANS
+             | ( MBEAN | MBEANS ) <objectName>
+p.
 
 __Sample:__
 
@@ -1619,7 +1685,9 @@ Show any permissions granted to @carlos@ or any of @carlos@'s roles, limited to 
 
 h2(#types). Data Types
 
-CQL supports a rich set of data types for columns defined in a table, including collection types. On top of those native and collection types, users can also provide custom types (through a JAVA class extending @AbstractType@ loadable by Cassandra). The syntax of types is thus:
+CQL supports a rich set of data types for columns defined in a table, including collection types. On top of those native
+and collection types, users can also provide custom types (through a JAVA class extending @AbstractType@ loadable by
+Cassandra). The syntax of types is thus:
 
 bc(syntax).. 
 <type> ::= <native-type>
@@ -1866,6 +1934,37 @@ h2(#functions). Functions
 
 CQL3 distinguishes between built-in functions (so called 'native functions') and "user-defined functions":#udfs.  CQL3 includes several native functions, described below:
 
+h3(#castFun). Cast
+
+The @cast@ function can be used to converts one native datatype to another.
+
+The following table describes the conversions supported by the @cast@ function. Cassandra will silently ignore any cast converting a datatype into its own datatype.
+
+|_. from    |_. to   |
+|@ascii@   |@text@, @varchar@                                                                                    |
+|@bigint@   |@tinyint@, @smallint@, @int@, @float@, @double@, @decimal@, @varint@, @text@, @varchar@             |
+|@boolean@  |@text@, @varchar@                                                                                   |
+|@counter@  |@tinyint@, @smallint@, @int@, @bigint@, @float@, @double@, @decimal@, @varint@, @text@, @varchar@   |
+|@date@      |@timestamp@                                                                                        |
+|@decimal@  |@tinyint@, @smallint@, @int@, @bigint@, @float@, @double@, @varint@, @text@, @varchar@              |
+|@double@   |@tinyint@, @smallint@, @int@, @bigint@, @float@, @decimal@, @varint@, @text@, @varchar@             |
+|@float@     |@tinyint@, @smallint@, @int@, @bigint@, @double@, @decimal@, @varint@, @text@, @varchar@           |
+|@inet@      |@text@, @varchar@                                                                                  |
+|@int@       |@tinyint@, @smallint@, @bigint@, @float@, @double@, @decimal@, @varint@, @text@, @varchar@         |
+|@smallint@ |@tinyint@, @int@, @bigint@, @float@, @double@, @decimal@, @varint@, @text@, @varchar@               |
+|@time@      |@text@, @varchar@                                                                                  |
+|@timestamp@|@date@, @text@, @varchar@                                                                           |
+|@timeuuid@ |@timestamp@, @date@, @text@, @varchar@                                                              |
+|@tinyint@  |@tinyint@, @smallint@, @int@, @bigint@, @float@, @double@, @decimal@, @varint@, @text@, @varchar@   |
+|@uuid@      |@text@, @varchar@                                                                                  |
+|@varint@   |@tinyint@, @smallint@, @int@, @bigint@, @float@, @double@, @decimal@, @text@, @varchar@             |
+
+
+The conversions rely strictly on Java's semantics. For example, the double value 1 will be converted to the text value '1.0'.
+
+bc(sample). 
+SELECT avg(cast(count as double)) FROM myTable
+
 h3(#tokenFun). Token
 
 The @token@ function allows to compute the token for a given partition key. The exact signature of the token function depends on the table concerned and of the partitioner used by the cluster.
@@ -1977,7 +2076,7 @@ SELECT AVG(players) FROM plays;
 
 h2(#udfs). User-Defined Functions
 
-User-defined functions allow execution of user-provided code in Cassandra. By default, Cassandra supports defining functions in _Java_ and _JavaScript_. Support for other JSR 223 compliant scripting languages (such as Python, Ruby, and Scala) can be added by adding a JAR to the classpath.
+User-defined functions allow execution of user-provided code in Cassandra. By default, Cassandra supports defining functions in _Java_ and _JavaScript_. Support for other JSR 223 compliant scripting languages (such as Python, Ruby, and Scala) has been removed in 3.0.11.
 
 UDFs are part of the Cassandra schema.  As such, they are automatically propagated to all nodes in the cluster.
 
@@ -2015,6 +2114,49 @@ CREATE FUNCTION fct_using_udt ( udtarg frozen<custom_type> )
   AS $$ return udtarg.getString("txt"); $$;
 
 User-defined functions can be used in "@SELECT@":#selectStmt, "@INSERT@":#insertStmt and "@UPDATE@":#updateStmt statements.
+
+The implicitly available @udfContext@ field (or binding for script UDFs) provides the neccessary functionality to create new UDT and tuple values.
+
+bc(sample). 
+CREATE TYPE custom_type (txt text, i int);
+CREATE FUNCTION fct_using_udt ( somearg int )
+  RETURNS NULL ON NULL INPUT
+  RETURNS custom_type
+  LANGUAGE java
+  AS $$
+    UDTValue udt = udfContext.newReturnUDTValue();
+    udt.setString("txt", "some string");
+    udt.setInt("i", 42);
+    return udt;
+  $$;
+
+The definition of the @UDFContext@ interface can be found in the Apache Cassandra source code for @org.apache.cassandra.cql3.functions.UDFContext@.
+
+bc(sample). 
+public interface UDFContext
+{
+    UDTValue newArgUDTValue(String argName);
+    UDTValue newArgUDTValue(int argNum);
+    UDTValue newReturnUDTValue();
+    UDTValue newUDTValue(String udtName);
+    TupleValue newArgTupleValue(String argName);
+    TupleValue newArgTupleValue(int argNum);
+    TupleValue newReturnTupleValue();
+    TupleValue newTupleValue(String cqlDefinition);
+}
+
+Java UDFs already have some imports for common interfaces and classes defined. These imports are:
+Please note, that these convenience imports are not available for script UDFs.
+
+bc(sample). 
+import java.nio.ByteBuffer;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import org.apache.cassandra.cql3.functions.UDFContext;
+import com.datastax.driver.core.TypeCodec;
+import com.datastax.driver.core.TupleValue;
+import com.datastax.driver.core.UDTValue;
 
 See "@CREATE FUNCTION@":#createFunctionStmt and "@DROP FUNCTION@":#dropFunctionStmt.
 
@@ -2157,6 +2299,7 @@ CQL distinguishes between _reserved_ and _non-reserved_ keywords. Reserved keywo
 | @BOOLEAN@      | no  |
 | @BY@           | yes |
 | @CALLED@       | no  |
+| @CAST@         | no  |
 | @CLUSTERING@   | no  |
 | @COLUMNFAMILY@ | yes |
 | @COMPACT@      | no  |
@@ -2167,12 +2310,14 @@ CQL distinguishes between _reserved_ and _non-reserved_ keywords. Reserved keywo
 | @CUSTOM@       | no  |
 | @DATE@         | no  |
 | @DECIMAL@      | no  |
+| @DEFAULT@      | yes |
 | @DELETE@       | yes |
 | @DESC@         | yes |
 | @DESCRIBE@     | yes |
 | @DISTINCT@     | no  |
 | @DOUBLE@       | no  |
 | @DROP@         | yes |
+| @DURATION@     | no  |
 | @ENTRIES@      | yes |
 | @EXECUTE@      | yes |
 | @EXISTS@       | no  |
@@ -2185,6 +2330,7 @@ CQL distinguishes between _reserved_ and _non-reserved_ keywords. Reserved keywo
 | @FUNCTION@     | no  |
 | @FUNCTIONS@    | no  |
 | @GRANT@        | yes |
+| @GROUP@        | no  |
 | @IF@           | yes |
 | @IN@           | yes |
 | @INDEX@        | yes |
@@ -2195,16 +2341,21 @@ CQL distinguishes between _reserved_ and _non-reserved_ keywords. Reserved keywo
 | @INSERT@       | yes |
 | @INT@          | no  |
 | @INTO@         | yes |
+| @IS@           | yes |
 | @JSON@         | no  |
 | @KEY@          | no  |
 | @KEYS@         | no  |
 | @KEYSPACE@     | yes |
 | @KEYSPACES@    | no  |
 | @LANGUAGE@     | no  |
+| @LIKE@         | no  |
 | @LIMIT@        | yes |
 | @LIST@         | no  |
 | @LOGIN@        | no  |
 | @MAP@          | no  |
+| @MATERIALIZED@ | yes |
+| @MBEAN@        | yes |
+| @MBEANS@       | yes |
 | @MODIFY@       | yes |
 | @NAN@          | yes |
 | @NOLOGIN@      | no  |
@@ -2217,7 +2368,9 @@ CQL distinguishes between _reserved_ and _non-reserved_ keywords. Reserved keywo
 | @OPTIONS@      | no  |
 | @OR@           | yes |
 | @ORDER@        | yes |
+| @PARTITION@    | no  |
 | @PASSWORD@     | no  |
+| @PER@          | no  |
 | @PERMISSION@   | no  |
 | @PERMISSIONS@  | no  |
 | @PRIMARY@      | yes |
@@ -2250,6 +2403,7 @@ CQL distinguishes between _reserved_ and _non-reserved_ keywords. Reserved keywo
 | @TUPLE@        | no  |
 | @TYPE@         | no  |
 | @UNLOGGED@     | yes |
+| @UNSET@        | yes |
 | @UPDATE@       | yes |
 | @USE@          | yes |
 | @USER@         | no  |
@@ -2259,6 +2413,7 @@ CQL distinguishes between _reserved_ and _non-reserved_ keywords. Reserved keywo
 | @VALUES@       | no  |
 | @VARCHAR@      | no  |
 | @VARINT@       | no  |
+| @VIEW@         | yes |
 | @WHERE@        | yes |
 | @WITH@         | yes |
 | @WRITETIME@    | no  |
@@ -2279,6 +2434,22 @@ The following type names are not currently used by CQL, but are reserved for pot
 h2(#changes). Changes
 
 The following describes the changes in each version of CQL.
+
+h3. 3.4.3
+
+* Support for @GROUP BY@. See "@<group-by>@":#selectGroupBy (see "CASSANDRA-10707":https://issues.apache.org/jira/browse/CASSANDRA-10707).
+
+h3. 3.4.2
+
+* "@INSERT/UPDATE options@":#updateOptions for tables having a default_time_to_live specifying a TTL of 0 will remove the TTL from the inserted or updated values
+* "@ALTER TABLE@":#alterTableStmt @ADD@ and @DROP@ now allow mutiple columns to be added/removed
+* New "@PER PARTITION LIMIT@":#selectLimit option (see "CASSANDRA-7017":https://issues.apache.org/jira/browse/CASSANDRA-7017).
+* "User-defined functions":#udfs can now instantiate @UDTValue@ and @TupleValue@ instances via the new @UDFContext@ interface (see "CASSANDRA-10818":https://issues.apache.org/jira/browse/CASSANDRA-10818).
+* "User-defined types"#createTypeStmt may now be stored in a non-frozen form, allowing individual fields to be updated and deleted in "@UPDATE@ statements":#updateStmt and "@DELETE@ statements":#deleteStmt, respectively. ("CASSANDRA-7423":https://issues.apache.org/jira/browse/CASSANDRA-7423)
+
+h3. 3.4.1
+
+* Adds @CAST@ functions. See "@Cast@":#castFun.
 
 h3. 3.4.0
 

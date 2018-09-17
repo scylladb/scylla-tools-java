@@ -21,7 +21,6 @@ package org.apache.cassandra.cql3.validation.entities;
 import org.junit.Test;
 
 import org.apache.cassandra.cql3.CQLTester;
-import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 
 public class CountersTest extends CQLTester
@@ -50,6 +49,22 @@ public class CountersTest extends CQLTester
         execute("UPDATE %s SET total = total -2 WHERE userid = 1 AND url = 'http://foo.com'");
         assertRows(execute("SELECT total FROM %s WHERE userid = 1 AND url = 'http://foo.com'"),
                    row(-4L));
+
+        execute("UPDATE %s SET total += 6 WHERE userid = 1 AND url = 'http://foo.com'");
+        assertRows(execute("SELECT total FROM %s WHERE userid = 1 AND url = 'http://foo.com'"),
+                   row(2L));
+
+        execute("UPDATE %s SET total -= 1 WHERE userid = 1 AND url = 'http://foo.com'");
+        assertRows(execute("SELECT total FROM %s WHERE userid = 1 AND url = 'http://foo.com'"),
+                   row(1L));
+
+        execute("UPDATE %s SET total += -2 WHERE userid = 1 AND url = 'http://foo.com'");
+        assertRows(execute("SELECT total FROM %s WHERE userid = 1 AND url = 'http://foo.com'"),
+                   row(-1L));
+
+        execute("UPDATE %s SET total -= -2 WHERE userid = 1 AND url = 'http://foo.com'");
+        assertRows(execute("SELECT total FROM %s WHERE userid = 1 AND url = 'http://foo.com'"),
+                   row(1L));
     }
 
     /**
@@ -116,7 +131,7 @@ public class CountersTest extends CQLTester
     @Test
     public void testCounterFiltering() throws Throwable
     {
-        for (String compactStorageClause: new String[] {"", " WITH COMPACT STORAGE"})
+        for (String compactStorageClause : new String[]{ "", " WITH COMPACT STORAGE" })
         {
             createTable("CREATE TABLE %s (k int PRIMARY KEY, a counter)" + compactStorageClause);
 
@@ -195,5 +210,32 @@ public class CountersTest extends CQLTester
     {
         assertInvalidThrowMessage("counter type is not supported for PRIMARY KEY part a",
                                   InvalidRequestException.class, String.format("CREATE TABLE %s.%s (a counter, b int, PRIMARY KEY (b, a)) WITH CLUSTERING ORDER BY (a desc);", KEYSPACE, createTableName()));
+    }
+
+    /**
+     * Test for the bug of #11726.
+     */
+    @Test
+    public void testCounterAndColumnSelection() throws Throwable
+    {
+        for (String compactStorageClause : new String[]{ "", " WITH COMPACT STORAGE" })
+        {
+            createTable("CREATE TABLE %s (k int PRIMARY KEY, c counter)" + compactStorageClause);
+
+            // Flush 2 updates in different sstable so that the following select does a merge, which is what triggers
+            // the problem from #11726
+
+            execute("UPDATE %s SET c = c + ? WHERE k = ?", 1L, 0);
+
+            flush();
+
+            execute("UPDATE %s SET c = c + ? WHERE k = ?", 1L, 0);
+
+            flush();
+
+            // Querying, but not including the counter. Pre-CASSANDRA-11726, this made us query the counter but include
+            // it's value, which broke at merge (post-CASSANDRA-11726 are special cases to never skip values).
+            assertRows(execute("SELECT k FROM %s"), row(0));
+        }
     }
 }

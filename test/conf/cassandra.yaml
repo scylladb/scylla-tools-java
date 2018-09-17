@@ -3,11 +3,14 @@
 # Consider the effects on 'o.a.c.i.s.LegacySSTableTest' before changing schemas in this file.
 #
 cluster_name: Test Cluster
-memtable_allocation_type: heap_buffers
+# memtable_allocation_type: heap_buffers
+memtable_allocation_type: offheap_objects
 commitlog_sync: batch
 commitlog_sync_batch_window_in_ms: 1.0
 commitlog_segment_size_in_mb: 5
 commitlog_directory: build/test/cassandra/commitlog
+cdc_raw_directory: build/test/cassandra/cdc_raw
+cdc_enabled: false
 hints_directory: build/test/cassandra/hints
 partitioner: org.apache.cassandra.dht.ByteOrderedPartitioner
 listen_address: 127.0.0.1
@@ -41,3 +44,4 @@ row_cache_class_name: org.apache.cassandra.cache.OHCProvider
 row_cache_size_in_mb: 16
 enable_user_defined_functions: true
 enable_scripted_user_defined_functions: true
+prepared_statements_cache_size_mb: 1

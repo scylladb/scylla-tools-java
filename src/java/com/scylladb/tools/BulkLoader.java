@@ -96,6 +96,7 @@ import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.config.YamlConfigurationLoader;
 import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.cql3.ColumnIdentifier;
+import org.apache.cassandra.cql3.FieldIdentifier;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UTName;
 import org.apache.cassandra.cql3.statements.CFStatement;
@@ -405,14 +406,14 @@ public class BulkLoader {
                 while (i.hasNext()) {
                     try {
                         UserType ut = i.next();
-                        ArrayList<ByteBuffer> fieldNames = new ArrayList<ByteBuffer>(ut.getFieldNames().size());
+                        ArrayList<FieldIdentifier> fieldNames = new ArrayList<FieldIdentifier>(ut.getFieldNames().size());
                         ArrayList<AbstractType<?>> fieldTypes = new ArrayList<AbstractType<?>>();
                         for (UserType.Field f : ut) {
-                            fieldNames.add(ByteBufferUtil.bytes(f.getName()));
+                            fieldNames.add(new FieldIdentifier(ByteBufferUtil.bytes(f.getName())));
                             fieldTypes.add(getCql3Type(f.getType()).prepare(ksname).getType());
                         }
                         types = types.add(new org.apache.cassandra.db.marshal.UserType(ksname,
-                                ByteBufferUtil.bytes(ut.getTypeName()), fieldNames, fieldTypes));
+                                ByteBufferUtil.bytes(ut.getTypeName()), fieldNames, fieldTypes, true));
                         i.remove();
                         ++n;
                     } catch (Exception e) {
@@ -1193,7 +1194,8 @@ public class BulkLoader {
     private static final String USE_UNSET = "use-unset";
 
     public static void main(String args[]) {
-        Config.setClientMode(true);
+        DatabaseDescriptor.toolInitialization();
+        //Config.setClientMode(true);
         final LoaderOptions options = LoaderOptions.parseArgs(args);
         final ExecutorService executor = Executors.newFixedThreadPool(options.threadCount);
 

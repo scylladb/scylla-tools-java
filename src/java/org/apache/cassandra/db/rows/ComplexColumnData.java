@@ -19,22 +19,21 @@ package org.apache.cassandra.db.rows;
 
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
-import java.util.*;
-import java.util.function.BiFunction;
+import java.util.Iterator;
+import java.util.Objects;
 
 import com.google.common.base.Function;
-import com.google.common.collect.Iterables;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
-import org.apache.cassandra.db.DeletionTime;
 import org.apache.cassandra.db.DeletionPurger;
+import org.apache.cassandra.db.DeletionTime;
+import org.apache.cassandra.db.LivenessInfo;
 import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.marshal.ByteType;
 import org.apache.cassandra.db.marshal.SetType;
 import org.apache.cassandra.utils.ObjectSizes;
 import org.apache.cassandra.utils.btree.BTree;
-import org.apache.cassandra.utils.btree.UpdateFunction;
 
 /**
  * The data for a complex column, that is it's cells and potential complex
@@ -144,25 +143,32 @@ public class ComplexColumnData extends ColumnData implements Iterable<Cell>
         return transformAndFilter(complexDeletion, Cell::markCounterLocalToBeCleared);
     }
 
-    public ComplexColumnData filter(ColumnFilter filter, DeletionTime activeDeletion, CFMetaData.DroppedColumn dropped)
+    public ComplexColumnData filter(ColumnFilter filter, DeletionTime activeDeletion, CFMetaData.DroppedColumn dropped, LivenessInfo rowLiveness)
     {
         ColumnFilter.Tester cellTester = filter.newTester(column);
         if (cellTester == null && activeDeletion.isLive() && dropped == null)
             return this;
 
         DeletionTime newDeletion = activeDeletion.supersedes(complexDeletion) ? DeletionTime.LIVE : complexDeletion;
-        return transformAndFilter(newDeletion,
-                                  (cell) ->
-                                           (cellTester == null || cellTester.includes(cell.path()))
-                                        && !activeDeletion.deletes(cell)
-                                        && (dropped == null || cell.timestamp() > dropped.droppedTime)
-                                           ? cell : null);
+        return transformAndFilter(newDeletion, (cell) ->
+        {
+            boolean isForDropped = dropped != null && cell.timestamp() <= dropped.droppedTime;
+            boolean isShadowed = activeDeletion.deletes(cell);
+            boolean isSkippable = cellTester != null && (!cellTester.fetches(cell.path())
+                                                         || (!cellTester.fetchedCellIsQueried(cell.path()) && cell.timestamp() < rowLiveness.timestamp()));
+            return isForDropped || isShadowed || isSkippable ? null : cell;
+        });
     }
 
     public ComplexColumnData purge(DeletionPurger purger, int nowInSec)
     {
         DeletionTime newDeletion = complexDeletion.isLive() || purger.shouldPurge(complexDeletion) ? DeletionTime.LIVE : complexDeletion;
         return transformAndFilter(newDeletion, (cell) -> cell.purge(purger, nowInSec));
+    }
+
+    public ComplexColumnData withOnlyQueriedData(ColumnFilter filter)
+    {
+        return transformAndFilter(complexDeletion, (cell) -> filter.fetchedCellIsQueried(column, cell.path()) ? null : cell);
     }
 
     private ComplexColumnData transformAndFilter(DeletionTime newDeletion, Function<? super Cell, ? extends Cell> function)
@@ -218,7 +224,7 @@ public class ComplexColumnData extends ColumnData implements Iterable<Cell>
     @Override
     public int hashCode()
     {
-        return Objects.hash(column(), complexDeletion(), cells);
+        return Objects.hash(column(), complexDeletion(), BTree.hashCode(cells));
     }
 
     public static Builder builder()
@@ -228,10 +234,6 @@ public class ComplexColumnData extends ColumnData implements Iterable<Cell>
 
     public static class Builder
     {
-        private static BiFunction<Cell, Cell, Cell> noResolve = (a, b) -> {
-            throw new IllegalStateException();
-        };
-
         private DeletionTime complexDeletion;
         private ColumnDefinition column;
         private BTree.Builder<Cell> builder;
@@ -240,8 +242,10 @@ public class ComplexColumnData extends ColumnData implements Iterable<Cell>
         {
             this.column = column;
             this.complexDeletion = DeletionTime.LIVE; // default if writeComplexDeletion is not called
-            if (builder == null) builder = BTree.builder(column.cellComparator());
-            else builder.reuse(column.cellComparator());
+            if (builder == null)
+                builder = BTree.builder(column.cellComparator());
+            else
+                builder.reuse(column.cellComparator());
         }
 
         public void addComplexDeletion(DeletionTime complexDeletion)

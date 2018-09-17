@@ -20,11 +20,13 @@ package org.apache.cassandra.cql3.selection;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.cql3.ColumnSpecification;
 import org.apache.cassandra.cql3.selection.Selection.ResultSetBuilder;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.Int32Type;
 import org.apache.cassandra.db.marshal.LongType;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 final class WritetimeOrTTLSelector extends Selector
@@ -54,7 +56,7 @@ final class WritetimeOrTTLSelector extends Selector
                mapping.addMapping(resultsColumn, def);
             }
 
-            public Selector newInstance()
+            public Selector newInstance(QueryOptions options)
             {
                 return new WritetimeOrTTLSelector(def.name.toString(), idx, isWritetime);
             }
@@ -71,7 +73,7 @@ final class WritetimeOrTTLSelector extends Selector
         };
     }
 
-    public void addInput(int protocolVersion, ResultSetBuilder rs)
+    public void addInput(ProtocolVersion protocolVersion, ResultSetBuilder rs)
     {
         if (isSet)
             return;
@@ -90,7 +92,7 @@ final class WritetimeOrTTLSelector extends Selector
         }
     }
 
-    public ByteBuffer getOutput(int protocolVersion)
+    public ByteBuffer getOutput(ProtocolVersion protocolVersion)
     {
         return current;
     }

@@ -18,7 +18,6 @@
 package org.apache.cassandra.db.rows;
 
 import java.nio.ByteBuffer;
-import java.util.*;
 import java.security.MessageDigest;
 
 import org.junit.Test;
@@ -28,7 +27,6 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.filter.*;
 import org.apache.cassandra.db.partitions.*;
 import org.apache.cassandra.db.context.CounterContext;
 import org.apache.cassandra.net.MessagingService;
@@ -78,7 +76,6 @@ public class DigestBackwardCompatibilityTest extends CQLTester
         createTable("CREATE TABLE %s (k text, t int, v1 text, v2 int, PRIMARY KEY (k, t))");
 
         String key = "someKey";
-        int N = 10;
 
         for (int i = 0; i < 10; i++)
             execute("INSERT INTO %s(k, t, v1, v2) VALUES (?, ?, ?, ?) USING TIMESTAMP ? AND TTL ?", key, i, "v" + i, i, 1L, 200);
@@ -105,7 +102,6 @@ public class DigestBackwardCompatibilityTest extends CQLTester
         createTable("CREATE TABLE %s (k text, t int, v text, PRIMARY KEY (k, t)) WITH COMPACT STORAGE");
 
         String key = "someKey";
-        int N = 10;
 
         for (int i = 0; i < 10; i++)
             execute("INSERT INTO %s(k, t, v) VALUES (?, ?, ?) USING TIMESTAMP ? AND TTL ?", key, i, "v" + i, 1L, 200);
@@ -174,7 +170,7 @@ public class DigestBackwardCompatibilityTest extends CQLTester
         CFMetaData metadata = getCurrentColumnFamilyStore().metadata;
         ColumnDefinition column = metadata.getColumnDefinition(ByteBufferUtil.bytes("c"));
         ByteBuffer value = CounterContext.instance().createGlobal(CounterId.fromInt(1), 1L, 42L);
-        Row row = BTreeRow.singleCellRow(Clustering.STATIC_CLUSTERING, BufferCell.live(metadata, column, 0L, value));
+        Row row = BTreeRow.singleCellRow(Clustering.STATIC_CLUSTERING, BufferCell.live(column, 0L, value));
 
         new Mutation(PartitionUpdate.singleRowUpdate(metadata, Util.dk(key), row)).applyUnsafe();
 

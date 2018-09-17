@@ -20,46 +20,21 @@ package org.apache.cassandra.cql3.validation.operations;
 
 import java.util.Arrays;
 
+import org.junit.Assert;
 import org.junit.Test;
 
-import static org.apache.commons.lang3.StringUtils.isEmpty;
+import org.apache.cassandra.cql3.Attributes;
 import org.apache.cassandra.cql3.CQLTester;
-import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.cql3.UntypedResultSet;
+import org.apache.cassandra.cql3.UntypedResultSet.Row;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.Keyspace;
+
+import static org.apache.commons.lang3.StringUtils.isEmpty;
+import static org.junit.Assert.assertTrue;
 
 public class UpdateTest extends CQLTester
 {
-    /**
-     * Test altering the type of a column, including the one in the primary key (#4041)
-     * migrated from cql_tests.py:TestCQL.update_type_test()
-     */
-    @Test
-    public void testUpdateColumnType() throws Throwable
-    {
-        createTable("CREATE TABLE %s (k text, c text, s set <text>, v text, PRIMARY KEY(k, c))");
-
-        // using utf8 character so that we can see the transition to BytesType
-        execute("INSERT INTO %s (k, c, v, s) VALUES ('ɸ', 'ɸ', 'ɸ', {'ɸ'})");
-
-        assertRows(execute("SELECT * FROM %s"),
-                   row("ɸ", "ɸ", set("ɸ"), "ɸ"));
-
-        execute("ALTER TABLE %s ALTER v TYPE blob");
-        assertRows(execute("SELECT * FROM %s"),
-                   row("ɸ", "ɸ", set("ɸ"), ByteBufferUtil.bytes("ɸ")));
-
-        execute("ALTER TABLE %s ALTER k TYPE blob");
-        assertRows(execute("SELECT * FROM %s"),
-                   row(ByteBufferUtil.bytes("ɸ"), "ɸ", set("ɸ"), ByteBufferUtil.bytes("ɸ")));
-
-        execute("ALTER TABLE %s ALTER c TYPE blob");
-        assertRows(execute("SELECT * FROM %s"),
-                   row(ByteBufferUtil.bytes("ɸ"), ByteBufferUtil.bytes("ɸ"), set("ɸ"), ByteBufferUtil.bytes("ɸ")));
-
-        execute("ALTER TABLE %s ALTER s TYPE set<blob>");
-        assertRows(execute("SELECT * FROM %s"),
-                   row(ByteBufferUtil.bytes("ɸ"), ByteBufferUtil.bytes("ɸ"), set(ByteBufferUtil.bytes("ɸ")), ByteBufferUtil.bytes("ɸ")));
-    }
-
     @Test
     public void testTypeCasts() throws Throwable
     {
@@ -193,13 +168,13 @@ public class UpdateTest extends CQLTester
                                  "UPDATE %s SET value = ? WHERE partitionKey = ? AND clustering_1 = ? AND clustering_1 = ?", 7, 0, 1, 1);
 
             // unknown identifiers
-            assertInvalidMessage("Unknown identifier value1",
+            assertInvalidMessage("Undefined column name value1",
                                  "UPDATE %s SET value1 = ? WHERE partitionKey = ? AND clustering_1 = ?", 7, 0, 1);
 
-            assertInvalidMessage("Undefined name partitionkey1 in where clause ('partitionkey1 = ?')",
+            assertInvalidMessage("Undefined column name partitionkey1",
                                  "UPDATE %s SET value = ? WHERE partitionKey1 = ? AND clustering_1 = ?", 7, 0, 1);
 
-            assertInvalidMessage("Undefined name clustering_3 in where clause ('clustering_3 = ?')",
+            assertInvalidMessage("Undefined column name clustering_3",
                                  "UPDATE %s SET value = ? WHERE partitionKey = ? AND clustering_3 = ?", 7, 0, 1);
 
             // Invalid operator in the where clause
@@ -380,13 +355,13 @@ public class UpdateTest extends CQLTester
                                  "UPDATE %s SET value = ? WHERE partitionKey = ? AND clustering_1 = ? AND clustering_2 = ? AND clustering_1 = ?", 7, 0, 1, 1, 1);
 
             // unknown identifiers
-            assertInvalidMessage("Unknown identifier value1",
+            assertInvalidMessage("Undefined column name value1",
                                  "UPDATE %s SET value1 = ? WHERE partitionKey = ? AND clustering_1 = ? AND clustering_2 = ?", 7, 0, 1, 1);
 
-            assertInvalidMessage("Undefined name partitionkey1 in where clause ('partitionkey1 = ?')",
+            assertInvalidMessage("Undefined column name partitionkey1",
                                  "UPDATE %s SET value = ? WHERE partitionKey1 = ? AND clustering_1 = ? AND clustering_2 = ?", 7, 0, 1, 1);
 
-            assertInvalidMessage("Undefined name clustering_3 in where clause ('clustering_3 = ?')",
+            assertInvalidMessage("Undefined column name clustering_3",
                                  "UPDATE %s SET value = ? WHERE partitionKey = ? AND clustering_1 = ? AND clustering_3 = ?", 7, 0, 1, 1);
 
             // Invalid operator in the where clause
@@ -521,9 +496,175 @@ public class UpdateTest extends CQLTester
         assertRows(execute("SELECT l FROM %s WHERE k = 0"), row(list("v1", "v4", "v3")));
     }
 
-    private void flush(boolean forceFlush)
+    @Test
+    public void testUpdateWithDefaultTtl() throws Throwable
     {
-        if (forceFlush)
-            flush();
+        final int secondsPerMinute = 60;
+        createTable("CREATE TABLE %s (a int PRIMARY KEY, b int) WITH default_time_to_live = " + (10 * secondsPerMinute));
+
+        execute("UPDATE %s SET b = 1 WHERE a = 1");
+        UntypedResultSet resultSet = execute("SELECT ttl(b) FROM %s WHERE a = 1");
+        Assert.assertEquals(1, resultSet.size());
+        Row row = resultSet.one();
+        Assert.assertTrue(row.getInt("ttl(b)") >= (9 * secondsPerMinute));
+
+        execute("UPDATE %s USING TTL ? SET b = 3 WHERE a = 1", 0);
+        assertRows(execute("SELECT ttl(b) FROM %s WHERE a = 1"), row(new Object[]{null}));
+
+        execute("UPDATE %s SET b = 3 WHERE a = 1");
+        resultSet = execute("SELECT ttl(b) FROM %s WHERE a = 1");
+        Assert.assertEquals(1, resultSet.size());
+        row = resultSet.one();
+        Assert.assertTrue(row.getInt("ttl(b)") >= (9 * secondsPerMinute));
+
+        execute("UPDATE %s USING TTL ? SET b = 2 WHERE a = 2", unset());
+        resultSet = execute("SELECT ttl(b) FROM %s WHERE a = 2");
+        Assert.assertEquals(1, resultSet.size());
+        row = resultSet.one();
+        Assert.assertTrue(row.getInt("ttl(b)") >= (9 * secondsPerMinute));
+
+        execute("UPDATE %s USING TTL ? SET b = ? WHERE a = ?", null, 3, 3);
+        assertRows(execute("SELECT ttl(b) FROM %s WHERE a = 3"), row(new Object[] { null }));
+    }
+
+    @Test
+    public void testUpdateWithTtl() throws Throwable
+    {
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, v int)");
+
+        execute("INSERT INTO %s (k, v) VALUES (1, 1) USING TTL ?", 3600);
+        execute("INSERT INTO %s (k, v) VALUES (2, 2) USING TTL ?", 3600);
+
+        // test with unset
+        execute("UPDATE %s USING TTL ? SET v = ? WHERE k = ?", unset(), 1, 1); // treat as 'unlimited'
+        assertRows(execute("SELECT ttl(v) FROM %s WHERE k = 1"), row(new Object[] { null }));
+
+        // test with null
+        execute("UPDATE %s USING TTL ? SET v = ? WHERE k = ?", unset(), 2, 2);
+        assertRows(execute("SELECT k, v, TTL(v) FROM %s WHERE k = 2"), row(2, 2, null));
+
+        // test error handling
+        assertInvalidMessage("A TTL must be greater or equal to 0, but was -5",
+                             "UPDATE %s USING TTL ? SET v = ? WHERE k = ?", -5, 1, 1);
+
+        assertInvalidMessage("ttl is too large.",
+                             "UPDATE %s USING TTL ? SET v = ? WHERE k = ?",
+                             Attributes.MAX_TTL + 1, 1, 1);
+    }
+
+    /**
+     * Test for CASSANDRA-12829
+     */
+    @Test
+    public void testUpdateWithEmptyInRestriction() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int, b int, c int, PRIMARY KEY (a,b))");
+        execute("INSERT INTO %s (a,b,c) VALUES (?,?,?)",1,1,1);
+        execute("INSERT INTO %s (a,b,c) VALUES (?,?,?)",1,2,2);
+        execute("INSERT INTO %s (a,b,c) VALUES (?,?,?)",1,3,3);
+
+        assertInvalidMessage("Some clustering keys are missing: b",
+                             "UPDATE %s SET c = 100 WHERE a IN ();");
+        execute("UPDATE %s SET c = 100 WHERE a IN () AND b IN ();");
+        execute("UPDATE %s SET c = 100 WHERE a IN () AND b = 1;");
+        execute("UPDATE %s SET c = 100 WHERE a = 1 AND b IN ();");
+        assertRows(execute("SELECT * FROM %s"),
+                   row(1,1,1),
+                   row(1,2,2),
+                   row(1,3,3));
+
+        createTable("CREATE TABLE %s (a int, b int, c int, d int, s int static, PRIMARY KEY ((a,b), c))");
+        execute("INSERT INTO %s (a,b,c,d,s) VALUES (?,?,?,?,?)",1,1,1,1,1);
+        execute("INSERT INTO %s (a,b,c,d,s) VALUES (?,?,?,?,?)",1,1,2,2,1);
+        execute("INSERT INTO %s (a,b,c,d,s) VALUES (?,?,?,?,?)",1,1,3,3,1);
+
+        execute("UPDATE %s SET d = 100 WHERE a = 1 AND b = 1 AND c IN ();");
+        execute("UPDATE %s SET d = 100 WHERE a = 1 AND b IN () AND c IN ();");
+        execute("UPDATE %s SET d = 100 WHERE a IN () AND b IN () AND c IN ();");
+        execute("UPDATE %s SET d = 100 WHERE a IN () AND b IN () AND c = 1;");
+        execute("UPDATE %s SET d = 100 WHERE a IN () AND b = 1 AND c IN ();");
+        assertRows(execute("SELECT * FROM %s"),
+                   row(1,1,1,1,1),
+                   row(1,1,2,1,2),
+                   row(1,1,3,1,3));
+
+        // No clustering keys restricted, update whole partition
+        execute("UPDATE %s set s = 100 where a = 1 AND b = 1;");
+        assertRows(execute("SELECT * FROM %s"),
+                   row(1,1,1,100,1),
+                   row(1,1,2,100,2),
+                   row(1,1,3,100,3));
+
+        execute("UPDATE %s set s = 200 where a = 1 AND b IN ();");
+        assertRows(execute("SELECT * FROM %s"),
+                   row(1,1,1,100,1),
+                   row(1,1,2,100,2),
+                   row(1,1,3,100,3));
+
+        createTable("CREATE TABLE %s (a int, b int, c int, d int, e int, PRIMARY KEY ((a,b), c, d))");
+        execute("INSERT INTO %s (a,b,c,d,e) VALUES (?,?,?,?,?)",1,1,1,1,1);
+        execute("INSERT INTO %s (a,b,c,d,e) VALUES (?,?,?,?,?)",1,1,1,2,2);
+        execute("INSERT INTO %s (a,b,c,d,e) VALUES (?,?,?,?,?)",1,1,1,3,3);
+        execute("INSERT INTO %s (a,b,c,d,e) VALUES (?,?,?,?,?)",1,1,1,4,4);
+
+        execute("UPDATE %s SET e = 100 WHERE a = 1 AND b = 1 AND c = 1 AND d IN ();");
+        execute("UPDATE %s SET e = 100 WHERE a = 1 AND b = 1 AND c IN () AND d IN ();");
+        execute("UPDATE %s SET e = 100 WHERE a = 1 AND b IN () AND c IN () AND d IN ();");
+        execute("UPDATE %s SET e = 100 WHERE a IN () AND b IN () AND c IN () AND d IN ();");
+        execute("UPDATE %s SET e = 100 WHERE a IN () AND b IN () AND c IN () AND d = 1;");
+        execute("UPDATE %s SET e = 100 WHERE a IN () AND b IN () AND c = 1 AND d = 1;");
+        execute("UPDATE %s SET e = 100 WHERE a IN () AND b IN () AND c = 1 AND d IN ();");
+        assertRows(execute("SELECT * FROM %s"),
+                   row(1,1,1,1,1),
+                   row(1,1,1,2,2),
+                   row(1,1,1,3,3),
+                   row(1,1,1,4,4));
+    }
+
+    /**
+     * Test for CASSANDRA-13152
+     */
+    @Test
+    public void testThatUpdatesWithEmptyInRestrictionDoNotCreateMutations() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int, b int, c int, PRIMARY KEY (a,b))");
+
+        execute("UPDATE %s SET c = 100 WHERE a IN () AND b = 1;");
+        execute("UPDATE %s SET c = 100 WHERE a = 1 AND b IN ();");
+
+        assertTrue("The memtable should be empty but is not", isMemtableEmpty());
+
+        createTable("CREATE TABLE %s (a int, b int, c int, d int, s int static, PRIMARY KEY ((a,b), c))");
+
+        execute("UPDATE %s SET d = 100 WHERE a = 1 AND b = 1 AND c IN ();");
+        execute("UPDATE %s SET d = 100 WHERE a = 1 AND b IN () AND c IN ();");
+        execute("UPDATE %s SET d = 100 WHERE a IN () AND b IN () AND c IN ();");
+        execute("UPDATE %s SET d = 100 WHERE a IN () AND b IN () AND c = 1;");
+        execute("UPDATE %s SET d = 100 WHERE a IN () AND b = 1 AND c IN ();");
+
+        assertTrue("The memtable should be empty but is not", isMemtableEmpty());
+
+        createTable("CREATE TABLE %s (a int, b int, c int, d int, e int, PRIMARY KEY ((a,b), c, d))");
+
+        execute("UPDATE %s SET e = 100 WHERE a = 1 AND b = 1 AND c = 1 AND d IN ();");
+        execute("UPDATE %s SET e = 100 WHERE a = 1 AND b = 1 AND c IN () AND d IN ();");
+        execute("UPDATE %s SET e = 100 WHERE a = 1 AND b IN () AND c IN () AND d IN ();");
+        execute("UPDATE %s SET e = 100 WHERE a IN () AND b IN () AND c IN () AND d IN ();");
+        execute("UPDATE %s SET e = 100 WHERE a IN () AND b IN () AND c IN () AND d = 1;");
+        execute("UPDATE %s SET e = 100 WHERE a IN () AND b IN () AND c = 1 AND d = 1;");
+        execute("UPDATE %s SET e = 100 WHERE a IN () AND b IN () AND c = 1 AND d IN ();");
+
+        assertTrue("The memtable should be empty but is not", isMemtableEmpty());
+    }
+
+    /**
+     * Checks if the memtable is empty or not
+     * @return {@code true} if the memtable is empty, {@code false} otherwise.
+     */
+    private boolean isMemtableEmpty()
+    {
+        Keyspace keyspace = Keyspace.open(KEYSPACE);
+        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(currentTable());
+        return cfs.metric.allMemtablesLiveDataSize.getValue() == 0;
     }
 }

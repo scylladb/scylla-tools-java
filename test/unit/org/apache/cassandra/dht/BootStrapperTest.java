@@ -61,6 +61,7 @@ public class BootStrapperTest
     @BeforeClass
     public static void setup() throws ConfigurationException
     {
+        DatabaseDescriptor.daemonInitialization();
         oldPartitioner = StorageService.instance.setPartitionerUnsafe(Murmur3Partitioner.instance);
         SchemaLoader.startGossiper();
         SchemaLoader.prepareServer();
@@ -96,7 +97,7 @@ public class BootStrapperTest
         InetAddress myEndpoint = InetAddress.getByName("127.0.0.1");
 
         assertEquals(numOldNodes, tmd.sortedTokens().size());
-        RangeStreamer s = new RangeStreamer(tmd, null, myEndpoint, "Bootstrap", true, DatabaseDescriptor.getEndpointSnitch(), new StreamStateStore());
+        RangeStreamer s = new RangeStreamer(tmd, null, myEndpoint, "Bootstrap", true, DatabaseDescriptor.getEndpointSnitch(), new StreamStateStore(), false);
         IFailureDetector mockFailureDetector = new IFailureDetector()
         {
             public boolean isAlive(InetAddress ep)
@@ -178,7 +179,7 @@ public class BootStrapperTest
             String ks = "BootStrapperTestNTSKeyspace" + rackCount + replicas;
             String dc = "1";
             SchemaLoader.createKeyspace(ks, KeyspaceParams.nts(dc, replicas, "15", 15), SchemaLoader.standardCFMD(ks, "Standard1"));
-            TokenMetadata tm = new TokenMetadata();
+            TokenMetadata tm = StorageService.instance.getTokenMetadata();
             tm.clearUnsafe();
             for (int i = 0; i < rackCount; ++i)
                 generateFakeEndpoints(tm, 10, vn, dc, Integer.toString(i));
@@ -222,11 +223,11 @@ public class BootStrapperTest
 
     private void allocateTokensForNode(int vn, String ks, TokenMetadata tm, InetAddress addr)
     {
-        SummaryStatistics os = TokenAllocation.replicatedOwnershipStats(tm, Keyspace.open(ks).getReplicationStrategy(), addr);
-        Collection<Token> tokens = BootStrapper.allocateTokens(tm, addr, ks, vn);
+        SummaryStatistics os = TokenAllocation.replicatedOwnershipStats(tm.cloneOnlyTokenMap(), Keyspace.open(ks).getReplicationStrategy(), addr);
+        Collection<Token> tokens = BootStrapper.allocateTokens(tm, addr, ks, vn, 0);
         assertEquals(vn, tokens.size());
         tm.updateNormalTokens(tokens, addr);
-        SummaryStatistics ns = TokenAllocation.replicatedOwnershipStats(tm, Keyspace.open(ks).getReplicationStrategy(), addr);
+        SummaryStatistics ns = TokenAllocation.replicatedOwnershipStats(tm.cloneOnlyTokenMap(), Keyspace.open(ks).getReplicationStrategy(), addr);
         verifyImprovement(os, ns);
     }
 

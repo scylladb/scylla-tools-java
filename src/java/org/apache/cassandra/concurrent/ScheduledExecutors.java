@@ -23,6 +23,11 @@ package org.apache.cassandra.concurrent;
 public class ScheduledExecutors
 {
     /**
+     * This pool is used for periodic fast (sub-microsecond) tasks.
+     */
+    public static final DebuggableScheduledThreadPoolExecutor scheduledFastTasks = new DebuggableScheduledThreadPoolExecutor("ScheduledFastTasks");
+
+    /**
      * This pool is used for periodic short (sub-second) tasks.
      */
      public static final DebuggableScheduledThreadPoolExecutor scheduledTasks = new DebuggableScheduledThreadPoolExecutor("ScheduledTasks");
@@ -31,10 +36,6 @@ public class ScheduledExecutors
      * This executor is used for tasks that can have longer execution times, and usually are non periodic.
      */
     public static final DebuggableScheduledThreadPoolExecutor nonPeriodicTasks = new DebuggableScheduledThreadPoolExecutor("NonPeriodicTasks");
-    static
-    {
-        nonPeriodicTasks.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
-    }
 
     /**
      * This executor is used for tasks that do not need to be waited for on shutdown/drain.

@@ -18,23 +18,17 @@
 package org.apache.cassandra.io.sstable.format;
 
 import com.google.common.base.CharMatcher;
-import com.google.common.collect.ImmutableList;
 import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.db.LegacyLayout;
 import org.apache.cassandra.db.RowIndexEntry;
 import org.apache.cassandra.db.SerializationHeader;
-import org.apache.cassandra.db.compaction.CompactionController;
 import org.apache.cassandra.io.sstable.format.big.BigFormat;
-import org.apache.cassandra.io.util.FileDataInput;
-
-import java.util.Iterator;
 
 /**
  * Provides the accessors to data on disk.
  */
 public interface SSTableFormat
 {
-    static boolean enableSSTableDevelopmentTestMode = Boolean.valueOf(System.getProperty("cassandra.test.sstableformatdevelopment","false"));
+    static boolean enableSSTableDevelopmentTestMode = Boolean.getBoolean("cassandra.test.sstableformatdevelopment");
 
 
     Version getLatestVersion();
@@ -56,6 +50,11 @@ public interface SSTableFormat
 
         public final SSTableFormat info;
         public final String name;
+
+        public static Type current()
+        {
+            return BIG;
+        }
 
         private Type(String name, SSTableFormat info)
         {

@@ -43,6 +43,7 @@ import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
+import org.apache.cassandra.io.sstable.format.SSTableFormat;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.metrics.ClearableHistogram;
 import org.apache.cassandra.schema.KeyspaceParams;
@@ -305,7 +306,7 @@ public class ColumnFamilyStoreTest
         // We don't do snapshot-based repair on Windows so we don't have ephemeral snapshots from repair that need clearing.
         // This test will fail as we'll revert to the WindowsFailedSnapshotTracker and counts will be off, but since we
         // don't do snapshot-based repair on Windows, we just skip this test.
-        Assume.assumeTrue(!FBUtilities.isWindows());
+        Assume.assumeTrue(!FBUtilities.isWindows);
 
         ColumnFamilyStore cfs = Keyspace.open(KEYSPACE1).getColumnFamilyStore(CF_INDEX1);
 
@@ -321,8 +322,8 @@ public class ColumnFamilyStoreTest
         }
         ScrubTest.fillIndexCF(cfs, false, colValues);
 
-        cfs.snapshot("nonEphemeralSnapshot", null, false);
-        cfs.snapshot("ephemeralSnapshot", null, true);
+        cfs.snapshot("nonEphemeralSnapshot", null, false, false);
+        cfs.snapshot("ephemeralSnapshot", null, true, false);
 
         Map<String, Pair<Long, Long>> snapshotDetails = cfs.getSnapshotDetails();
         assertEquals(2, snapshotDetails.size());
@@ -350,8 +351,9 @@ public class ColumnFamilyStoreTest
 
         for (int version = 1; version <= 2; ++version)
         {
-            Descriptor existing = new Descriptor(cfs.getDirectories().getDirectoryForNewSSTables(), KEYSPACE2, CF_STANDARD1, version);
-            Descriptor desc = new Descriptor(Directories.getBackupsDirectory(existing), KEYSPACE2, CF_STANDARD1, version);
+            Descriptor existing = new Descriptor(cfs.getDirectories().getDirectoryForNewSSTables(), KEYSPACE2, CF_STANDARD1, version,
+                                                 SSTableFormat.Type.BIG);
+            Descriptor desc = new Descriptor(Directories.getBackupsDirectory(existing), KEYSPACE2, CF_STANDARD1, version, SSTableFormat.Type.BIG);
             for (Component c : new Component[]{ Component.DATA, Component.PRIMARY_INDEX, Component.FILTER, Component.STATS })
                 assertTrue("Cannot find backed-up file:" + desc.filenameFor(c), new File(desc.filenameFor(c)).exists());
         }

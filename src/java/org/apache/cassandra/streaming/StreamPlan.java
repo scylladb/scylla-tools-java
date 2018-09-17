@@ -32,6 +32,7 @@ import org.apache.cassandra.utils.UUIDGen;
  */
 public class StreamPlan
 {
+    public static final String[] EMPTY_COLUMN_FAMILIES = new String[0];
     private final UUID planId = UUIDGen.getTimeUUID();
     private final String description;
     private final List<StreamEventHandler> handlers = new ArrayList<>();
@@ -47,19 +48,21 @@ public class StreamPlan
      */
     public StreamPlan(String description)
     {
-        this(description, ActiveRepairService.UNREPAIRED_SSTABLE, 1, false, false);
+        this(description, ActiveRepairService.UNREPAIRED_SSTABLE, 1, false, false, false);
     }
 
-    public StreamPlan(String description, boolean keepSSTableLevels)
+    public StreamPlan(String description, boolean keepSSTableLevels, boolean connectSequentially)
     {
-        this(description, ActiveRepairService.UNREPAIRED_SSTABLE, 1, keepSSTableLevels, false);
+        this(description, ActiveRepairService.UNREPAIRED_SSTABLE, 1, keepSSTableLevels, false, connectSequentially);
     }
 
-    public StreamPlan(String description, long repairedAt, int connectionsPerHost, boolean keepSSTableLevels, boolean isIncremental)
+    public StreamPlan(String description, long repairedAt, int connectionsPerHost, boolean keepSSTableLevels,
+                      boolean isIncremental, boolean connectSequentially)
     {
         this.description = description;
         this.repairedAt = repairedAt;
-        this.coordinator = new StreamCoordinator(connectionsPerHost, keepSSTableLevels, isIncremental, new DefaultConnectionFactory());
+        this.coordinator = new StreamCoordinator(connectionsPerHost, keepSSTableLevels, isIncremental, new DefaultConnectionFactory(),
+                                                 connectSequentially);
     }
 
     /**
@@ -73,7 +76,7 @@ public class StreamPlan
      */
     public StreamPlan requestRanges(InetAddress from, InetAddress connecting, String keyspace, Collection<Range<Token>> ranges)
     {
-        return requestRanges(from, connecting, keyspace, ranges, new String[0]);
+        return requestRanges(from, connecting, keyspace, ranges, EMPTY_COLUMN_FAMILIES);
     }
 
     /**
@@ -114,7 +117,7 @@ public class StreamPlan
      */
     public StreamPlan transferRanges(InetAddress to, InetAddress connecting, String keyspace, Collection<Range<Token>> ranges)
     {
-        return transferRanges(to, connecting, keyspace, ranges, new String[0]);
+        return transferRanges(to, connecting, keyspace, ranges, EMPTY_COLUMN_FAMILIES);
     }
 
     /**

@@ -31,6 +31,7 @@ import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.marshal.AbstractType;
@@ -58,6 +59,7 @@ public class RowTest
     @BeforeClass
     public static void defineSchema() throws ConfigurationException
     {
+        DatabaseDescriptor.daemonInitialization();
         CFMetaData cfMetadata = CFMetaData.Builder.create(KEYSPACE1, CF_STANDARD1)
                                                   .addPartitionKey("key", BytesType.instance)
                                                   .addClusteringColumn("col1", AsciiType.instance)
@@ -108,12 +110,12 @@ public class RowTest
             while (merged.hasNext())
             {
                 RangeTombstoneBoundMarker openMarker = (RangeTombstoneBoundMarker)merged.next();
-                Slice.Bound openBound = openMarker.clustering();
+                ClusteringBound openBound = openMarker.clustering();
                 DeletionTime openDeletion = new DeletionTime(openMarker.deletionTime().markedForDeleteAt(),
                                                                    openMarker.deletionTime().localDeletionTime());
 
                 RangeTombstoneBoundMarker closeMarker = (RangeTombstoneBoundMarker)merged.next();
-                Slice.Bound closeBound = closeMarker.clustering();
+                ClusteringBound closeBound = closeMarker.clustering();
                 DeletionTime closeDeletion = new DeletionTime(closeMarker.deletionTime().markedForDeleteAt(),
                                                                     closeMarker.deletionTime().localDeletionTime());
 
@@ -185,16 +187,16 @@ public class RowTest
         assertEquals(Integer.valueOf(1), map.get(row));
     }
 
-    private void assertRangeTombstoneMarkers(Slice.Bound start, Slice.Bound end, DeletionTime deletionTime, Object[] expected)
+    private void assertRangeTombstoneMarkers(ClusteringBound start, ClusteringBound end, DeletionTime deletionTime, Object[] expected)
     {
         AbstractType clusteringType = (AbstractType)cfm.comparator.subtype(0);
 
         assertEquals(1, start.size());
-        assertEquals(start.kind(), Slice.Bound.Kind.INCL_START_BOUND);
+        assertEquals(start.kind(), ClusteringPrefix.Kind.INCL_START_BOUND);
         assertEquals(expected[0], clusteringType.getString(start.get(0)));
 
         assertEquals(1, end.size());
-        assertEquals(end.kind(), Slice.Bound.Kind.INCL_END_BOUND);
+        assertEquals(end.kind(), ClusteringPrefix.Kind.INCL_END_BOUND);
         assertEquals(expected[1], clusteringType.getString(end.get(0)));
 
         assertEquals(expected[2], deletionTime.markedForDeleteAt());
@@ -213,6 +215,6 @@ public class RowTest
                                       String value,
                                       long timestamp)
     {
-       builder.addCell(BufferCell.live(cfm, columnDefinition, timestamp, ((AbstractType) columnDefinition.cellValueType()).decompose(value)));
+       builder.addCell(BufferCell.live(columnDefinition, timestamp, ((AbstractType) columnDefinition.cellValueType()).decompose(value)));
     }
 }

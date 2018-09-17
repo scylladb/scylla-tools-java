@@ -80,8 +80,12 @@ public class SelectMultiColumnRelationTest extends CQLTester
                                  "SELECT * FROM %s WHERE a = 0 AND (c, d) > (?, ?)", 0, 0);
 
             // Nulls
-            assertInvalidMessage("Invalid null value in condition for columns: [b, c, d]",
+            assertInvalidMessage("Invalid null value for column d",
+                                 "SELECT * FROM %s WHERE a = 0 AND (b, c, d) = (?, ?, ?)", 1, 2, null);
+            assertInvalidMessage("Invalid null value for column d",
                                  "SELECT * FROM %s WHERE a = 0 AND (b, c, d) IN ((?, ?, ?))", 1, 2, null);
+            assertInvalidMessage("Invalid null value in condition for columns: [b, c, d]",
+                                 "SELECT * FROM %s WHERE a = 0 AND (b, c, d) IN ((?, ?, ?), (?, ?, ?))", 1, 2, null, 2, 1 ,4);
 
             // Wrong type for 'd'
             assertInvalid("SELECT * FROM %s WHERE a = 0 AND (b, c, d) = (?, ?, ?)", 1, 2, "foobar");
@@ -103,16 +107,16 @@ public class SelectMultiColumnRelationTest extends CQLTester
 
             assertInvalidMessage("Clustering column \"c\" cannot be restricted (preceding column \"b\" is restricted by a non-EQ relation)",
                                  "SELECT * FROM %s WHERE a = ? AND b > ?  AND (c, d) > (?, ?)", 0, 0, 0, 0);
-            assertInvalidMessage("Clustering column \"c\" cannot be restricted (preceding column \"b\" is restricted by a non-EQ relation)",
+            assertInvalidMessage("PRIMARY KEY column \"c\" cannot be restricted (preceding column \"b\" is restricted by a non-EQ relation)",
                                  "SELECT * FROM %s WHERE a = ? AND (c, d) > (?, ?) AND b > ?  ", 0, 0, 0, 0);
 
             assertInvalidMessage("Column \"c\" cannot be restricted by two inequalities not starting with the same column",
                                  "SELECT * FROM %s WHERE a = ? AND (b, c) > (?, ?) AND (b) < (?) AND (c) < (?)", 0, 0, 0, 0, 0);
             assertInvalidMessage("Column \"c\" cannot be restricted by two inequalities not starting with the same column",
                                  "SELECT * FROM %s WHERE a = ? AND (c) < (?) AND (b, c) > (?, ?) AND (b) < (?)", 0, 0, 0, 0, 0);
-            assertInvalidMessage("Column \"c\" cannot be restricted by two inequalities not starting with the same column",
+            assertInvalidMessage("Clustering column \"c\" cannot be restricted (preceding column \"b\" is restricted by a non-EQ relation)",
                                  "SELECT * FROM %s WHERE a = ? AND (b) < (?) AND (c) < (?) AND (b, c) > (?, ?)", 0, 0, 0, 0, 0);
-            assertInvalidMessage("Column \"c\" cannot be restricted by two inequalities not starting with the same column",
+            assertInvalidMessage("Clustering column \"c\" cannot be restricted (preceding column \"b\" is restricted by a non-EQ relation)",
                                  "SELECT * FROM %s WHERE a = ? AND (b) < (?) AND c < ? AND (b, c) > (?, ?)", 0, 0, 0, 0, 0);
 
             assertInvalidMessage("Column \"c\" cannot be restricted by two inequalities not starting with the same column",
@@ -885,6 +889,19 @@ public class SelectMultiColumnRelationTest extends CQLTester
     }
 
     @Test
+    public void testMultipleClusteringWithIndexAndValueOver64K() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int, b blob, c int, d int, PRIMARY KEY (a, b, c))");
+        createIndex("CREATE INDEX ON %s (b)");
+
+        execute("INSERT INTO %s (a, b, c, d) VALUES (?, ?, ?, ?)", 0, ByteBufferUtil.bytes(1), 0, 0);
+        execute("INSERT INTO %s (a, b, c, d) VALUES (?, ?, ?, ?)", 0, ByteBufferUtil.bytes(2), 1, 0);
+
+        assertInvalidMessage("Index expression values may not be larger than 64K",
+                             "SELECT * FROM %s WHERE (b, c) = (?, ?) AND d = ?  ALLOW FILTERING", TOO_BIG, 1, 2);
+    }
+
+    @Test
     public void testMultiColumnRestrictionsWithIndex() throws Throwable
     {
         createTable("CREATE TABLE %s (a int, b int, c int, d int, e int, v int, PRIMARY KEY (a, b, c, d, e))");
@@ -909,19 +926,6 @@ public class SelectMultiColumnRelationTest extends CQLTester
                              "SELECT * FROM %s WHERE a = 0 AND b > 1 AND (d,e) < (2,2) AND v = 0 ALLOW FILTERING");
         assertInvalidMessage(errorMsg,
                              "SELECT * FROM %s WHERE a = 0 AND (b,c) > (1,0) AND (d,e) < (2,2) AND v = 0 ALLOW FILTERING");
-    }
-
-    @Test
-    public void testMultipleClusteringWithIndexAndValueOver64K() throws Throwable
-    {
-        createTable("CREATE TABLE %s (a int, b blob, c int, d int, PRIMARY KEY (a, b, c))");
-        createIndex("CREATE INDEX ON %s (b)");
-
-        execute("INSERT INTO %s (a, b, c, d) VALUES (?, ?, ?, ?)", 0, ByteBufferUtil.bytes(1), 0, 0);
-        execute("INSERT INTO %s (a, b, c, d) VALUES (?, ?, ?, ?)", 0, ByteBufferUtil.bytes(2), 1, 0);
-
-        assertInvalidMessage("Index expression values may not be larger than 64K",
-                             "SELECT * FROM %s WHERE (b, c) = (?, ?) AND d = ?  ALLOW FILTERING", TOO_BIG, 1, 2);
     }
 
     @Test
@@ -954,17 +958,21 @@ public class SelectMultiColumnRelationTest extends CQLTester
                    row(0, 0, 1, 1, 0, 4),
                    row(0, 0, 1, 1, 1, 5));
 
-        assertInvalidMessage("Partition key parts: b must be restricted as other parts are",
-                             "SELECT * FROM %s WHERE a = ? AND (c, d) IN ((?, ?)) ALLOW FILTERING", 0, 1, 1);
+        assertRows(execute("SELECT * FROM %s WHERE a = ? AND (c, d) IN ((?, ?)) ALLOW FILTERING", 0, 1, 1),
+                row(0, 0, 1, 1, 0, 4),
+                row(0, 0, 1, 1, 1, 5));
 
-        assertInvalidMessage("Partition key parts: b must be restricted as other parts are",
-                             "SELECT * FROM %s WHERE a = ? AND (c, d) >= (?, ?) ALLOW FILTERING", 0, 1, 1);
+        assertRows(execute("SELECT * FROM %s WHERE a = ? AND (c, d) >= (?, ?) ALLOW FILTERING", 0, 1, 1),
+                row(0, 0, 1, 1, 0, 4),
+                row(0, 0, 1, 1, 1, 5),
+                row(0, 0, 2, 0, 0, 5));
 
         assertRows(execute("SELECT * FROM %s WHERE a = ? AND b = ? AND (c) IN ((?)) AND f = ?", 0, 0, 1, 5),
                    row(0, 0, 1, 1, 1, 5));
+
         assertInvalidMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE,
-                             "SELECT * FROM %s WHERE a = ? AND (c) IN ((?)) AND f = ?", 0, 1, 5);
-        assertRows(execute("SELECT * FROM %s WHERE a = ? AND (c) IN ((?)) AND f = ? ALLOW FILTERING", 0, 1, 5),
+                             "SELECT * FROM %s WHERE a = ? AND (c) IN ((?), (?)) AND f = ?", 0, 1, 3, 5);
+        assertRows(execute("SELECT * FROM %s WHERE a = ? AND (c) IN ((?), (?)) AND f = ? ALLOW FILTERING", 0, 1, 3, 5),
                    row(0, 0, 1, 1, 1, 5));
 
         assertInvalidMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE,
@@ -1936,11 +1944,11 @@ public class SelectMultiColumnRelationTest extends CQLTester
     public void testInvalidColumnNames() throws Throwable
     {
         createTable("CREATE TABLE %s (a int, b int, c int, d int, PRIMARY KEY (a, b, c))");
-        assertInvalidMessage("Undefined name e in where clause ('(b, e) = (0, 0)')", "SELECT * FROM %s WHERE (b, e) = (0, 0)");
-        assertInvalidMessage("Undefined name e in where clause ('(b, e) IN ((0, 1), (2, 4))')", "SELECT * FROM %s WHERE (b, e) IN ((0, 1), (2, 4))");
-        assertInvalidMessage("Undefined name e in where clause ('(b, e) > (0, 1)')", "SELECT * FROM %s WHERE (b, e) > (0, 1) and b <= 2");
-        assertInvalidMessage("Aliases aren't allowed in the where clause ('(b, e) = (0, 0)')", "SELECT c AS e FROM %s WHERE (b, e) = (0, 0)");
-        assertInvalidMessage("Aliases aren't allowed in the where clause ('(b, e) IN ((0, 1), (2, 4))')", "SELECT c AS e FROM %s WHERE (b, e) IN ((0, 1), (2, 4))");
-        assertInvalidMessage("Aliases aren't allowed in the where clause ('(b, e) > (0, 1)')", "SELECT c AS e FROM %s WHERE (b, e) > (0, 1) and b <= 2");
+        assertInvalidMessage("Undefined column name e", "SELECT * FROM %s WHERE (b, e) = (0, 0)");
+        assertInvalidMessage("Undefined column name e", "SELECT * FROM %s WHERE (b, e) IN ((0, 1), (2, 4))");
+        assertInvalidMessage("Undefined column name e", "SELECT * FROM %s WHERE (b, e) > (0, 1) and b <= 2");
+        assertInvalidMessage("Undefined column name e", "SELECT c AS e FROM %s WHERE (b, e) = (0, 0)");
+        assertInvalidMessage("Undefined column name e", "SELECT c AS e FROM %s WHERE (b, e) IN ((0, 1), (2, 4))");
+        assertInvalidMessage("Undefined column name e", "SELECT c AS e FROM %s WHERE (b, e) > (0, 1) and b <= 2");
     }
  }

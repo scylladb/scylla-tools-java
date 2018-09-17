@@ -28,7 +28,7 @@ import java.util.stream.StreamSupport;
 import org.apache.commons.cli.*;
 
 import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.config.Config;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.PartitionPosition;
@@ -37,14 +37,12 @@ import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
 import org.apache.cassandra.dht.*;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.index.SecondaryIndexManager;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
 import org.apache.cassandra.io.sstable.KeyIterator;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.sstable.metadata.MetadataComponent;
 import org.apache.cassandra.io.sstable.metadata.MetadataType;
-import org.apache.cassandra.io.sstable.metadata.ValidationMetadata;
 import org.apache.cassandra.utils.FBUtilities;
 
 /**
@@ -64,7 +62,7 @@ public class SSTableExport
 
     static
     {
-        Config.setClientMode(true);
+        DatabaseDescriptor.toolInitialization();
 
         Option optKey = new Option(KEY_OPTION, true, "Partition key");
         // Number of times -k <key> can be passed on the command line.
@@ -98,14 +96,10 @@ public class SSTableExport
         if (!desc.version.storeRows())
             throw new IOException("pre-3.0 SSTable is not supported.");
 
-        EnumSet<MetadataType> types = EnumSet.of(MetadataType.VALIDATION, MetadataType.STATS, MetadataType.HEADER);
+        EnumSet<MetadataType> types = EnumSet.of(MetadataType.STATS, MetadataType.HEADER);
         Map<MetadataType, MetadataComponent> sstableMetadata = desc.getMetadataSerializer().deserialize(desc, types);
-        ValidationMetadata validationMetadata = (ValidationMetadata) sstableMetadata.get(MetadataType.VALIDATION);
         SerializationHeader.Component header = (SerializationHeader.Component) sstableMetadata.get(MetadataType.HEADER);
-
-        IPartitioner partitioner = SecondaryIndexManager.isIndexColumnFamily(desc.cfname)
-                                   ? new LocalPartitioner(header.getKeyType())
-                                   : FBUtilities.newPartitioner(validationMetadata.partitioner);
+        IPartitioner partitioner = FBUtilities.newPartitioner(desc);
 
         CFMetaData.Builder builder = CFMetaData.Builder.create("keyspace", "table").withPartitioner(partitioner);
         header.getStaticColumns().entrySet().stream()
@@ -192,10 +186,13 @@ public class SSTableExport
             CFMetaData metadata = metadataFromSSTable(desc);
             if (cmd.hasOption(ENUMERATE_KEYS_OPTION))
             {
-                JsonTransformer.keysToJson(null, iterToStream(new KeyIterator(desc, metadata)),
-                                                              cmd.hasOption(RAW_TIMESTAMPS),
-                                                              metadata,
-                                                              System.out);
+                try (KeyIterator iter = new KeyIterator(desc, metadata))
+                {
+                    JsonTransformer.keysToJson(null, iterToStream(iter),
+                                               cmd.hasOption(RAW_TIMESTAMPS),
+                                               metadata,
+                                               System.out);
+                }
             }
             else
             {
@@ -263,7 +260,7 @@ public class SSTableExport
 
     private static void printUsage()
     {
-        String usage = String.format("sstabledump <options> <sstable file path>%n");
+        String usage = String.format("sstabledump <sstable file path> <options>%n");
         String header = "Dump contents of given SSTable to standard output in JSON format.";
         new HelpFormatter().printHelp(usage, header, options, "");
     }

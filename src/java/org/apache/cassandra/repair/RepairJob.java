@@ -85,7 +85,7 @@ public class RepairJob extends AbstractFuture<RepairResult> implements Runnable
             ListenableFuture<List<InetAddress>> allSnapshotTasks = Futures.allAsList(snapshotTasks);
             validations = Futures.transform(allSnapshotTasks, new AsyncFunction<List<InetAddress>, List<TreeResponse>>()
             {
-                public ListenableFuture<List<TreeResponse>> apply(List<InetAddress> endpoints) throws Exception
+                public ListenableFuture<List<TreeResponse>> apply(List<InetAddress> endpoints)
                 {
                     if (parallelismDegree == RepairParallelism.SEQUENTIAL)
                         return sendSequentialValidationRequest(endpoints);
@@ -103,7 +103,7 @@ public class RepairJob extends AbstractFuture<RepairResult> implements Runnable
         // When all validations complete, submit sync tasks
         ListenableFuture<List<SyncStat>> syncResults = Futures.transform(validations, new AsyncFunction<List<TreeResponse>, List<SyncStat>>()
         {
-            public ListenableFuture<List<SyncStat>> apply(List<TreeResponse> trees) throws Exception
+            public ListenableFuture<List<SyncStat>> apply(List<TreeResponse> trees)
             {
                 InetAddress local = FBUtilities.getLocalAddress();
 
@@ -118,7 +118,7 @@ public class RepairJob extends AbstractFuture<RepairResult> implements Runnable
                         SyncTask task;
                         if (r1.endpoint.equals(local) || r2.endpoint.equals(local))
                         {
-                            task = new LocalSyncTask(desc, r1, r2, repairedAt);
+                            task = new LocalSyncTask(desc, r1, r2, repairedAt, session.pullRepair);
                         }
                         else
                         {
@@ -140,7 +140,7 @@ public class RepairJob extends AbstractFuture<RepairResult> implements Runnable
         {
             public void onSuccess(List<SyncStat> stats)
             {
-                logger.info(String.format("[repair #%s] %s is fully synced", session.getId(), desc.columnFamily));
+                logger.info("[repair #{}] {} is fully synced", session.getId(), desc.columnFamily);
                 SystemDistributedKeyspace.successfulRepairJob(session.getId(), desc.keyspace, desc.columnFamily);
                 set(new RepairResult(desc, stats));
             }
@@ -150,7 +150,7 @@ public class RepairJob extends AbstractFuture<RepairResult> implements Runnable
              */
             public void onFailure(Throwable t)
             {
-                logger.warn(String.format("[repair #%s] %s sync failed", session.getId(), desc.columnFamily));
+                logger.warn("[repair #{}] {} sync failed", session.getId(), desc.columnFamily);
                 SystemDistributedKeyspace.failedRepairJob(session.getId(), desc.keyspace, desc.columnFamily, t);
                 setException(t);
             }

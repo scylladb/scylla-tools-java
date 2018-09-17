@@ -24,11 +24,13 @@ import java.nio.ByteBuffer;
 import java.util.Random;
 
 import com.google.common.primitives.Ints;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ClusteringComparator;
 import org.apache.cassandra.db.marshal.BytesType;
 import org.apache.cassandra.io.compress.CompressedSequentialWriter;
@@ -47,6 +49,12 @@ public class MmappedRegionsTest
 {
     private static final Logger logger = LoggerFactory.getLogger(MmappedRegionsTest.class);
 
+    @BeforeClass
+    public static void setupDD()
+    {
+        DatabaseDescriptor.daemonInitialization();
+    }
+
     private static ByteBuffer allocateBuffer(int size)
     {
         ByteBuffer ret = ByteBuffer.allocate(Ints.checkedCast(size));
@@ -63,7 +71,7 @@ public class MmappedRegionsTest
         File ret = File.createTempFile(fileName, "1");
         ret.deleteOnExit();
 
-        try (SequentialWriter writer = SequentialWriter.open(ret))
+        try (SequentialWriter writer = new SequentialWriter(ret))
         {
             writer.write(buffer);
             writer.finish();
@@ -99,8 +107,8 @@ public class MmappedRegionsTest
             {
                 MmappedRegions.Region region = regions.floor(i);
                 assertNotNull(region);
-                assertEquals(0, region.bottom());
-                assertEquals(1024, region.top());
+                assertEquals(0, region.offset());
+                assertEquals(1024, region.end());
             }
 
             regions.extend(2048);
@@ -110,13 +118,13 @@ public class MmappedRegionsTest
                 assertNotNull(region);
                 if (i < 1024)
                 {
-                    assertEquals(0, region.bottom());
-                    assertEquals(1024, region.top());
+                    assertEquals(0, region.offset());
+                    assertEquals(1024, region.end());
                 }
                 else
                 {
-                    assertEquals(1024, region.bottom());
-                    assertEquals(2048, region.top());
+                    assertEquals(1024, region.offset());
+                    assertEquals(2048, region.end());
                 }
             }
         }
@@ -141,8 +149,8 @@ public class MmappedRegionsTest
             {
                 MmappedRegions.Region region = regions.floor(i);
                 assertNotNull(region);
-                assertEquals(SIZE * (i / SIZE), region.bottom());
-                assertEquals(SIZE + (SIZE * (i / SIZE)), region.top());
+                assertEquals(SIZE * (i / SIZE), region.offset());
+                assertEquals(SIZE + (SIZE * (i / SIZE)), region.end());
             }
         }
         finally
@@ -169,8 +177,8 @@ public class MmappedRegionsTest
             {
                 MmappedRegions.Region region = regions.floor(i);
                 assertNotNull(region);
-                assertEquals(SIZE * (i / SIZE), region.bottom());
-                assertEquals(SIZE + (SIZE * (i / SIZE)), region.top());
+                assertEquals(SIZE * (i / SIZE), region.offset());
+                assertEquals(SIZE + (SIZE * (i / SIZE)), region.end());
             }
         }
         finally
@@ -209,8 +217,8 @@ public class MmappedRegionsTest
         {
             MmappedRegions.Region region = snapshot.floor(i);
             assertNotNull(region);
-            assertEquals(SIZE * (i / SIZE), region.bottom());
-            assertEquals(SIZE + (SIZE * (i / SIZE)), region.top());
+            assertEquals(SIZE * (i / SIZE), region.offset());
+            assertEquals(SIZE + (SIZE * (i / SIZE)), region.end());
 
             // check we can access the buffer
             assertNotNull(region.buffer.duplicate().getInt());
@@ -267,8 +275,8 @@ public class MmappedRegionsTest
             {
                 MmappedRegions.Region region = regions.floor(i);
                 assertNotNull(region);
-                assertEquals(0, region.bottom());
-                assertEquals(4096, region.top());
+                assertEquals(0, region.offset());
+                assertEquals(4096, region.end());
             }
         }
     }
@@ -298,10 +306,9 @@ public class MmappedRegionsTest
         cf.deleteOnExit();
 
         MetadataCollector sstableMetadataCollector = new MetadataCollector(new ClusteringComparator(BytesType.instance));
-        try(SequentialWriter writer = new CompressedSequentialWriter(f,
-                                                                     cf.getAbsolutePath(),
-                                                                     CompressionParams.snappy(),
-                                                                     sstableMetadataCollector))
+        try(SequentialWriter writer = new CompressedSequentialWriter(f, cf.getAbsolutePath(),
+                                                                     null, SequentialWriterOption.DEFAULT,
+                                                                     CompressionParams.snappy(), sstableMetadataCollector))
         {
             writer.write(buffer);
             writer.finish();
@@ -325,8 +332,8 @@ public class MmappedRegionsTest
                 assertNotNull(compressedChunk);
                 assertEquals(chunk.length + 4, compressedChunk.capacity());
 
-                assertEquals(chunk.offset, region.bottom());
-                assertEquals(chunk.offset + chunk.length + 4, region.top());
+                assertEquals(chunk.offset, region.offset());
+                assertEquals(chunk.offset + chunk.length + 4, region.end());
 
                 i += metadata.chunkLength();
             }

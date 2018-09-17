@@ -18,12 +18,12 @@
 package org.apache.cassandra.cql3;
 
 import java.nio.ByteBuffer;
-import java.util.Collections;
 import java.util.List;
-import java.util.Set;
 
 import org.apache.cassandra.cql3.functions.Function;
+import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.transport.ProtocolVersion;
 
 /**
  * A CQL3 term, i.e. a column value with or without bind variables.
@@ -100,6 +100,17 @@ public interface Term
          */
         public abstract String getText();
 
+        /**
+         * The type of the {@code term} if it can be infered.
+         *
+         * @param keyspace the keyspace on which the statement containing this term is on.
+         * @return the type of this {@code Term} if inferrable, or {@code null}
+         * otherwise (for instance, the type isn't inferable for a bind marker. Even for
+         * literals, the exact type is not inferrable since they are valid for many
+         * different types and so this will return {@code null} too).
+         */
+        public abstract AbstractType<?> getExactTypeIfKnown(String keyspace);
+
         @Override
         public String toString()
         {
@@ -146,7 +157,7 @@ public interface Term
          * @return the serialized value of this terminal.
          * @param protocolVersion
          */
-        public abstract ByteBuffer get(int protocolVersion) throws InvalidRequestException;
+        public abstract ByteBuffer get(ProtocolVersion protocolVersion) throws InvalidRequestException;
 
         public ByteBuffer bindAndGet(QueryOptions options) throws InvalidRequestException
         {

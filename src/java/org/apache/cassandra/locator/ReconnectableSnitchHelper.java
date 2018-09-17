@@ -63,10 +63,10 @@ public class ReconnectableSnitchHelper implements IEndpointStateChangeSubscriber
                 && !MessagingService.instance().getConnectionPool(publicAddress).endPoint().equals(localAddress))
         {
             MessagingService.instance().getConnectionPool(publicAddress).reset(localAddress);
-            logger.debug(String.format("Intiated reconnect to an Internal IP %s for the %s", localAddress, publicAddress));
+            logger.debug("Initiated reconnect to an Internal IP {} for the {}", localAddress, publicAddress);
         }
     }
-    
+
     public void beforeChange(InetAddress endpoint, EndpointState currentState, ApplicationState newStateKey, VersionedValue newValue)
     {
         // no-op
@@ -80,7 +80,7 @@ public class ReconnectableSnitchHelper implements IEndpointStateChangeSubscriber
 
     public void onChange(InetAddress endpoint, ApplicationState state, VersionedValue value)
     {
-        if (preferLocal && !Gossiper.instance.isDeadState(Gossiper.instance.getEndpointStateForEndpoint(endpoint)) && state == ApplicationState.INTERNAL_IP)
+        if (preferLocal && state == ApplicationState.INTERNAL_IP && !Gossiper.instance.isDeadState(Gossiper.instance.getEndpointStateForEndpoint(endpoint)))
             reconnect(endpoint, value);
     }
 

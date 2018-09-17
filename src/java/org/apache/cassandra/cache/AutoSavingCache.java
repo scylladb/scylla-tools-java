@@ -37,14 +37,15 @@ import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.db.ColumnFamilyStore;
-import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.db.compaction.CompactionInfo;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.compaction.OperationType;
+import org.apache.cassandra.db.compaction.CompactionInfo.Unit;
 import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.util.*;
-import org.apache.cassandra.io.util.ChecksummedRandomAccessReader.CorruptFileException;
+import org.apache.cassandra.io.util.CorruptFileException;
 import org.apache.cassandra.io.util.DataInputPlus.DataInputStreamPlus;
 import org.apache.cassandra.service.CacheService;
 import org.apache.cassandra.utils.JVMStabilityInspector;
@@ -77,19 +78,26 @@ public class AutoSavingCache<K extends CacheKey, V> extends InstrumentingCache<K
      * a minor version letter.
      *
      * Sticking with "d" is fine for 3.0 since it has never been released or used by another version
+     *
+     * "e" introduced with CASSANDRA-11206, omits IndexInfo from key-cache, stores offset into index-file
      */
-    private static final String CURRENT_VERSION = "d";
+    private static final String CURRENT_VERSION = "e";
 
     private static volatile IStreamFactory streamFactory = new IStreamFactory()
     {
+        private final SequentialWriterOption writerOption = SequentialWriterOption.newBuilder()
+                                                                    .trickleFsync(DatabaseDescriptor.getTrickleFsync())
+                                                                    .trickleFsyncByteInterval(DatabaseDescriptor.getTrickleFsyncIntervalInKb() * 1024)
+                                                                    .finishOnClose(true).build();
+
         public InputStream getInputStream(File dataPath, File crcPath) throws IOException
         {
-            return new ChecksummedRandomAccessReader.Builder(dataPath, crcPath).build();
+            return ChecksummedRandomAccessReader.open(dataPath, crcPath);
         }
 
         public OutputStream getOutputStream(File dataPath, File crcPath)
         {
-            return SequentialWriter.open(dataPath, crcPath).finishOnClose();
+            return new ChecksummedSequentialWriter(dataPath, crcPath, null, writerOption);
         }
     };
 
@@ -152,12 +160,13 @@ public class AutoSavingCache<K extends CacheKey, V> extends InstrumentingCache<K
         ListenableFuture<Integer> cacheLoad = es.submit(new Callable<Integer>()
         {
             @Override
-            public Integer call() throws Exception
+            public Integer call()
             {
                 return loadSaved();
             }
         });
-        cacheLoad.addListener(new Runnable() {
+        cacheLoad.addListener(new Runnable()
+        {
             @Override
             public void run()
             {
@@ -186,7 +195,7 @@ public class AutoSavingCache<K extends CacheKey, V> extends InstrumentingCache<K
             DataInputStreamPlus in = null;
             try
             {
-                logger.info(String.format("reading saved cache %s", dataPath));
+                logger.info("reading saved cache {}", dataPath);
                 in = new DataInputStreamPlus(new LengthAvailableInputStream(new BufferedInputStream(streamFactory.getInputStream(dataPath, crcPath)), dataPath.length()));
 
                 //Check the schema has not changed since CFs are looked up by name which is ambiguous
@@ -300,11 +309,11 @@ public class AutoSavingCache<K extends CacheKey, V> extends InstrumentingCache<K
             else
                 type = OperationType.UNKNOWN;
 
-            info = new CompactionInfo(CFMetaData.createFake(SystemKeyspace.NAME, cacheType.toString()),
+            info = new CompactionInfo(CFMetaData.createFake(SchemaConstants.SYSTEM_KEYSPACE_NAME, cacheType.toString()),
                                       type,
                                       0,
                                       keysEstimate,
-                                      "keys",
+                                      Unit.KEYS,
                                       UUIDGen.getTimeUUID());
         }
 

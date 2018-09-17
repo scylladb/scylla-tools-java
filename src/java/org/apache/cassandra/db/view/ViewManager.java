@@ -17,7 +17,6 @@
  */
 package org.apache.cassandra.db.view;
 
-import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentHashMap;
@@ -31,17 +30,17 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.ViewDefinition;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.partitions.*;
-
+import org.apache.cassandra.repair.SystemDistributedKeyspace;
+import org.apache.cassandra.service.StorageService;
 
 /**
  * Manages {@link View}'s for a single {@link ColumnFamilyStore}. All of the views for that table are created when this
  * manager is initialized.
  *
  * The main purposes of the manager are to provide a single location for updates to be vetted to see whether they update
- * any views {@link ViewManager#updatesAffectView(Collection, boolean)}, provide locks to prevent multiple
- * updates from creating incoherent updates in the view {@link ViewManager#acquireLockFor(ByteBuffer)}, and
+ * any views {@link #updatesAffectView(Collection, boolean)}, provide locks to prevent multiple
+ * updates from creating incoherent updates in the view {@link #acquireLockFor(int)}, and
  * to affect change on the view.
  *
  * TODO: I think we can get rid of that class. For addition/removal of view by names, we could move it Keyspace. And we
@@ -69,7 +68,7 @@ public class ViewManager
 
     public boolean updatesAffectView(Collection<? extends IMutation> mutations, boolean coordinatorBatchlog)
     {
-        if (coordinatorBatchlog && !enableCoordinatorBatchlog)
+        if (!enableCoordinatorBatchlog && coordinatorBatchlog)
             return false;
 
         for (IMutation mutation : mutations)
@@ -126,6 +125,20 @@ public class ViewManager
                 addView(entry.getValue());
         }
 
+        // Building views involves updating view build status in the system_distributed
+        // keyspace and therefore it requires ring information. This check prevents builds
+        // being submitted when Keyspaces are initialized during CassandraDaemon::setup as
+        // that happens before StorageService & gossip are initialized. After SS has been
+        // init'd we schedule builds for *all* views anyway, so this doesn't have any effect
+        // on startup. It does mean however, that builds will not be triggered if gossip is
+        // disabled via JMX or nodetool as that sets SS to an uninitialized state.
+        if (!StorageService.instance.isInitialized())
+        {
+            logger.info("Not submitting build tasks for views in keyspace {} as " +
+                        "storage service is not initialized", keyspace.getName());
+            return;
+        }
+
         for (View view : allViews())
         {
             view.build();
@@ -136,6 +149,15 @@ public class ViewManager
 
     public void addView(ViewDefinition definition)
     {
+        // Skip if the base table doesn't exist due to schema propagation issues, see CASSANDRA-13737
+        if (!keyspace.hasColumnFamilyStore(definition.baseTableId))
+        {
+            logger.warn("Not adding view {} because the base table {} is unknown",
+                        definition.viewName,
+                        definition.baseTableId);
+            return;
+        }
+
         View view = new View(definition, keyspace.getColumnFamilyStore(definition.baseTableId));
         forTable(view.getDefinition().baseTableMetadata()).add(view);
         viewsByName.put(definition.viewName, view);
@@ -150,6 +172,12 @@ public class ViewManager
 
         forTable(view.getDefinition().baseTableMetadata()).removeByName(name);
         SystemKeyspace.setViewRemoved(keyspace.getName(), view.name);
+        SystemDistributedKeyspace.setViewRemoved(keyspace.getName(), view.name);
+    }
+
+    public View getByName(String name)
+    {
+        return viewsByName.get(name);
     }
 
     public void buildAllViews()
@@ -172,9 +200,9 @@ public class ViewManager
         return views;
     }
 
-    public static Lock acquireLockFor(ByteBuffer key)
+    public static Lock acquireLockFor(int keyAndCfidHash)
     {
-        Lock lock = LOCKS.get(key);
+        Lock lock = LOCKS.get(keyAndCfidHash);
 
         if (lock.tryLock())
             return lock;

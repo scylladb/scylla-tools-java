@@ -58,7 +58,9 @@ fi
 # Run cassandra-env.sh to pick up JMX_PORT
 if [ -f "$CASSANDRA_CONF/cassandra-env.sh" ]; then
     JVM_OPTS_SAVE=$JVM_OPTS
+    MAX_HEAP_SIZE_SAVE=$MAX_HEAP_SIZE
     . "$CASSANDRA_CONF/cassandra-env.sh"
+    MAX_HEAP_SIZE=$MAX_HEAP_SIZE_SAVE
     JVM_OPTS=$JVM_OPTS_SAVE
 fi
 
@@ -103,7 +105,8 @@ if [ "x$MAX_HEAP_SIZE" = "x" ]; then
     MAX_HEAP_SIZE="128m"
 fi
 
-"$JAVA" $JAVA_AGENT -ea -cp "$CLASSPATH" -XX:+UseSerialGC -Xmx128m  \
+"$JAVA" $JAVA_AGENT -ea -cp "$CLASSPATH" $JVM_OPTS -Xmx$MAX_HEAP_SIZE \
+        -XX:ParallelGCThreads=1 \
         -Dcassandra.storagedir="$cassandra_storagedir" \
         -Dlogback.configurationFile=logback-tools.xml \
         $JVM_ARGS \

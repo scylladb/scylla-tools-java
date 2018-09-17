@@ -31,6 +31,7 @@ import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.marshal.ByteType;
@@ -53,7 +54,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
-import static org.apache.cassandra.db.RangeTombstone.Bound.Kind;
+import static org.apache.cassandra.db.ClusteringBound.Kind;
 
 public class DataResolverTest
 {
@@ -79,6 +80,7 @@ public class DataResolverTest
     @BeforeClass
     public static void defineSchema() throws ConfigurationException
     {
+        DatabaseDescriptor.daemonInitialization();
         CFMetaData cfMetadata = CFMetaData.Builder.create(KEYSPACE1, CF_STANDARD)
                                                   .addPartitionKey("key", BytesType.instance)
                                                   .addClusteringColumn("col1", AsciiType.instance)
@@ -129,10 +131,25 @@ public class DataResolverTest
         MessagingService.instance().clearMessageSinks();
     }
 
+    /**
+     * Checks that the provided data resolver has the expected number of repair futures created.
+     * This method also "release" those future by faking replica responses to those repair, which is necessary or
+     * every test would timeout when closing the result of resolver.resolve(), since it waits on those futures.
+     */
+    private void assertRepairFuture(DataResolver resolver, int expectedRepairs)
+    {
+        assertEquals(expectedRepairs, resolver.repairResults.size());
+
+        // Signal all future. We pass a completely fake response message, but it doesn't matter as we just want
+        // AsyncOneResponse to signal success, and it only cares about a non-null MessageIn (it collects the payload).
+        for (AsyncOneResponse<?> future : resolver.repairResults)
+            future.response(MessageIn.create(null, null, null, null, -1));
+    }
+
     @Test
     public void testResolveNewerSingleRow() throws UnknownHostException
     {
-        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2);
+        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2, System.nanoTime());
         InetAddress peer1 = peer();
         resolver.preprocess(readResponseMessage(peer1, iter(new RowUpdateBuilder(cfm, nowInSec, 0L, dk).clustering("1")
                                                                                                        .add("c1", "v1")
@@ -142,12 +159,15 @@ public class DataResolverTest
                                                                                                        .add("c1", "v2")
                                                                                                        .buildUpdate())));
 
-        try(PartitionIterator data = resolver.resolve();
-            RowIterator rows = Iterators.getOnlyElement(data))
+        try(PartitionIterator data = resolver.resolve())
         {
-            Row row = Iterators.getOnlyElement(rows);
-            assertColumns(row, "c1");
-            assertColumn(cfm, row, "c1", "v2", 1);
+            try (RowIterator rows = Iterators.getOnlyElement(data))
+            {
+                Row row = Iterators.getOnlyElement(rows);
+                assertColumns(row, "c1");
+                assertColumn(cfm, row, "c1", "v2", 1);
+            }
+            assertRepairFuture(resolver, 1);
         }
 
         assertEquals(1, messageRecorder.sent.size());
@@ -161,7 +181,7 @@ public class DataResolverTest
     @Test
     public void testResolveDisjointSingleRow()
     {
-        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2);
+        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2, System.nanoTime());
         InetAddress peer1 = peer();
         resolver.preprocess(readResponseMessage(peer1, iter(new RowUpdateBuilder(cfm, nowInSec, 0L, dk).clustering("1")
                                                                                                        .add("c1", "v1")
@@ -172,13 +192,16 @@ public class DataResolverTest
                                                                                                        .add("c2", "v2")
                                                                                                        .buildUpdate())));
 
-        try(PartitionIterator data = resolver.resolve();
-            RowIterator rows = Iterators.getOnlyElement(data))
+        try(PartitionIterator data = resolver.resolve())
         {
-            Row row = Iterators.getOnlyElement(rows);
-            assertColumns(row, "c1", "c2");
-            assertColumn(cfm, row, "c1", "v1", 0);
-            assertColumn(cfm, row, "c2", "v2", 1);
+            try (RowIterator rows = Iterators.getOnlyElement(data))
+            {
+                Row row = Iterators.getOnlyElement(rows);
+                assertColumns(row, "c1", "c2");
+                assertColumn(cfm, row, "c1", "v1", 0);
+                assertColumn(cfm, row, "c2", "v2", 1);
+            }
+            assertRepairFuture(resolver, 2);
         }
 
         assertEquals(2, messageRecorder.sent.size());
@@ -196,7 +219,7 @@ public class DataResolverTest
     public void testResolveDisjointMultipleRows() throws UnknownHostException
     {
 
-        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2);
+        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2, System.nanoTime());
         InetAddress peer1 = peer();
         resolver.preprocess(readResponseMessage(peer1, iter(new RowUpdateBuilder(cfm, nowInSec, 0L, dk).clustering("1")
                                                                                                        .add("c1", "v1")
@@ -224,6 +247,7 @@ public class DataResolverTest
                 assertFalse(rows.hasNext());
                 assertFalse(data.hasNext());
             }
+            assertRepairFuture(resolver, 2);
         }
 
         assertEquals(2, messageRecorder.sent.size());
@@ -242,11 +266,11 @@ public class DataResolverTest
     @Test
     public void testResolveDisjointMultipleRowsWithRangeTombstones()
     {
-        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 4);
+        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 4, System.nanoTime());
 
         RangeTombstone tombstone1 = tombstone("1", "11", 1, nowInSec);
         RangeTombstone tombstone2 = tombstone("3", "31", 1, nowInSec);
-        PartitionUpdate update =new RowUpdateBuilder(cfm, nowInSec, 1L, dk).addRangeTombstone(tombstone1)
+        PartitionUpdate update = new RowUpdateBuilder(cfm, nowInSec, 1L, dk).addRangeTombstone(tombstone1)
                                                                                   .addRangeTombstone(tombstone2)
                                                                                   .buildUpdate();
 
@@ -289,6 +313,7 @@ public class DataResolverTest
 
                 assertFalse(rows.hasNext());
             }
+            assertRepairFuture(resolver, 4);
         }
 
         assertEquals(4, messageRecorder.sent.size());
@@ -322,7 +347,7 @@ public class DataResolverTest
     @Test
     public void testResolveWithOneEmpty()
     {
-        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2);
+        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2, System.nanoTime());
         InetAddress peer1 = peer();
         resolver.preprocess(readResponseMessage(peer1, iter(new RowUpdateBuilder(cfm, nowInSec, 1L, dk).clustering("1")
                                                                                                        .add("c2", "v2")
@@ -330,12 +355,15 @@ public class DataResolverTest
         InetAddress peer2 = peer();
         resolver.preprocess(readResponseMessage(peer2, EmptyIterators.unfilteredPartition(cfm, false)));
 
-        try(PartitionIterator data = resolver.resolve();
-            RowIterator rows = Iterators.getOnlyElement(data))
+        try(PartitionIterator data = resolver.resolve())
         {
-            Row row = Iterators.getOnlyElement(rows);
-            assertColumns(row, "c2");
-            assertColumn(cfm, row, "c2", "v2", 1);
+            try (RowIterator rows = Iterators.getOnlyElement(data))
+            {
+                Row row = Iterators.getOnlyElement(rows);
+                assertColumns(row, "c2");
+                assertColumn(cfm, row, "c2", "v2", 1);
+            }
+            assertRepairFuture(resolver, 1);
         }
 
         assertEquals(1, messageRecorder.sent.size());
@@ -349,13 +377,14 @@ public class DataResolverTest
     @Test
     public void testResolveWithBothEmpty()
     {
-        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2);
+        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2, System.nanoTime());
         resolver.preprocess(readResponseMessage(peer(), EmptyIterators.unfilteredPartition(cfm, false)));
         resolver.preprocess(readResponseMessage(peer(), EmptyIterators.unfilteredPartition(cfm, false)));
 
         try(PartitionIterator data = resolver.resolve())
         {
             assertFalse(data.hasNext());
+            assertRepairFuture(resolver, 0);
         }
 
         assertTrue(messageRecorder.sent.isEmpty());
@@ -364,7 +393,7 @@ public class DataResolverTest
     @Test
     public void testResolveDeleted()
     {
-        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2);
+        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2, System.nanoTime());
         // one response with columns timestamped before a delete in another response
         InetAddress peer1 = peer();
         resolver.preprocess(readResponseMessage(peer1, iter(new RowUpdateBuilder(cfm, nowInSec, 0L, dk).clustering("1")
@@ -376,6 +405,7 @@ public class DataResolverTest
         try (PartitionIterator data = resolver.resolve())
         {
             assertFalse(data.hasNext());
+            assertRepairFuture(resolver, 1);
         }
 
         // peer1 should get the deletion from peer2
@@ -389,7 +419,7 @@ public class DataResolverTest
     @Test
     public void testResolveMultipleDeleted()
     {
-        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 4);
+        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 4, System.nanoTime());
         // deletes and columns with interleaved timestamp, with out of order return sequence
         InetAddress peer1 = peer();
         resolver.preprocess(readResponseMessage(peer1, fullPartitionDelete(cfm, dk, 0, nowInSec)));
@@ -407,12 +437,15 @@ public class DataResolverTest
         InetAddress peer4 = peer();
         resolver.preprocess(readResponseMessage(peer4, fullPartitionDelete(cfm, dk, 2, nowInSec)));
 
-        try(PartitionIterator data = resolver.resolve();
-            RowIterator rows = Iterators.getOnlyElement(data))
+        try(PartitionIterator data = resolver.resolve())
         {
-            Row row = Iterators.getOnlyElement(rows);
-            assertColumns(row, "two");
-            assertColumn(cfm, row, "two", "B", 3);
+            try (RowIterator rows = Iterators.getOnlyElement(data))
+            {
+                Row row = Iterators.getOnlyElement(rows);
+                assertColumns(row, "two");
+                assertColumn(cfm, row, "two", "B", 3);
+            }
+            assertRepairFuture(resolver, 4);
         }
 
         // peer 1 needs to get the partition delete from peer 4 and the row from peer 3
@@ -471,7 +504,7 @@ public class DataResolverTest
      */
     private void resolveRangeTombstonesOnBoundary(long timestamp1, long timestamp2)
     {
-        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2);
+        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2, System.nanoTime());
         InetAddress peer1 = peer();
         InetAddress peer2 = peer();
 
@@ -498,6 +531,7 @@ public class DataResolverTest
         try (PartitionIterator data = resolver.resolve())
         {
             assertFalse(data.hasNext());
+            assertRepairFuture(resolver, 2);
         }
 
         assertEquals(2, messageRecorder.sent.size());
@@ -522,21 +556,185 @@ public class DataResolverTest
         assertRepairContainsDeletions(msg2, null, one_two, withExclusiveEndIf(three_four, timestamp2 >= timestamp1), five_six);
     }
 
+    /**
+     * Test cases where a boundary of a source is covered by another source deletion and timestamp on one or both side
+     * of the boundary are equal to the "merged" deletion.
+     * This is a test for CASSANDRA-13237 to make sure we handle this case properly.
+     */
+    @Test
+    public void testRepairRangeTombstoneBoundary() throws UnknownHostException
+    {
+        testRepairRangeTombstoneBoundary(1, 0, 1);
+        messageRecorder.sent.clear();
+        testRepairRangeTombstoneBoundary(1, 1, 0);
+        messageRecorder.sent.clear();
+        testRepairRangeTombstoneBoundary(1, 1, 1);
+    }
+
+    /**
+     * Test for CASSANDRA-13237, checking we don't fail (and handle correctly) the case where a RT boundary has the
+     * same deletion on both side (while is useless but could be created by legacy code pre-CASSANDRA-13237 and could
+     * thus still be sent).
+     */
+    private void testRepairRangeTombstoneBoundary(int timestamp1, int timestamp2, int timestamp3) throws UnknownHostException
+    {
+        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2, System.nanoTime());
+        InetAddress peer1 = peer();
+        InetAddress peer2 = peer();
+
+        // 1st "stream"
+        RangeTombstone one_nine = tombstone("0", true , "9", true, timestamp1, nowInSec);
+        UnfilteredPartitionIterator iter1 = iter(new RowUpdateBuilder(cfm, nowInSec, 1L, dk)
+                                                 .addRangeTombstone(one_nine)
+                                                 .buildUpdate());
+
+        // 2nd "stream" (build more manually to ensure we have the boundary we want)
+        RangeTombstoneBoundMarker open_one = marker("0", true, true, timestamp2, nowInSec);
+        RangeTombstoneBoundaryMarker boundary_five = boundary("5", false, timestamp2, nowInSec, timestamp3, nowInSec);
+        RangeTombstoneBoundMarker close_nine = marker("9", false, true, timestamp3, nowInSec);
+        UnfilteredPartitionIterator iter2 = iter(dk, open_one, boundary_five, close_nine);
+
+        resolver.preprocess(readResponseMessage(peer1, iter1));
+        resolver.preprocess(readResponseMessage(peer2, iter2));
+
+        boolean shouldHaveRepair = timestamp1 != timestamp2 || timestamp1 != timestamp3;
+
+        // No results, we've only reconciled tombstones.
+        try (PartitionIterator data = resolver.resolve())
+        {
+            assertFalse(data.hasNext());
+            assertRepairFuture(resolver, shouldHaveRepair ? 1 : 0);
+        }
+
+        assertEquals(shouldHaveRepair? 1 : 0, messageRecorder.sent.size());
+
+        if (!shouldHaveRepair)
+            return;
+
+        MessageOut msg = getSentMessage(peer2);
+        assertRepairMetadata(msg);
+        assertRepairContainsNoColumns(msg);
+
+        RangeTombstone expected = timestamp1 != timestamp2
+                                  // We've repaired the 1st part
+                                  ? tombstone("0", true, "5", false, timestamp1, nowInSec)
+                                  // We've repaired the 2nd part
+                                  : tombstone("5", true, "9", true, timestamp1, nowInSec);
+        assertRepairContainsDeletions(msg, null, expected);
+    }
+
+    /**
+     * Test for CASSANDRA-13719: tests that having a partition deletion shadow a range tombstone on another source
+     * doesn't trigger an assertion error.
+     */
+    @Test
+    public void testRepairRangeTombstoneWithPartitionDeletion()
+    {
+        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2, System.nanoTime());
+        InetAddress peer1 = peer();
+        InetAddress peer2 = peer();
+
+        // 1st "stream": just a partition deletion
+        UnfilteredPartitionIterator iter1 = iter(PartitionUpdate.fullPartitionDelete(cfm, dk, 10, nowInSec));
+
+        // 2nd "stream": a range tombstone that is covered by the 1st stream
+        RangeTombstone rt = tombstone("0", true , "10", true, 5, nowInSec);
+        UnfilteredPartitionIterator iter2 = iter(new RowUpdateBuilder(cfm, nowInSec, 1L, dk)
+                                                 .addRangeTombstone(rt)
+                                                 .buildUpdate());
+
+        resolver.preprocess(readResponseMessage(peer1, iter1));
+        resolver.preprocess(readResponseMessage(peer2, iter2));
+
+        // No results, we've only reconciled tombstones.
+        try (PartitionIterator data = resolver.resolve())
+        {
+            assertFalse(data.hasNext());
+            // 2nd stream should get repaired
+            assertRepairFuture(resolver, 1);
+        }
+
+        assertEquals(1, messageRecorder.sent.size());
+
+        MessageOut msg = getSentMessage(peer2);
+        assertRepairMetadata(msg);
+        assertRepairContainsNoColumns(msg);
+
+        assertRepairContainsDeletions(msg, new DeletionTime(10, nowInSec));
+    }
+
+    /**
+     * Additional test for CASSANDRA-13719: tests the case where a partition deletion doesn't shadow a range tombstone.
+     */
+    @Test
+    public void testRepairRangeTombstoneWithPartitionDeletion2()
+    {
+        DataResolver resolver = new DataResolver(ks, command, ConsistencyLevel.ALL, 2, System.nanoTime());
+        InetAddress peer1 = peer();
+        InetAddress peer2 = peer();
+
+        // 1st "stream": a partition deletion and a range tombstone
+        RangeTombstone rt1 = tombstone("0", true , "9", true, 11, nowInSec);
+        PartitionUpdate upd1 = new RowUpdateBuilder(cfm, nowInSec, 1L, dk)
+                                                 .addRangeTombstone(rt1)
+                                                 .buildUpdate();
+        ((MutableDeletionInfo)upd1.deletionInfo()).add(new DeletionTime(10, nowInSec));
+        UnfilteredPartitionIterator iter1 = iter(upd1);
+
+        // 2nd "stream": a range tombstone that is covered by the other stream rt
+        RangeTombstone rt2 = tombstone("2", true , "3", true, 11, nowInSec);
+        RangeTombstone rt3 = tombstone("4", true , "5", true, 10, nowInSec);
+        UnfilteredPartitionIterator iter2 = iter(new RowUpdateBuilder(cfm, nowInSec, 1L, dk)
+                                                 .addRangeTombstone(rt2)
+                                                 .addRangeTombstone(rt3)
+                                                 .buildUpdate());
+
+        resolver.preprocess(readResponseMessage(peer1, iter1));
+        resolver.preprocess(readResponseMessage(peer2, iter2));
+
+        // No results, we've only reconciled tombstones.
+        try (PartitionIterator data = resolver.resolve())
+        {
+            assertFalse(data.hasNext());
+            // 2nd stream should get repaired
+            assertRepairFuture(resolver, 1);
+        }
+
+        assertEquals(1, messageRecorder.sent.size());
+
+        MessageOut msg = getSentMessage(peer2);
+        assertRepairMetadata(msg);
+        assertRepairContainsNoColumns(msg);
+
+        // 2nd stream should get both the partition deletion, as well as the part of the 1st stream RT that it misses
+        assertRepairContainsDeletions(msg, new DeletionTime(10, nowInSec),
+                                      tombstone("0", true, "2", false, 11, nowInSec),
+                                      tombstone("3", false, "9", true, 11, nowInSec));
+    }
+
     // Forces the start to be exclusive if the condition holds
     private static RangeTombstone withExclusiveStartIf(RangeTombstone rt, boolean condition)
     {
+        if (!condition)
+            return rt;
+
         Slice slice = rt.deletedSlice();
+        ClusteringBound newStart = ClusteringBound.create(Kind.EXCL_START_BOUND, slice.start().getRawValues());
         return condition
-             ? new RangeTombstone(Slice.make(slice.start().withNewKind(Kind.EXCL_START_BOUND), slice.end()), rt.deletionTime())
+             ? new RangeTombstone(Slice.make(newStart, slice.end()), rt.deletionTime())
              : rt;
     }
 
     // Forces the end to be exclusive if the condition holds
     private static RangeTombstone withExclusiveEndIf(RangeTombstone rt, boolean condition)
     {
+        if (!condition)
+            return rt;
+
         Slice slice = rt.deletedSlice();
+        ClusteringBound newEnd = ClusteringBound.create(Kind.EXCL_END_BOUND, slice.end().getRawValues());
         return condition
-             ? new RangeTombstone(Slice.make(slice.start(), slice.end().withNewKind(Kind.EXCL_END_BOUND)), rt.deletionTime())
+             ? new RangeTombstone(Slice.make(slice.start(), newEnd), rt.deletionTime())
              : rt;
     }
 
@@ -547,14 +745,14 @@ public class DataResolverTest
 
     private Cell mapCell(int k, int v, long ts)
     {
-        return BufferCell.live(cfm2, m, ts, bb(v), CellPath.create(bb(k)));
+        return BufferCell.live(m, ts, bb(v), CellPath.create(bb(k)));
     }
 
     @Test
     public void testResolveComplexDelete()
     {
         ReadCommand cmd = Util.cmd(cfs2, dk).withNowInSeconds(nowInSec).build();
-        DataResolver resolver = new DataResolver(ks, cmd, ConsistencyLevel.ALL, 2);
+        DataResolver resolver = new DataResolver(ks, cmd, ConsistencyLevel.ALL, 2, System.nanoTime());
 
         long[] ts = {100, 200};
 
@@ -575,12 +773,16 @@ public class DataResolverTest
         InetAddress peer2 = peer();
         resolver.preprocess(readResponseMessage(peer2, iter(PartitionUpdate.singleRowUpdate(cfm2, dk, builder.build())), cmd));
 
-        try(PartitionIterator data = resolver.resolve(); RowIterator rows = Iterators.getOnlyElement(data))
+        try(PartitionIterator data = resolver.resolve())
         {
-            Row row = Iterators.getOnlyElement(rows);
-            assertColumns(row, "m");
-            Assert.assertNull(row.getCell(m, CellPath.create(bb(0))));
-            Assert.assertNotNull(row.getCell(m, CellPath.create(bb(1))));
+            try (RowIterator rows = Iterators.getOnlyElement(data))
+            {
+                Row row = Iterators.getOnlyElement(rows);
+                assertColumns(row, "m");
+                Assert.assertNull(row.getCell(m, CellPath.create(bb(0))));
+                Assert.assertNotNull(row.getCell(m, CellPath.create(bb(1))));
+            }
+            assertRepairFuture(resolver, 1);
         }
 
         MessageOut<Mutation> msg;
@@ -603,7 +805,7 @@ public class DataResolverTest
     {
 
         ReadCommand cmd = Util.cmd(cfs2, dk).withNowInSeconds(nowInSec).build();
-        DataResolver resolver = new DataResolver(ks, cmd, ConsistencyLevel.ALL, 2);
+        DataResolver resolver = new DataResolver(ks, cmd, ConsistencyLevel.ALL, 2, System.nanoTime());
 
         long[] ts = {100, 200};
 
@@ -625,6 +827,7 @@ public class DataResolverTest
         try(PartitionIterator data = resolver.resolve())
         {
             assertFalse(data.hasNext());
+            assertRepairFuture(resolver, 1);
         }
 
         MessageOut<Mutation> msg;
@@ -646,7 +849,7 @@ public class DataResolverTest
     public void testResolveNewCollection()
     {
         ReadCommand cmd = Util.cmd(cfs2, dk).withNowInSeconds(nowInSec).build();
-        DataResolver resolver = new DataResolver(ks, cmd, ConsistencyLevel.ALL, 2);
+        DataResolver resolver = new DataResolver(ks, cmd, ConsistencyLevel.ALL, 2, System.nanoTime());
 
         long[] ts = {100, 200};
 
@@ -665,12 +868,16 @@ public class DataResolverTest
         InetAddress peer2 = peer();
         resolver.preprocess(readResponseMessage(peer2, iter(PartitionUpdate.emptyUpdate(cfm2, dk))));
 
-        try(PartitionIterator data = resolver.resolve(); RowIterator rows = Iterators.getOnlyElement(data))
+        try(PartitionIterator data = resolver.resolve())
         {
-            Row row = Iterators.getOnlyElement(rows);
-            assertColumns(row, "m");
-            ComplexColumnData cd = row.getComplexColumnData(m);
-            assertEquals(Collections.singleton(expectedCell), Sets.newHashSet(cd));
+            try (RowIterator rows = Iterators.getOnlyElement(data))
+            {
+                Row row = Iterators.getOnlyElement(rows);
+                assertColumns(row, "m");
+                ComplexColumnData cd = row.getComplexColumnData(m);
+                assertEquals(Collections.singleton(expectedCell), Sets.newHashSet(cd));
+            }
+            assertRepairFuture(resolver, 1);
         }
 
         Assert.assertNull(messageRecorder.sent.get(peer1));
@@ -692,7 +899,7 @@ public class DataResolverTest
     public void testResolveNewCollectionOverwritingDeleted()
     {
         ReadCommand cmd = Util.cmd(cfs2, dk).withNowInSeconds(nowInSec).build();
-        DataResolver resolver = new DataResolver(ks, cmd, ConsistencyLevel.ALL, 2);
+        DataResolver resolver = new DataResolver(ks, cmd, ConsistencyLevel.ALL, 2, System.nanoTime());
 
         long[] ts = {100, 200};
 
@@ -714,12 +921,16 @@ public class DataResolverTest
         InetAddress peer2 = peer();
         resolver.preprocess(readResponseMessage(peer2, iter(PartitionUpdate.singleRowUpdate(cfm2, dk, builder.build())), cmd));
 
-        try(PartitionIterator data = resolver.resolve(); RowIterator rows = Iterators.getOnlyElement(data))
+        try(PartitionIterator data = resolver.resolve())
         {
-            Row row = Iterators.getOnlyElement(rows);
-            assertColumns(row, "m");
-            ComplexColumnData cd = row.getComplexColumnData(m);
-            assertEquals(Collections.singleton(expectedCell), Sets.newHashSet(cd));
+            try (RowIterator rows = Iterators.getOnlyElement(data))
+            {
+                Row row = Iterators.getOnlyElement(rows);
+                assertColumns(row, "m");
+                ComplexColumnData cd = row.getComplexColumnData(m);
+                assertEquals(Collections.singleton(expectedCell), Sets.newHashSet(cd));
+            }
+            assertRepairFuture(resolver, 1);
         }
 
         MessageOut<Mutation> msg;
@@ -828,16 +1039,38 @@ public class DataResolverTest
 
     private RangeTombstone tombstone(Object start, boolean inclusiveStart, Object end, boolean inclusiveEnd, long markedForDeleteAt, int localDeletionTime)
     {
-        RangeTombstone.Bound.Kind startKind = inclusiveStart
-                                            ? Kind.INCL_START_BOUND
-                                            : Kind.EXCL_START_BOUND;
-        RangeTombstone.Bound.Kind endKind = inclusiveEnd
-                                          ? Kind.INCL_END_BOUND
-                                          : Kind.EXCL_END_BOUND;
-
-        RangeTombstone.Bound startBound = new RangeTombstone.Bound(startKind, cfm.comparator.make(start).getRawValues());
-        RangeTombstone.Bound endBound = new RangeTombstone.Bound(endKind, cfm.comparator.make(end).getRawValues());
+        ClusteringBound startBound = rtBound(start, true, inclusiveStart);
+        ClusteringBound endBound = rtBound(end, false, inclusiveEnd);
         return new RangeTombstone(Slice.make(startBound, endBound), new DeletionTime(markedForDeleteAt, localDeletionTime));
+    }
+
+    private ClusteringBound rtBound(Object value, boolean isStart, boolean inclusive)
+    {
+        ClusteringBound.Kind kind = isStart
+                                         ? (inclusive ? Kind.INCL_START_BOUND : Kind.EXCL_START_BOUND)
+                                         : (inclusive ? Kind.INCL_END_BOUND : Kind.EXCL_END_BOUND);
+
+        return ClusteringBound.create(kind, cfm.comparator.make(value).getRawValues());
+    }
+
+    private ClusteringBoundary rtBoundary(Object value, boolean inclusiveOnEnd)
+    {
+        ClusteringBound.Kind kind = inclusiveOnEnd
+                                         ? Kind.INCL_END_EXCL_START_BOUNDARY
+                                         : Kind.EXCL_END_INCL_START_BOUNDARY;
+        return ClusteringBoundary.create(kind, cfm.comparator.make(value).getRawValues());
+    }
+
+    private RangeTombstoneBoundMarker marker(Object value, boolean isStart, boolean inclusive, long markedForDeleteAt, int localDeletionTime)
+    {
+        return new RangeTombstoneBoundMarker(rtBound(value, isStart, inclusive), new DeletionTime(markedForDeleteAt, localDeletionTime));
+    }
+
+    private RangeTombstoneBoundaryMarker boundary(Object value, boolean inclusiveOnEnd, long markedForDeleteAt1, int localDeletionTime1, long markedForDeleteAt2, int localDeletionTime2)
+    {
+        return new RangeTombstoneBoundaryMarker(rtBoundary(value, inclusiveOnEnd),
+                                                new DeletionTime(markedForDeleteAt1, localDeletionTime1),
+                                                new DeletionTime(markedForDeleteAt2, localDeletionTime2));
     }
 
     private UnfilteredPartitionIterator fullPartitionDelete(CFMetaData cfm, DecoratedKey dk, long timestamp, int nowInSec)
@@ -863,5 +1096,27 @@ public class DataResolverTest
     private UnfilteredPartitionIterator iter(PartitionUpdate update)
     {
         return new SingletonUnfilteredPartitionIterator(update.unfilteredIterator(), false);
+    }
+
+    private UnfilteredPartitionIterator iter(DecoratedKey key, Unfiltered... unfiltereds)
+    {
+        SortedSet<Unfiltered> s = new TreeSet<>(cfm.comparator);
+        Collections.addAll(s, unfiltereds);
+        final Iterator<Unfiltered> iterator = s.iterator();
+
+        UnfilteredRowIterator rowIter = new AbstractUnfilteredRowIterator(cfm,
+                                                                          key,
+                                                                          DeletionTime.LIVE,
+                                                                          cfm.partitionColumns(),
+                                                                          Rows.EMPTY_STATIC_ROW,
+                                                                          false,
+                                                                          EncodingStats.NO_STATS)
+        {
+            protected Unfiltered computeNext()
+            {
+                return iterator.hasNext() ? iterator.next() : endOfData();
+            }
+        };
+        return new SingletonUnfilteredPartitionIterator(rowIter, false);
     }
 }

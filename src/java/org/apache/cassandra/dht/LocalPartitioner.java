@@ -21,16 +21,18 @@ import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.CachedHashDecoratedKey;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.ObjectSizes;
+import org.apache.cassandra.utils.memory.HeapAllocator;
 
 public class LocalPartitioner implements IPartitioner
 {
-    private static final long EMPTY_SIZE = ObjectSizes.measure(new LocalPartitioner(null).new LocalToken(null));
+    private static final long EMPTY_SIZE = ObjectSizes.measure(new LocalPartitioner(null).new LocalToken());
 
     final AbstractType<?> comparator;   // package-private to avoid access workarounds in embedded LocalToken.
 
@@ -49,6 +51,11 @@ public class LocalPartitioner implements IPartitioner
         throw new UnsupportedOperationException();
     }
 
+    public Token split(Token left, Token right, double ratioToLeft)
+    {
+        throw new UnsupportedOperationException();
+    }
+
     public LocalToken getMinimumToken()
     {
         return new LocalToken(ByteBufferUtil.EMPTY_BYTE_BUFFER);
@@ -60,6 +67,11 @@ public class LocalPartitioner implements IPartitioner
     }
 
     public LocalToken getRandomToken()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    public LocalToken getRandomToken(Random random)
     {
         throw new UnsupportedOperationException();
     }
@@ -121,9 +133,14 @@ public class LocalPartitioner implements IPartitioner
     {
         static final long serialVersionUID = 8437543776403014875L;
 
+        private LocalToken()
+        {
+            super(null);
+        }
+
         public LocalToken(ByteBuffer token)
         {
-            super(token);
+            super(HeapAllocator.instance.clone(token));
         }
 
         @Override

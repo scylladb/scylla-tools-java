@@ -21,7 +21,6 @@ import java.net.InetAddress;
 import java.util.*;
 
 import com.google.common.base.Predicate;
-import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
 import org.slf4j.Logger;
@@ -30,8 +29,6 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.dht.Bounds;
-import org.apache.cassandra.dht.Range;
-import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.net.IVerbHandler;
 import org.apache.cassandra.net.MessageIn;
@@ -90,6 +87,7 @@ public class RepairMessageVerbHandler implements IVerbHandler<RepairMessage>
                                                                      desc.keyspace, desc.columnFamily), message.from, id);
                         return;
                     }
+
                     ActiveRepairService.ParentRepairSession prs = ActiveRepairService.instance.getParentRepairSession(desc.parentSessionId);
                     if (prs.isGlobal)
                     {
@@ -105,7 +103,7 @@ public class RepairMessageVerbHandler implements IVerbHandler<RepairMessage>
                                        !sstable.metadata.isIndex() && // exclude SSTables from 2i
                                        new Bounds<>(sstable.first.getToken(), sstable.last.getToken()).intersects(desc.ranges);
                             }
-                        }, true); //ephemeral snapshot, if repair fails, it will be cleaned next startup
+                        }, true, false); //ephemeral snapshot, if repair fails, it will be cleaned next startup
                     }
                     logger.debug("Enqueuing response to snapshot request {} to {}", desc.sessionId, message.from);
                     MessagingService.instance().sendReply(new MessageOut(MessagingService.Verb.INTERNAL_RESPONSE), id, message.from);
@@ -150,7 +148,7 @@ public class RepairMessageVerbHandler implements IVerbHandler<RepairMessage>
                         {
                             MessagingService.instance().sendReply(new MessageOut(MessagingService.Verb.INTERNAL_RESPONSE), id, message.from);
                         }
-                    }, MoreExecutors.sameThreadExecutor());
+                    }, MoreExecutors.directExecutor());
                     break;
 
                 case CLEANUP:

@@ -17,7 +17,6 @@
  */
 package org.apache.cassandra.cql3.statements;
 
-import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 
@@ -32,6 +31,7 @@ import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.Pair;
 
+import static com.google.common.collect.Lists.newArrayList;
 import static org.apache.cassandra.cql3.statements.RequestValidations.checkContainsNoDuplicates;
 import static org.apache.cassandra.cql3.statements.RequestValidations.checkFalse;
 import static org.apache.cassandra.cql3.statements.RequestValidations.checkTrue;
@@ -81,7 +81,7 @@ public class UpdateStatement extends ModificationStatement
             // For a dense layout, when we translate it to thrift, we don't have a row marker. So we don't accept an insert/update
             // that only sets the PK unless the is no declared non-PK columns (which we recognize because in that case the compact
             // value is of type "EmptyType").
-            if (cfm.isCompactTable() && updates.isEmpty())
+            if ((cfm.isCompactTable() && !cfm.isSuper()) && updates.isEmpty())
             {
                 checkTrue(CompactTables.hasEmptyCompactValue(cfm),
                           "Column %s is mandatory for this COMPACT STORAGE table",
@@ -113,7 +113,7 @@ public class UpdateStatement extends ModificationStatement
 
     public static class ParsedInsert extends ModificationStatement.Parsed
     {
-        private final List<ColumnIdentifier.Raw> columnNames;
+        private final List<ColumnDefinition.Raw> columnNames;
         private final List<Term.Raw> columnValues;
 
         /**
@@ -127,7 +127,7 @@ public class UpdateStatement extends ModificationStatement
          */
         public ParsedInsert(CFName name,
                             Attributes.Raw attrs,
-                            List<ColumnIdentifier.Raw> columnNames,
+                            List<ColumnDefinition.Raw> columnNames,
                             List<Term.Raw> columnValues,
                             boolean ifNotExists)
         {
@@ -155,28 +155,37 @@ public class UpdateStatement extends ModificationStatement
             Operations operations = new Operations(type);
             boolean hasClusteringColumnsSet = false;
 
-            for (int i = 0; i < columnNames.size(); i++)
+            if (cfm.isSuper() && cfm.isDense())
             {
-                ColumnDefinition def = getColumnDefinition(cfm, columnNames.get(i));
-
-                if (def.isClusteringColumn())
-                    hasClusteringColumnsSet = true;
-
-                Term.Raw value = columnValues.get(i);
-
-                if (def.isPrimaryKeyColumn())
+                // SuperColumn familiy updates are always row-level
+                hasClusteringColumnsSet = true;
+                SuperColumnCompatibility.prepareInsertOperations(cfm, columnNames, whereClause, columnValues, boundNames, operations);
+            }
+            else
+            {
+                for (int i = 0; i < columnNames.size(); i++)
                 {
-                    whereClause.add(new SingleColumnRelation(columnNames.get(i), Operator.EQ, value));
-                }
-                else
-                {
-                    Operation operation = new Operation.SetValue(value).prepare(keyspace(), def);
-                    operation.collectMarkerSpecification(boundNames);
-                    operations.add(operation);
+                    ColumnDefinition def = getColumnDefinition(cfm, columnNames.get(i));
+
+                    if (def.isClusteringColumn())
+                        hasClusteringColumnsSet = true;
+
+                    Term.Raw value = columnValues.get(i);
+
+                    if (def.isPrimaryKeyColumn())
+                    {
+                        whereClause.add(new SingleColumnRelation(columnNames.get(i), Operator.EQ, value));
+                    }
+                    else
+                    {
+                        Operation operation = new Operation.SetValue(value).prepare(cfm, def);
+                        operation.collectMarkerSpecification(boundNames);
+                        operations.add(operation);
+                    }
                 }
             }
 
-            boolean applyOnlyToStaticColumns = appliesOnlyToStaticColumns(operations, conditions) && !hasClusteringColumnsSet;
+            boolean applyOnlyToStaticColumns = !hasClusteringColumnsSet && appliesOnlyToStaticColumns(operations, conditions);
 
             StatementRestrictions restrictions = new StatementRestrictions(type,
                                                                            cfm,
@@ -203,11 +212,13 @@ public class UpdateStatement extends ModificationStatement
     public static class ParsedInsertJson extends ModificationStatement.Parsed
     {
         private final Json.Raw jsonValue;
+        private final boolean defaultUnset;
 
-        public ParsedInsertJson(CFName name, Attributes.Raw attrs, Json.Raw jsonValue, boolean ifNotExists)
+        public ParsedInsertJson(CFName name, Attributes.Raw attrs, Json.Raw jsonValue, boolean defaultUnset, boolean ifNotExists)
         {
             super(name, StatementType.INSERT, attrs, null, ifNotExists, false);
             this.jsonValue = jsonValue;
+            this.defaultUnset = defaultUnset;
         }
 
         @Override
@@ -218,34 +229,49 @@ public class UpdateStatement extends ModificationStatement
         {
             checkFalse(cfm.isCounter(), "INSERT statements are not allowed on counter tables, use UPDATE instead");
 
-            Collection<ColumnDefinition> defs = cfm.allColumns();
+            List<ColumnDefinition> defs = newArrayList(cfm.allColumnsInSelectOrder());
             Json.Prepared prepared = jsonValue.prepareAndCollectMarkers(cfm, defs, boundNames);
 
             WhereClause.Builder whereClause = new WhereClause.Builder();
             Operations operations = new Operations(type);
             boolean hasClusteringColumnsSet = false;
 
+            if (cfm.isSuper() && cfm.isDense())
+            {
+                hasClusteringColumnsSet = true;
+                SuperColumnCompatibility.prepareInsertJSONOperations(cfm, defs, boundNames, prepared, whereClause, operations);
+            }
+            else
+            {
+
+
+
+// TODO: indent
+
             for (ColumnDefinition def : defs)
             {
                 if (def.isClusteringColumn())
                     hasClusteringColumnsSet = true;
 
-                Term.Raw raw = prepared.getRawTermForColumn(def);
+                Term.Raw raw = prepared.getRawTermForColumn(def, defaultUnset);
                 if (def.isPrimaryKeyColumn())
                 {
-                    whereClause.add(new SingleColumnRelation(new ColumnIdentifier.ColumnIdentifierValue(def.name),
-                                                             Operator.EQ,
-                                                             raw));
+                    whereClause.add(new SingleColumnRelation(ColumnDefinition.Raw.forColumn(def), Operator.EQ, raw));
                 }
                 else
                 {
-                    Operation operation = new Operation.SetValue(raw).prepare(keyspace(), def);
+                    Operation operation = new Operation.SetValue(raw).prepare(cfm, def);
                     operation.collectMarkerSpecification(boundNames);
                     operations.add(operation);
                 }
             }
 
-            boolean applyOnlyToStaticColumns = appliesOnlyToStaticColumns(operations, conditions) && !hasClusteringColumnsSet;
+
+
+
+            }
+
+            boolean applyOnlyToStaticColumns = !hasClusteringColumnsSet && appliesOnlyToStaticColumns(operations, conditions);
 
             StatementRestrictions restrictions = new StatementRestrictions(type,
                                                                            cfm,
@@ -269,8 +295,8 @@ public class UpdateStatement extends ModificationStatement
     public static class ParsedUpdate extends ModificationStatement.Parsed
     {
         // Provided for an UPDATE
-        private final List<Pair<ColumnIdentifier.Raw, Operation.RawUpdate>> updates;
-        private final WhereClause whereClause;
+        private final List<Pair<ColumnDefinition.Raw, Operation.RawUpdate>> updates;
+        private WhereClause whereClause;
 
         /**
          * Creates a new UpdateStatement from a column family name, columns map, consistency
@@ -284,9 +310,9 @@ public class UpdateStatement extends ModificationStatement
          * */
         public ParsedUpdate(CFName name,
                             Attributes.Raw attrs,
-                            List<Pair<ColumnIdentifier.Raw, Operation.RawUpdate>> updates,
+                            List<Pair<ColumnDefinition.Raw, Operation.RawUpdate>> updates,
                             WhereClause whereClause,
-                            List<Pair<ColumnIdentifier.Raw, ColumnCondition.Raw>> conditions,
+                            List<Pair<ColumnDefinition.Raw, ColumnCondition.Raw>> conditions,
                             boolean ifExists)
         {
             super(name, StatementType.UPDATE, attrs, conditions, false, ifExists);
@@ -302,17 +328,25 @@ public class UpdateStatement extends ModificationStatement
         {
             Operations operations = new Operations(type);
 
-            for (Pair<ColumnIdentifier.Raw, Operation.RawUpdate> entry : updates)
+            if (cfm.isSuper() && cfm.isDense())
             {
-                ColumnDefinition def = getColumnDefinition(cfm, entry.left);
-
-                checkFalse(def.isPrimaryKeyColumn(), "PRIMARY KEY part %s found in SET part", def.name);
-
-                Operation operation = entry.right.prepare(keyspace(), def);
-                operation.collectMarkerSpecification(boundNames);
-                operations.add(operation);
+                conditions = SuperColumnCompatibility.rebuildLWTColumnConditions(conditions, cfm, whereClause);
+                whereClause = SuperColumnCompatibility.prepareUpdateOperations(cfm, whereClause, updates, boundNames, operations);
             }
+            else
+            {
+                for (Pair<ColumnDefinition.Raw, Operation.RawUpdate> entry : updates)
+                {
+                    ColumnDefinition def = getColumnDefinition(cfm, entry.left);
 
+                    checkFalse(def.isPrimaryKeyColumn(), "PRIMARY KEY part %s found in SET part", def.name);
+
+                    Operation operation = entry.right.prepare(cfm, def);
+                    operation.collectMarkerSpecification(boundNames);
+                    operations.add(operation);
+                }
+            }
+            
             StatementRestrictions restrictions = newRestrictions(cfm,
                                                                  boundNames,
                                                                  operations,

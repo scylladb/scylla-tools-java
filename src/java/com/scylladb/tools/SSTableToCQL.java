@@ -26,6 +26,8 @@ package com.scylladb.tools;
 import static java.util.concurrent.TimeUnit.MICROSECONDS;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.apache.cassandra.db.ClusteringBound.inclusiveEndOf;
+import static org.apache.cassandra.db.ClusteringBound.inclusiveStartOf;
 import static org.apache.cassandra.utils.UUIDGen.getUUID;
 
 import java.io.File;
@@ -41,12 +43,11 @@ import java.util.Map;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.db.ClusteringBound;
 import org.apache.cassandra.db.ClusteringPrefix;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.DeletionTime;
 import org.apache.cassandra.db.LivenessInfo;
-import org.apache.cassandra.db.RangeTombstone.Bound;
-import org.apache.cassandra.db.Slice;
 import org.apache.cassandra.db.context.CounterContext;
 import org.apache.cassandra.db.marshal.AbstractCompositeType;
 import org.apache.cassandra.db.marshal.AbstractType;
@@ -320,7 +321,7 @@ public class SSTableToCQL {
          * @param timestamp
          * @param ttl
          */
-        private void setWhere(Slice.Bound start, Slice.Bound end) {
+        private void setWhere(ClusteringBound start, ClusteringBound end) {
             assert where.isEmpty();
             
             ClusteringPrefix spfx = start.clustering();
@@ -387,7 +388,7 @@ public class SSTableToCQL {
         }
 
         // Delete the whole cql row
-        void deleteCqlRow(Bound start, Bound end, long timestamp) {
+        void deleteCqlRow(ClusteringBound start, ClusteringBound end, long timestamp) {
             if (!values.isEmpty()) {
                 finish();
             }            
@@ -638,19 +639,19 @@ public class SSTableToCQL {
                 endRow();
             }
         }
-
+        
         private void checkRowClustering() {
             if (row == null) {
                 return;
             }
             if (!row.isStatic()) {
-                Slice.Bound b = Slice.Bound.inclusiveStartOf(row.clustering().clustering());
-                Slice.Bound e = Slice.Bound.inclusiveEndOf(row.clustering().clustering());
+                ClusteringBound b = inclusiveStartOf(row.clustering().clustering());
+                ClusteringBound e = inclusiveEndOf(row.clustering().clustering());
                 setWhere(b, e);
 
                 if (rowDelete && !tombstoneMarkers.isEmpty()) {
                     RangeTombstoneMarker last = tombstoneMarkers.getLast();
-                    Bound start = last.openBound(false);
+                    ClusteringBound start = last.openBound(false);
                     // If we're doing a cql row delete while processing a ranged
                     // tombstone
                     // chain, we're probably dealing with (old, horrble)
@@ -664,7 +665,7 @@ public class SSTableToCQL {
                     }
                 }
 
-            }
+            }            
         }
         // process an actual cell (data or tombstone)
         private void process(Cell cell, LivenessInfo liveInfo, DeletionTime d) {
@@ -749,14 +750,14 @@ public class SSTableToCQL {
         private Deque<RangeTombstoneMarker> tombstoneMarkers = new ArrayDeque<>();
 
         private void process(RangeTombstoneMarker tombstone) {
-            Bound end = tombstone.closeBound(false);
+            ClusteringBound end = tombstone.closeBound(false);
 
             if (end != null && tombstoneMarkers.isEmpty()) {
                 throw new IllegalStateException("Unexpected tombstone: " + tombstone);
             }
 
             if (end != null && !tombstoneMarkers.isEmpty()) {
-                Bound last = tombstoneMarkers.getLast().closeBound(false);
+                ClusteringBound last = tombstoneMarkers.getLast().closeBound(false);
 
                 // This can happen if we're adding a tombstone marker but had a
                 // row delete in between. In that case (overlapping tombstones),
@@ -767,17 +768,17 @@ public class SSTableToCQL {
                     return;
                 }
 
-                Bound start = tombstoneMarkers.getFirst().openBound(false);
+                ClusteringBound start = tombstoneMarkers.getFirst().openBound(false);
                 assert start != null;
                 deleteCqlRow(start, end, tombstoneMarkers.getFirst().openDeletionTime(false).markedForDeleteAt());
                 tombstoneMarkers.clear();
                 return;
             }
 
-            Bound start = tombstone.openBound(false);
+            ClusteringBound start = tombstone.openBound(false);
             if (start != null && !tombstoneMarkers.isEmpty()) {
                 RangeTombstoneMarker last = tombstoneMarkers.getLast();
-                Bound stop = last.closeBound(false);
+                ClusteringBound stop = last.closeBound(false);
 
                 if (stop == null) {
                     throw new IllegalStateException("Unexpected tombstone: " + tombstone);

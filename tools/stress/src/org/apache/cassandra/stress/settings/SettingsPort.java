@@ -26,6 +26,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.cassandra.stress.util.ResultLogger;
+
 public class SettingsPort implements Serializable
 {
 
@@ -56,6 +58,13 @@ public class SettingsPort implements Serializable
     }
 
     // CLI Utility Methods
+    public void printSettings(ResultLogger out)
+    {
+        out.printf("  Native Port: %d%n", nativePort);
+        out.printf("  Thrift Port: %d%n", thriftPort);
+        out.printf("  JMX Port: %d%n", jmxPort);
+    }
+
 
     public static SettingsPort get(Map<String, String[]> clArgs)
     {

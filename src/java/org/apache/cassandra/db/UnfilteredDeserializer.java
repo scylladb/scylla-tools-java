@@ -20,12 +20,12 @@ package org.apache.cassandra.db;
 import java.io.IOException;
 import java.io.IOError;
 import java.util.*;
+import java.util.function.Supplier;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.PeekingIterator;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.io.util.DataInputPlus;
@@ -41,8 +41,6 @@ import org.apache.cassandra.net.MessagingService;
  */
 public abstract class UnfilteredDeserializer
 {
-    private static final Logger logger = LoggerFactory.getLogger(UnfilteredDeserializer.class);
-
     protected final CFMetaData metadata;
     protected final DataInputPlus in;
     protected final SerializationHelper helper;
@@ -81,7 +79,7 @@ public abstract class UnfilteredDeserializer
      * comparison. Whenever we know what to do with this atom (read it or skip it),
      * readNext or skipNext should be called.
      */
-    public abstract int compareNextTo(Slice.Bound bound) throws IOException;
+    public abstract int compareNextTo(ClusteringBound bound) throws IOException;
 
     /**
      * Returns whether the next atom is a row or not.
@@ -173,7 +171,7 @@ public abstract class UnfilteredDeserializer
             isReady = true;
         }
 
-        public int compareNextTo(Slice.Bound bound) throws IOException
+        public int compareNextTo(ClusteringBound bound) throws IOException
         {
             if (!isReady)
                 prepareNext();
@@ -202,7 +200,7 @@ public abstract class UnfilteredDeserializer
             isReady = false;
             if (UnfilteredSerializer.kind(nextFlags) == Unfiltered.Kind.RANGE_TOMBSTONE_MARKER)
             {
-                RangeTombstone.Bound bound = clusteringDeserializer.deserializeNextBound();
+                ClusteringBoundOrBoundary bound = clusteringDeserializer.deserializeNextBound();
                 return UnfilteredSerializer.serializer.deserializeMarkerBody(in, header, bound);
             }
             else
@@ -258,6 +256,10 @@ public abstract class UnfilteredDeserializer
         // The position in the input after the last data consumption (readNext/skipNext).
         private long lastConsumedPosition;
 
+        // Tracks the size of the last LegacyAtom read from disk, because this needs to be accounted
+        // for when marking lastConsumedPosition after readNext/skipNext
+        private long bytesReadForNextAtom;
+
         private OldFormatDeserializer(CFMetaData metadata,
                                       DataInputPlus in,
                                       SerializationHelper helper,
@@ -265,9 +267,34 @@ public abstract class UnfilteredDeserializer
                                       boolean readAllAsDynamic)
         {
             super(metadata, in, helper);
-            this.iterator = new UnfilteredIterator(partitionDeletion);
+            this.iterator = new UnfilteredIterator(metadata, partitionDeletion, helper, this::readAtom);
             this.readAllAsDynamic = readAllAsDynamic;
             this.lastConsumedPosition = currentPosition();
+        }
+
+        private LegacyLayout.LegacyAtom readAtom()
+        {
+            while (true)
+            {
+                try
+                {
+                    long pos = currentPosition();
+                    LegacyLayout.LegacyAtom atom = LegacyLayout.readLegacyAtom(metadata, in, readAllAsDynamic);
+                    bytesReadForNextAtom = currentPosition() - pos;
+                    return atom;
+                }
+                catch (UnknownColumnException e)
+                {
+                    // This is ok, see LegacyLayout.readLegacyAtom() for why this only happens in case were we're ok
+                    // skipping the cell. We do want to catch this at this level however because when that happen,
+                    // we should *not* count the byte of that discarded cell as part of the bytes for the atom
+                    // we will eventually return, as doing so could throw the logic bytesReadForNextAtom participates in.
+                }
+                catch (IOException e)
+                {
+                    throw new IOError(e);
+                }
+            }
         }
 
         public void setSkipStatic()
@@ -317,16 +344,7 @@ public abstract class UnfilteredDeserializer
             }
         }
 
-        private boolean isRow(LegacyLayout.LegacyAtom atom)
-        {
-            if (atom.isCell())
-                return true;
-
-            LegacyLayout.LegacyRangeTombstone tombstone = atom.asRangeTombstone();
-            return tombstone.isCollectionTombstone() || tombstone.isRowDeletion(metadata);
-        }
-
-        public int compareNextTo(Slice.Bound bound) throws IOException
+        public int compareNextTo(ClusteringBound bound) throws IOException
         {
             if (!hasNext())
                 throw new IllegalStateException();
@@ -358,7 +376,7 @@ public abstract class UnfilteredDeserializer
                 throw new IllegalStateException();
             Unfiltered toReturn = next;
             next = null;
-            lastConsumedPosition = currentPosition();
+            lastConsumedPosition = currentPosition() - bytesReadForNextAtom();
             return toReturn;
         }
 
@@ -367,7 +385,7 @@ public abstract class UnfilteredDeserializer
             if (!hasNext())
                 throw new UnsupportedOperationException();
             next = null;
-            lastConsumedPosition = currentPosition();
+            lastConsumedPosition = currentPosition() - bytesReadForNextAtom();
         }
 
         public long bytesReadForUnconsumedData()
@@ -378,31 +396,65 @@ public abstract class UnfilteredDeserializer
             return currentPosition() - lastConsumedPosition;
         }
 
+        // Reading/skipping an Unfiltered consumes LegacyAtoms from the underlying legacy atom iterator
+        // e.g. hasNext() -> iterator.hasNext() -> iterator.readRow() -> atoms.next()
+        // The stop condition of the loop which groups legacy atoms into rows causes that AtomIterator
+        // to read in the first atom which doesn't belong in the row. So by that point, our position
+        // is actually past the end of the next Unfiltered. To compensate, we record the size of
+        // the last LegacyAtom read and subtract it from the current position when we calculate lastConsumedPosition.
+        // If we don't, then when reading an indexed block, we can over correct and may think that we've
+        // exhausted the block before we actually have.
+        private long bytesReadForNextAtom()
+        {
+            // If we've read anything at all then we will have recorded this in bytesReadForNextAtom,
+            // but being extra careful here just incase this method is called before any reads happen.
+            return iterator.atoms.next == null ? 0 : bytesReadForNextAtom;
+        }
+
         public void clearState()
         {
             next = null;
             saved = null;
             iterator.clearState();
             lastConsumedPosition = currentPosition();
+            bytesReadForNextAtom = 0;
         }
 
         // Groups atoms from the input into proper Unfiltered.
         // Note: this could use guava AbstractIterator except that we want to be able to clear
         // the internal state of the iterator so it's cleaner to do it ourselves.
-        private class UnfilteredIterator implements PeekingIterator<Unfiltered>
+        @VisibleForTesting
+        static class UnfilteredIterator implements PeekingIterator<Unfiltered>
         {
             private final AtomIterator atoms;
             private final LegacyLayout.CellGrouper grouper;
             private final TombstoneTracker tombstoneTracker;
+            private final CFMetaData metadata;
+            private final SerializationHelper helper;
 
             private Unfiltered next;
 
-            private UnfilteredIterator(DeletionTime partitionDeletion)
+            UnfilteredIterator(CFMetaData metadata,
+                               DeletionTime partitionDeletion,
+                               SerializationHelper helper,
+                               Supplier<LegacyLayout.LegacyAtom> atomReader)
             {
+                this.metadata = metadata;
+                this.helper = helper;
                 this.grouper = new LegacyLayout.CellGrouper(metadata, helper);
                 this.tombstoneTracker = new TombstoneTracker(partitionDeletion);
-                this.atoms = new AtomIterator(tombstoneTracker);
+                this.atoms = new AtomIterator(atomReader);
             }
+
+            private boolean isRow(LegacyLayout.LegacyAtom atom)
+            {
+                if (atom.isCell())
+                    return true;
+
+                LegacyLayout.LegacyRangeTombstone tombstone = atom.asRangeTombstone();
+                return tombstone.isCollectionTombstone() || tombstone.isRowDeletion(metadata);
+            }
+
 
             public boolean hasNext()
             {
@@ -411,28 +463,38 @@ public abstract class UnfilteredDeserializer
                 {
                     if (atoms.hasNext())
                     {
+                        // If there is a range tombstone to open strictly before the next row/RT, we need to return that open (or boundary) marker first.
+                        if (tombstoneTracker.hasOpeningMarkerBefore(atoms.peek()))
+                        {
+                            next = tombstoneTracker.popOpeningMarker();
+                        }
                         // If a range tombstone closes strictly before the next row/RT, we need to return that close (or boundary) marker first.
-                        if (tombstoneTracker.hasClosingMarkerBefore(atoms.peek()))
+                        else if (tombstoneTracker.hasClosingMarkerBefore(atoms.peek()))
                         {
                             next = tombstoneTracker.popClosingMarker();
                         }
                         else
                         {
                             LegacyLayout.LegacyAtom atom = atoms.next();
-                            if (!tombstoneTracker.isShadowed(atom))
-                                next = isRow(atom) ? readRow(atom) : tombstoneTracker.openNew(atom.asRangeTombstone());
+                            if (tombstoneTracker.isShadowed(atom))
+                                continue;
+
+                            if (isRow(atom))
+                                next = readRow(atom);
+                            else
+                                tombstoneTracker.openNew(atom.asRangeTombstone());
                         }
                     }
                     else if (tombstoneTracker.hasOpenTombstones())
                     {
-                        next = tombstoneTracker.popClosingMarker();
+                        next = tombstoneTracker.popMarker();
                     }
                     else
                     {
                         return false;
                     }
                 }
-                return next != null;
+                return true;
             }
 
             private Unfiltered readRow(LegacyLayout.LegacyAtom first)
@@ -478,206 +540,252 @@ public abstract class UnfilteredDeserializer
             {
                 throw new UnsupportedOperationException();
             }
-        }
 
-        // Wraps the input of the deserializer to provide an iterator (and skip shadowed atoms).
-        // Note: this could use guava AbstractIterator except that we want to be able to clear
-        // the internal state of the iterator so it's cleaner to do it ourselves.
-        private class AtomIterator implements PeekingIterator<LegacyLayout.LegacyAtom>
-        {
-            private final TombstoneTracker tombstoneTracker;
-            private boolean isDone;
-            private LegacyLayout.LegacyAtom next;
-
-            private AtomIterator(TombstoneTracker tombstoneTracker)
+            // Wraps the input of the deserializer to provide an iterator (and skip shadowed atoms).
+            // Note: this could use guava AbstractIterator except that we want to be able to clear
+            // the internal state of the iterator so it's cleaner to do it ourselves.
+            private class AtomIterator implements PeekingIterator<LegacyLayout.LegacyAtom>
             {
-                this.tombstoneTracker = tombstoneTracker;
-            }
+                private final Supplier<LegacyLayout.LegacyAtom> atomReader;
+                private boolean isDone;
+                private LegacyLayout.LegacyAtom next;
 
-            public boolean hasNext()
-            {
-                if (isDone)
-                    return false;
-
-                if (next == null)
+                private AtomIterator(Supplier<LegacyLayout.LegacyAtom> atomReader)
                 {
-                    next = readAtom();
+                    this.atomReader = atomReader;
+                }
+
+                public boolean hasNext()
+                {
+                    if (isDone)
+                        return false;
+
                     if (next == null)
                     {
-                        isDone = true;
-                        return false;
+                        next = atomReader.get();
+                        if (next == null)
+                        {
+                            isDone = true;
+                            return false;
+                        }
                     }
-                }
-                return true;
-            }
-
-            private LegacyLayout.LegacyAtom readAtom()
-            {
-                try
-                {
-                    return LegacyLayout.readLegacyAtom(metadata, in, readAllAsDynamic);
-                }
-                catch (IOException e)
-                {
-                    throw new IOError(e);
-                }
-            }
-
-            public LegacyLayout.LegacyAtom next()
-            {
-                if (!hasNext())
-                    throw new UnsupportedOperationException();
-                LegacyLayout.LegacyAtom toReturn = next;
-                next = null;
-                return toReturn;
-            }
-
-            public LegacyLayout.LegacyAtom peek()
-            {
-                if (!hasNext())
-                    throw new UnsupportedOperationException();
-                return next;
-            }
-
-            public void clearState()
-            {
-                this.next = null;
-                this.isDone = false;
-            }
-
-            public void remove()
-            {
-                throw new UnsupportedOperationException();
-            }
-        }
-
-        /**
-         * Tracks which range tombstones are open when deserializing the old format.
-         */
-        private class TombstoneTracker
-        {
-            private final DeletionTime partitionDeletion;
-
-            // Open tombstones sorted by their closing bound (i.e. first tombstone is the first to close).
-            // As we only track non-fully-shadowed ranges, the first range is necessarily the currently
-            // open tombstone (the one with the higher timestamp).
-            private final SortedSet<LegacyLayout.LegacyRangeTombstone> openTombstones;
-
-            public TombstoneTracker(DeletionTime partitionDeletion)
-            {
-                this.partitionDeletion = partitionDeletion;
-                this.openTombstones = new TreeSet<>((rt1, rt2) -> metadata.comparator.compare(rt1.stop.bound, rt2.stop.bound));
-            }
-
-            /**
-             * Checks if the provided atom is fully shadowed by the open tombstones of this tracker (or the partition deletion).
-             */
-            public boolean isShadowed(LegacyLayout.LegacyAtom atom)
-            {
-                assert !hasClosingMarkerBefore(atom);
-                long timestamp = atom.isCell() ? atom.asCell().timestamp : atom.asRangeTombstone().deletionTime.markedForDeleteAt();
-
-                if (partitionDeletion.deletes(timestamp))
                     return true;
-
-                SortedSet<LegacyLayout.LegacyRangeTombstone> coveringTombstones = isRow(atom) ? openTombstones : openTombstones.tailSet(atom.asRangeTombstone());
-                return Iterables.any(coveringTombstones, tombstone -> tombstone.deletionTime.deletes(timestamp));
-            }
-
-            /**
-             * Whether the currently open marker closes stricly before the provided row/RT.
-             */
-            public boolean hasClosingMarkerBefore(LegacyLayout.LegacyAtom atom)
-            {
-                return !openTombstones.isEmpty()
-                    && metadata.comparator.compare(openTombstones.first().stop.bound, atom.clustering()) < 0;
-            }
-
-            /**
-             * Returns the unfiltered corresponding to closing the currently open marker (and update the tracker accordingly).
-             */
-            public Unfiltered popClosingMarker()
-            {
-                assert !openTombstones.isEmpty();
-
-                Iterator<LegacyLayout.LegacyRangeTombstone> iter = openTombstones.iterator();
-                LegacyLayout.LegacyRangeTombstone first = iter.next();
-                iter.remove();
-
-                // If that was the last open tombstone, we just want to close it. Otherwise, we have a boundary with the
-                // next tombstone
-                if (!iter.hasNext())
-                    return new RangeTombstoneBoundMarker(first.stop.bound, first.deletionTime);
-
-                LegacyLayout.LegacyRangeTombstone next = iter.next();
-                return RangeTombstoneBoundaryMarker.makeBoundary(false, first.stop.bound, first.stop.bound.invert(), first.deletionTime, next.deletionTime);
-            }
-
-            /**
-             * Update the tracker given the provided newly open tombstone. This return the Unfiltered corresponding to the opening
-             * of said tombstone: this can be a simple open mark, a boundary (if there was an open tombstone superseded by this new one)
-             * or even null (if the new tombston start is supersedes by the currently open tombstone).
-             *
-             * Note that this method assume the added tombstone is not fully shadowed, i.e. that !isShadowed(tombstone). It also
-             * assumes no opened tombstone closes before that tombstone (so !hasClosingMarkerBefore(tombstone)).
-             */
-            public Unfiltered openNew(LegacyLayout.LegacyRangeTombstone tombstone)
-            {
-                if (openTombstones.isEmpty())
-                {
-                    openTombstones.add(tombstone);
-                    return new RangeTombstoneBoundMarker(tombstone.start.bound, tombstone.deletionTime);
                 }
 
-                Iterator<LegacyLayout.LegacyRangeTombstone> iter = openTombstones.iterator();
-                LegacyLayout.LegacyRangeTombstone first = iter.next();
-                if (tombstone.deletionTime.supersedes(first.deletionTime))
+                public LegacyLayout.LegacyAtom next()
                 {
-                    // We're supperseding the currently open tombstone, so we should produce a boundary that close the currently open
-                    // one and open the new one. We should also add the tombstone, but if it stop after the first one, we should
-                    // also remove that first tombstone as it won't be useful anymore.
-                    if (metadata.comparator.compare(tombstone.stop.bound, first.stop.bound) >= 0)
-                        iter.remove();
-
-                    openTombstones.add(tombstone);
-                    return RangeTombstoneBoundaryMarker.makeBoundary(false, tombstone.start.bound.invert(), tombstone.start.bound, first.deletionTime, tombstone.deletionTime);
+                    if (!hasNext())
+                        throw new UnsupportedOperationException();
+                    LegacyLayout.LegacyAtom toReturn = next;
+                    next = null;
+                    return toReturn;
                 }
-                else
+
+                public LegacyLayout.LegacyAtom peek()
                 {
-                    // If the new tombstone don't supersedes the currently open tombstone, we don't have anything to return, we
-                    // just add the new tombstone (because we know tombstone is not fully shadowed, this imply the new tombstone
-                    // simply extend after the first one and we'll deal with it later)
+                    if (!hasNext())
+                        throw new UnsupportedOperationException();
+                    return next;
+                }
 
-                    // changed scylla-enterprise #103. This assert seems wrong. An extending tombstone should be valid 
-                    // with an equal comparison here as well (strictly speaking not, but the comparator does not 
-                    // care (enough) about inclusive/exclusive)...
+                public void clearState()
+                {
+                    this.next = null;
+                    this.isDone = false;
+                }
 
-                    //assert metadata.comparator.compare(tombstone.start.bound, first.stop.bound) > 0;
-                    
-                    // See above. We need to deal with "extending" TS that have connecting bounds. 
-                    // These should be treated similarly to above, i.e. remove the currently pending 
-                    // tombstone (which we assume generated either RangeTombstoneBoundMarker or RangeTombstoneBoundaryMarker)
-                    if (metadata.comparator.compare(tombstone.start.bound, first.stop.bound) == 0) {
-                        iter.remove();
+                public void remove()
+                {
+                    throw new UnsupportedOperationException();
+                }
+            }
+
+            /**
+             * Tracks which range tombstones are open when deserializing the old format.
+             * <p>
+             * This is a bit tricky because in the old of format we could have duplicated tombstones, overlapping ones,
+             * shadowed ones, etc.., but we should generate from that a "flat" output where at most one non-shadoowed
+             * range is open at any given time and without empty range.
+             * <p>
+             * One consequence of that is that we have to be careful to not generate markers too soon. For instance,
+             * we might get a range tombstone [1, 1]@3 followed by [1, 10]@5. So if we generate an opening marker on
+             * the first tombstone (so INCL_START(1)@3), we're screwed when we get to the 2nd range tombstone: we really
+             * should ignore the first tombstone in that that and generate INCL_START(1)@5 (assuming obviously we don't
+             * have one more range tombstone starting at 1 in the stream). This is why we have the
+             * {@link #hasOpeningMarkerBefore} method: in practice, we remember when a marker should be opened, but only
+             * generate that opening marker when we're sure that we won't get anything shadowing that marker.
+             * <p>
+             * For closing marker, we also have a {@link #hasClosingMarkerBefore} because in the old format the closing
+             * markers comes with the opening one, but we should generate them "in order" in the new format.
+             */
+            private class TombstoneTracker
+            {
+                private final DeletionTime partitionDeletion;
+
+                // As explained in the javadoc, we need to wait to generate an opening marker until we're sure we have
+                // seen anything that could shadow it. So this remember a marker that needs to be opened but hasn't
+                // been yet. This is truly returned when hasOpeningMarkerBefore tells us it's safe to.
+                private RangeTombstoneMarker openMarkerToReturn;
+
+                // Open tombstones sorted by their closing bound (i.e. first tombstone is the first to close).
+                // As we only track non-fully-shadowed ranges, the first range is necessarily the currently
+                // open tombstone (the one with the higher timestamp).
+                private final SortedSet<LegacyLayout.LegacyRangeTombstone> openTombstones;
+
+                public TombstoneTracker(DeletionTime partitionDeletion)
+                {
+                    this.partitionDeletion = partitionDeletion;
+                    this.openTombstones = new TreeSet<>((rt1, rt2) -> metadata.comparator.compare(rt1.stop.bound, rt2.stop.bound));
+                }
+
+                /**
+                 * Checks if the provided atom is fully shadowed by the open tombstones of this tracker (or the partition deletion).
+                 */
+                public boolean isShadowed(LegacyLayout.LegacyAtom atom)
+                {
+                    assert !hasClosingMarkerBefore(atom);
+                    long timestamp = atom.isCell() ? atom.asCell().timestamp : atom.asRangeTombstone().deletionTime.markedForDeleteAt();
+
+                    if (partitionDeletion.deletes(timestamp))
+                        return true;
+
+                    SortedSet<LegacyLayout.LegacyRangeTombstone> coveringTombstones = isRow(atom) ? openTombstones : openTombstones.tailSet(atom.asRangeTombstone());
+                    return Iterables.any(coveringTombstones, tombstone -> tombstone.deletionTime.deletes(timestamp));
+                }
+
+                /**
+                 * Whether there is an outstanding opening marker that should be returned before we process the provided row/RT.
+                 */
+                public boolean hasOpeningMarkerBefore(LegacyLayout.LegacyAtom atom)
+                {
+                    return openMarkerToReturn != null
+                           && metadata.comparator.compare(openMarkerToReturn.openBound(false), atom.clustering()) < 0;
+                }
+
+                public Unfiltered popOpeningMarker()
+                {
+                    assert openMarkerToReturn != null;
+                    Unfiltered toReturn = openMarkerToReturn;
+                    openMarkerToReturn = null;
+                    return toReturn;
+                }
+
+                /**
+                 * Whether the currently open marker closes stricly before the provided row/RT.
+                 */
+                public boolean hasClosingMarkerBefore(LegacyLayout.LegacyAtom atom)
+                {
+                    return !openTombstones.isEmpty()
+                           && metadata.comparator.compare(openTombstones.first().stop.bound, atom.clustering()) < 0;
+                }
+
+                /**
+                 * Returns the unfiltered corresponding to closing the currently open marker (and update the tracker accordingly).
+                 */
+                public Unfiltered popClosingMarker()
+                {
+                    assert !openTombstones.isEmpty();
+
+                    Iterator<LegacyLayout.LegacyRangeTombstone> iter = openTombstones.iterator();
+                    LegacyLayout.LegacyRangeTombstone first = iter.next();
+                    iter.remove();
+
+                    // If that was the last open tombstone, we just want to close it. Otherwise, we have a boundary with the
+                    // next tombstone
+                    if (!iter.hasNext())
+                        return new RangeTombstoneBoundMarker(first.stop.bound, first.deletionTime);
+
+                    LegacyLayout.LegacyRangeTombstone next = iter.next();
+                    return RangeTombstoneBoundaryMarker.makeBoundary(false, first.stop.bound, first.stop.bound.invert(), first.deletionTime, next.deletionTime);
+                }
+
+                 /**
+                  * Pop whatever next marker needs to be popped. This should be called as many time as necessary (until
+                  * {@link #hasOpenTombstones} returns {@false}) when all atoms have been consumed to "empty" the tracker.
+                  */
+                 public Unfiltered popMarker()
+                 {
+                     assert hasOpenTombstones();
+                     return openMarkerToReturn == null ? popClosingMarker() : popOpeningMarker();
+                 }
+
+                /**
+                 * Update the tracker given the provided newly open tombstone. This potentially update openMarkerToReturn
+                 * to account for th new opening.
+                 *
+                 * Note that this method assumes that:
+                 +  1) the added tombstone is not fully shadowed: !isShadowed(tombstone).
+                 +  2) there is no marker to open that open strictly before this new tombstone: !hasOpeningMarkerBefore(tombstone).
+                 +  3) no opened tombstone closes before that tombstone: !hasClosingMarkerBefore(tombstone).
+                 + One can check that this is only called after the condition above have been checked in UnfilteredIterator.hasNext above.
+                 */
+                public void openNew(LegacyLayout.LegacyRangeTombstone tombstone)
+                {
+                    if (openTombstones.isEmpty())
+                    {
+                        // If we have an openMarkerToReturn, the corresponding RT must be in openTombstones (or we wouldn't know when to close it)
+                        assert openMarkerToReturn == null;
+                        openTombstones.add(tombstone);
+                        openMarkerToReturn = new RangeTombstoneBoundMarker(tombstone.start.bound, tombstone.deletionTime);
+                        return;
+                    }
+
+                    if (openMarkerToReturn != null)
+                    {
+                        // If the new opening supersedes the one we're about to return, we need to update the one to return.
+                        if (tombstone.deletionTime.supersedes(openMarkerToReturn.openDeletionTime(false)))
+                            openMarkerToReturn = openMarkerToReturn.withNewOpeningDeletionTime(false, tombstone.deletionTime);
+                    }
+                    else
+                    {
+                        // We have no openMarkerToReturn set yet so set it now if needs be.
+                        // Since openTombstones isn't empty, it means we have a currently ongoing deletion. And if the new tombstone
+                        // supersedes that ongoing deletion, we need to close the opening  deletion and open with the new one.
+                        DeletionTime currentOpenDeletion = openTombstones.first().deletionTime;
+                        if (tombstone.deletionTime.supersedes(currentOpenDeletion))
+                            openMarkerToReturn = RangeTombstoneBoundaryMarker.makeBoundary(false, tombstone.start.bound.invert(), tombstone.start.bound, currentOpenDeletion, tombstone.deletionTime);
+                    }
+
+                    // In all cases, we know !isShadowed(tombstone) so we need to add the tombstone (note however that we may not have set openMarkerToReturn if the
+                    // new tombstone doesn't supersedes the current deletion _but_ extend past the marker currently open)
+                    add(tombstone);
+                }
+
+                /**
+                 * Adds a new tombstone to openTombstones, removing anything that would be shadowed by this new tombstone.
+                 */
+                private void add(LegacyLayout.LegacyRangeTombstone tombstone)
+                {
+                    // First, remove existing tombstone that is shadowed by this tombstone.
+                    Iterator<LegacyLayout.LegacyRangeTombstone> iter = openTombstones.iterator();
+                    while (iter.hasNext())
+                    {
+
+                        LegacyLayout.LegacyRangeTombstone existing = iter.next();
+                        // openTombstones is ordered by stop bound and the new tombstone can't be shadowing anything that
+                        // stop after it.
+                        if (metadata.comparator.compare(tombstone.stop.bound, existing.stop.bound) < 0)
+                            break;
+
+                        // Note that we remove an existing tombstone even if it is equal to the new one because in that case,
+                        // either the existing strictly stops before the new one and we don't want it, or it stops exactly
+                        // like the new one but we're going to inconditionally add the new one anyway.
+                        if (!existing.deletionTime.supersedes(tombstone.deletionTime))
+                            iter.remove();
                     }
                     openTombstones.add(tombstone);
-                    return null;
                 }
-            }
 
-            public boolean hasOpenTombstones()
-            {
-                return !openTombstones.isEmpty();
-            }
+                public boolean hasOpenTombstones()
+                {
+                    return openMarkerToReturn != null || !openTombstones.isEmpty();
+                }
 
-            private boolean formBoundary(LegacyLayout.LegacyRangeTombstone close, LegacyLayout.LegacyRangeTombstone open)
-            {
-                return metadata.comparator.compare(close.stop.bound, open.start.bound) == 0;
-            }
-
-            public void clearState()
-            {
-                openTombstones.clear();
+                public void clearState()
+                {
+                    openMarkerToReturn = null;
+                    openTombstones.clear();
+                }
             }
         }
     }

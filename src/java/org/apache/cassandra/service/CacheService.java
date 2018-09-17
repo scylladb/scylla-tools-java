@@ -40,10 +40,8 @@ import org.apache.cassandra.cache.*;
 import org.apache.cassandra.cache.AutoSavingCache.CacheSerializer;
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
-import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.filter.*;
@@ -56,7 +54,6 @@ import org.apache.cassandra.io.sstable.format.big.BigFormat;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.Pair;
-import org.apache.cassandra.utils.concurrent.OpOrder;
 
 public class CacheService implements CacheServiceMBean
 {
@@ -64,7 +61,7 @@ public class CacheService implements CacheServiceMBean
 
     public static final String MBEAN_NAME = "org.apache.cassandra.db:type=Caches";
 
-    public static enum CacheType
+    public enum CacheType
     {
         KEY_CACHE("KeyCache"),
         ROW_CACHE("RowCache"),
@@ -72,7 +69,7 @@ public class CacheService implements CacheServiceMBean
 
         private final String name;
 
-        private CacheType(String typeName)
+        CacheType(String typeName)
         {
             name = typeName;
         }
@@ -391,7 +388,8 @@ public class CacheService implements CacheServiceMBean
 
                     ClusteringIndexFilter filter = new ClusteringIndexNamesFilter(FBUtilities.<Clustering>singleton(name.clustering, cfs.metadata.comparator), false);
                     SinglePartitionReadCommand cmd = SinglePartitionReadCommand.create(cfs.metadata, nowInSec, key, builder.build(), filter);
-                    try (OpOrder.Group op = cfs.readOrdering.start(); RowIterator iter = UnfilteredRowIterators.filter(cmd.queryMemtableAndDisk(cfs, op), nowInSec))
+                    try (ReadExecutionController controller = cmd.executionController();
+                         RowIterator iter = UnfilteredRowIterators.filter(cmd.queryMemtableAndDisk(cfs, controller), nowInSec))
                     {
                         Cell cell;
                         if (column.isStatic())
@@ -430,9 +428,9 @@ public class CacheService implements CacheServiceMBean
             //Keyspace and CF name are deserialized by AutoSaving cache and used to fetch the CFS provided as a
             //parameter so they aren't deserialized here, even though they are serialized by this serializer
             final ByteBuffer buffer = ByteBufferUtil.readWithLength(in);
-            final int rowsToCache = cfs.metadata.params.caching.rowsPerPartitionToCache();
             if (cfs == null  || !cfs.isRowCacheEnabled())
                 return null;
+            final int rowsToCache = cfs.metadata.params.caching.rowsPerPartitionToCache();
             assert(!cfs.isIndex());//Shouldn't have row cache entries for indexes
 
             return StageManager.getStage(Stage.READ).submit(new Callable<Pair<RowCacheKey, IRowCacheEntry>>()
@@ -441,9 +439,10 @@ public class CacheService implements CacheServiceMBean
                 {
                     DecoratedKey key = cfs.decorateKey(buffer);
                     int nowInSec = FBUtilities.nowInSeconds();
-                    try (OpOrder.Group op = cfs.readOrdering.start(); UnfilteredRowIterator iter = SinglePartitionReadCommand.fullPartitionRead(cfs.metadata, nowInSec, key).queryMemtableAndDisk(cfs, op))
+                    SinglePartitionReadCommand cmd = SinglePartitionReadCommand.fullPartitionRead(cfs.metadata, nowInSec, key);
+                    try (ReadExecutionController controller = cmd.executionController(); UnfilteredRowIterator iter = cmd.queryMemtableAndDisk(cfs, controller))
                     {
-                        CachedPartition toCache = CachedBTreePartition.create(DataLimits.cqlLimits(rowsToCache).filter(iter, nowInSec), nowInSec);
+                        CachedPartition toCache = CachedBTreePartition.create(DataLimits.cqlLimits(rowsToCache).filter(iter, nowInSec, true), nowInSec);
                         return Pair.create(new RowCacheKey(cfs.metadata.ksAndCFName, key), (IRowCacheEntry)toCache);
                     }
                 }
@@ -467,7 +466,9 @@ public class CacheService implements CacheServiceMBean
             ByteBufferUtil.writeWithLength(key.key, out);
             out.writeInt(key.desc.generation);
             out.writeBoolean(true);
-            key.desc.getFormat().getIndexSerializer(cfs.metadata, key.desc.version, SerializationHeader.forKeyCache(cfs.metadata)).serialize(entry, out);
+
+            SerializationHeader header = new SerializationHeader(false, cfs.metadata, cfs.metadata.partitionColumns(), EncodingStats.NO_STATS);
+            key.desc.getFormat().getIndexSerializer(cfs.metadata, key.desc.version, header).serializeForCache(entry, out);
         }
 
         public Future<Pair<KeyCacheKey, RowIndexEntry>> deserialize(DataInputPlus input, ColumnFamilyStore cfs) throws IOException
@@ -483,20 +484,20 @@ public class CacheService implements CacheServiceMBean
             ByteBuffer key = ByteBufferUtil.read(input, keyLength);
             int generation = input.readInt();
             input.readBoolean(); // backwards compatibility for "promoted indexes" boolean
-            SSTableReader reader = null;
+            SSTableReader reader;
             if (cfs == null || !cfs.isKeyCacheEnabled() || (reader = findDesc(generation, cfs.getSSTables(SSTableSet.CANONICAL))) == null)
             {
                 // The sstable doesn't exist anymore, so we can't be sure of the exact version and assume its the current version. The only case where we'll be
                 // wrong is during upgrade, in which case we fail at deserialization. This is not a huge deal however since 1) this is unlikely enough that
                 // this won't affect many users (if any) and only once, 2) this doesn't prevent the node from starting and 3) CASSANDRA-10219 shows that this
                 // part of the code has been broken for a while without anyone noticing (it is, btw, still broken until CASSANDRA-10219 is fixed).
-                RowIndexEntry.Serializer.skip(input, BigFormat.instance.getLatestVersion());
+                RowIndexEntry.Serializer.skipForCache(input, BigFormat.instance.getLatestVersion());
                 return null;
             }
             RowIndexEntry.IndexSerializer<?> indexSerializer = reader.descriptor.getFormat().getIndexSerializer(reader.metadata,
                                                                                                                 reader.descriptor.version,
-                                                                                                                SerializationHeader.forKeyCache(cfs.metadata));
-            RowIndexEntry entry = indexSerializer.deserialize(input);
+                                                                                                                reader.header);
+            RowIndexEntry<?> entry = indexSerializer.deserializeForCache(input);
             return Futures.immediateFuture(Pair.create(new KeyCacheKey(cfs.metadata.ksAndCFName, reader.descriptor, key), entry));
         }
 

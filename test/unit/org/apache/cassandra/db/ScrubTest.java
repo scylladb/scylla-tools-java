@@ -32,6 +32,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.apache.cassandra.*;
+import org.apache.cassandra.cache.ChunkCache;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.Operator;
@@ -117,7 +118,7 @@ public class ScrubTest
         fillCF(cfs, 1);
         assertOrderedAll(cfs, 1);
 
-        CompactionManager.instance.performScrub(cfs, false, true, 2);
+        CompactionManager.instance.performScrub(cfs, false, true, false, 2);
 
         // check data is still there
         assertOrderedAll(cfs, 1);
@@ -349,7 +350,7 @@ public class ScrubTest
                 SSTableReader.open(desc, cfs.metadata);
                 fail("SSTR validation should have caught the out-of-order rows");
             }
-            catch (IllegalStateException ise)
+            catch (CorruptSSTableException ise)
             { /* this is expected */ }
 
             // open without validation for scrubbing
@@ -420,6 +421,8 @@ public class ScrubTest
         file.seek(startPosition);
         file.writeBytes(StringUtils.repeat('z', (int) (endPosition - startPosition)));
         file.close();
+        if (ChunkCache.instance != null)
+            ChunkCache.instance.invalidateFile(sstable.getFilename());
     }
 
     private static void assertOrderedAll(ColumnFamilyStore cfs, int expectedSize)
@@ -619,7 +622,7 @@ public class ScrubTest
                 { //make sure the next scrub fails
                     overrideWithGarbage(indexCfs.getLiveSSTables().iterator().next(), ByteBufferUtil.bytes(1L), ByteBufferUtil.bytes(2L));
                 }
-                CompactionManager.AllSSTableOpStatus result = indexCfs.scrub(false, false, true, true, 0);
+                CompactionManager.AllSSTableOpStatus result = indexCfs.scrub(false, false, false, true, false,0);
                 assertEquals(failure ?
                              CompactionManager.AllSSTableOpStatus.ABORTED :
                              CompactionManager.AllSSTableOpStatus.SUCCESSFUL,
@@ -636,14 +639,14 @@ public class ScrubTest
     {
         SerializationHeader header = new SerializationHeader(true, metadata, metadata.partitionColumns(), EncodingStats.NO_STATS);
         MetadataCollector collector = new MetadataCollector(metadata.comparator).sstableLevel(0);
-        return new TestMultiWriter(new TestWriter(descriptor, keyCount, 0, metadata, collector, header, txn));
+        return new TestMultiWriter(new TestWriter(descriptor, keyCount, 0, metadata, collector, header, txn), txn);
     }
 
     private static class TestMultiWriter extends SimpleSSTableMultiWriter
     {
-        TestMultiWriter(SSTableWriter writer)
+        TestMultiWriter(SSTableWriter writer, LifecycleTransaction txn)
         {
-            super(writer);
+            super(writer, txn);
         }
     }
 
@@ -655,7 +658,7 @@ public class ScrubTest
         TestWriter(Descriptor descriptor, long keyCount, long repairedAt, CFMetaData metadata,
                    MetadataCollector collector, SerializationHeader header, LifecycleTransaction txn)
         {
-            super(descriptor, keyCount, repairedAt, metadata, collector, header, txn);
+            super(descriptor, keyCount, repairedAt, metadata, collector, header, Collections.emptySet(), txn);
         }
 
         @Override
@@ -698,7 +701,7 @@ public class ScrubTest
 
         cfs.loadNewSSTables();
 
-        cfs.scrub(true, true, true, 1);
+        cfs.scrub(true, true, false, false, false, 1);
 
         UntypedResultSet rs = QueryProcessor.executeInternal(String.format("SELECT * FROM \"%s\".cf_with_duplicates_3_0", KEYSPACE));
         assertEquals(1, rs.size());

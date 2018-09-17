@@ -31,7 +31,6 @@ import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.db.partitions.PartitionIterator;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
-import org.apache.cassandra.db.partitions.UnfilteredPartitionIterator;
 import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.index.transactions.IndexTransaction;
@@ -47,11 +46,14 @@ import org.apache.cassandra.utils.concurrent.OpOrder;
  */
 public class StubIndex implements Index
 {
+    public volatile int beginCalls;
+    public volatile int finishCalls;
     public List<DeletionTime> partitionDeletions = new ArrayList<>();
     public List<RangeTombstone> rangeTombstones = new ArrayList<>();
     public List<Row> rowsInserted = new ArrayList<>();
     public List<Row> rowsDeleted = new ArrayList<>();
     public List<Pair<Row,Row>> rowsUpdated = new ArrayList<>();
+    public volatile boolean preJoinInvocation;
     private IndexMetadata indexMetadata;
     private ColumnFamilyStore baseCfs;
 
@@ -105,6 +107,7 @@ public class StubIndex implements Index
         {
             public void begin()
             {
+                beginCalls++;
             }
 
             public void partitionDelete(DeletionTime deletionTime)
@@ -134,6 +137,7 @@ public class StubIndex implements Index
 
             public void finish()
             {
+                finishCalls++;
             }
         };
     }
@@ -172,6 +176,14 @@ public class StubIndex implements Index
         return null;
     }
 
+    public Callable<?> getPreJoinTask(boolean hadBootstrap)
+    {
+        return () -> {
+            preJoinInvocation = true;
+            return null;
+        };
+    }
+
     public Callable<?> getInvalidateTask()
     {
         return null;
@@ -194,7 +206,7 @@ public class StubIndex implements Index
 
     public Searcher searcherFor(final ReadCommand command)
     {
-        return (orderGroup) -> Util.executeLocally((PartitionRangeReadCommand)command, baseCfs, orderGroup);
+        return (controller) -> Util.executeLocally((PartitionRangeReadCommand)command, baseCfs, controller);
     }
 
     public BiFunction<PartitionIterator, ReadCommand, PartitionIterator> postProcessorFor(ReadCommand readCommand)
