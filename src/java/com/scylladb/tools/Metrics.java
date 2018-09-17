@@ -40,7 +40,7 @@ public class Metrics {
         this.typesCreated += m.typesCreated;
     }
 
-    public Metrics newChild() {
+    public synchronized Metrics newChild() {
         Metrics m = new Metrics();
         if (children == null) {
             children = new ArrayList<>();
@@ -54,8 +54,10 @@ public class Metrics {
             return this;
         }
         Metrics m = new Metrics(this);
-        for (Metrics o : children) {
-            m.add(o);
+        synchronized (this) {
+            for (Metrics o : children) {
+                m.add(o);
+            }
         }
         return m;
     }
