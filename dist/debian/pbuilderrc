@@ -1,9 +1,9 @@
 USENETWORK=yes
 BUILD_HOME=/tmp
-BASETGZ="/var/cache/pbuilder/scylla-tools-$DIST.tgz"
+BASETGZ="/var/cache/pbuilder/$PRODUCT-tools-$DIST.tgz"
 DISTRIBUTION="$DIST"
-BUILDRESULT="/var/cache/pbuilder/scylla-tools-$DIST/result/"
-APTCACHE="/var/cache/pbuilder/scylla-tools-$DIST/aptcache/"
+BUILDRESULT="/var/cache/pbuilder/$PRODUCT-tools-$DIST/result/"
+APTCACHE="/var/cache/pbuilder/$PRODUCT-tools-$DIST/aptcache/"
 ALLOWUNTRUSTED=yes
 
 if [ "$DIST" = "trusty" ] || [ "$DIST" = "xenial" ] || [ "$DIST" = "yakkety" ] || [ "$DIST" = "zesty" ] || [ "$DIST" = "artful" ] || [ "$DIST" = "bionic" ]; then

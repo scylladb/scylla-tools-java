@@ -23,28 +23,13 @@
 
 package com.scylladb.tools;
 
-import java.net.InetAddress;
-import java.util.Collection;
-import java.util.List;
 import java.util.Map;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.DecoratedKey;
-import org.apache.cassandra.dht.IPartitioner;
-import org.apache.cassandra.dht.Range;
-import org.apache.cassandra.dht.Token;
 
 interface Client {
-
-    void finish();
-
     CFMetaData getCFMetaData(String keyspace, String cfName);
 
-    Map<InetAddress, Collection<Range<Token>>> getEndpointRanges();
-
-    IPartitioner getPartitioner();
-
-    void processStatment(Object callback, DecoratedKey key, long timestamp,
-            String what, List<Object> objects);
-
+    void processStatment(DecoratedKey key, long timestamp, String what, Map<String, Object> objects);
 }

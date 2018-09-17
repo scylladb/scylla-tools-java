@@ -1,6 +1,6 @@
 %define     origin_version  3.0.8
 
-Name:           scylla-tools
+Name:           {{product}}-tools
 Version:        {{version}}
 Release:        {{release}}%{?dist}
 Summary:        Scylla Tools
@@ -11,7 +11,7 @@ URL:            http://www.scylladb.com/
 Source0:        %{name}-{{version}}-{{release}}.tar
 BuildArch:      noarch
 BuildRequires:  ant java-1.8.0-openjdk-devel python
-Requires:       scylla-conf scylla-tools-core
+Requires:       {{product}}-conf {{product}}-tools-core
 Conflicts:      cassandra
 
 %description
