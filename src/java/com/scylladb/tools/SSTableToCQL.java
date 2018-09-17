@@ -100,6 +100,8 @@ import com.google.common.collect.MultimapBuilder;
  * 
  */
 public class SSTableToCQL {
+    public static final String TIMESTAMP_VAR_NAME = "timestamp";
+    public static final String TTL_VAR_NAME = "ttl";
 
     /**
      * SSTable row worker.
@@ -547,8 +549,6 @@ public class SSTableToCQL {
             }
             return name;
         }
-        
-        private static final String TTL_VAR_NAME = "ttl";
 
         private void writeUsingTTL(StringBuilder buf, Map<String, Object> params) {
             if (ttl != invalidTTL || setAllColumns) {
@@ -583,8 +583,6 @@ public class SSTableToCQL {
                 buf.append(' ');
             }
         }
-
-        private static final String TIMESTAMP_VAR_NAME = "timestamp";
 
         private void writeUsingTimestamp(StringBuilder buf, Map<String, Object> params) {
             if (timestamp != invalidTimestamp || setAllColumns) {

@@ -42,6 +42,8 @@
 package com.scylladb.tools;
 
 import static com.datastax.driver.core.Cluster.builder;
+import static com.scylladb.tools.SSTableToCQL.TIMESTAMP_VAR_NAME;
+import static com.scylladb.tools.SSTableToCQL.TTL_VAR_NAME;
 import static java.lang.Thread.currentThread;
 import static org.apache.cassandra.io.sstable.format.SSTableReader.openForBatch;
 import static org.apache.cassandra.schema.CQLTypeParser.parse;
@@ -82,6 +84,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
@@ -733,8 +737,32 @@ public class BulkLoader {
             }
         }
 
+        private static final Pattern variable = Pattern.compile("\\:(\\w+)");
+
         private void send(DecoratedKey key, long timestamp, String what, Map<String, Object> objects) {
-            SimpleStatement s = new SimpleStatement(what, objects);
+            SimpleStatement s;
+
+            if (batch) {
+                List<Object> values = new ArrayList<>();
+                Matcher m = variable.matcher(what);
+                StringBuffer sb = new StringBuffer();
+                while (m.find()) {
+                    String var = m.group(1);
+                    Object val = objects.get(var);
+                    String rep = "?";
+                    if (var.equals(TIMESTAMP_VAR_NAME) || var.equals(TTL_VAR_NAME)) {
+                        rep = ((Long)val).toString();
+                    } else {
+                        values.add(val);
+                    }
+                    m.appendReplacement(sb, rep);
+                }
+                m.appendTail(sb);
+                what = sb.toString();
+                s = new SimpleStatement(what, values.toArray(new Object[values.size()]));
+            } else {
+                s = new SimpleStatement(what, objects);
+            }
             s.setDefaultTimestamp(timestamp);
             s.setKeyspace(getKeyspace());
             s.setRoutingKey(key.getKey());
