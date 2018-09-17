@@ -137,4 +137,4 @@ if [ "$TARGET" = "jessie" ]; then
     chmod a+rx build/jessie-pkginst.sh
     sudo -E DIST=$TARGET /usr/sbin/pbuilder execute --configfile ./dist/debian/pbuilderrc build/jessie-pkginst.sh
 fi
-sudo -E DIST=$TARGET pdebuild --buildresult build/debs --configfile ./dist/debian/pbuilderrc
+sudo -E DIST=$TARGET pdebuild --configfile ./dist/debian/pbuilderrc --buildresult build/debs
