@@ -3,6 +3,12 @@ package com.scylladb.tools;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Non thread-safe metrics amalgation of sstable loader stats.
+ *
+ * @author calle
+ *
+ */
 public class Metrics {
     public long statementsSent;
     public long statementsFailed;
@@ -40,6 +46,11 @@ public class Metrics {
         this.typesCreated += m.typesCreated;
     }
 
+    /**
+     * Allow the concept of "children" to enable sub-processes (threads) to have
+     * their own metrics than can be updated in a singlular path, yet be
+     * summarized (potentially inexact) by us
+     */
     public synchronized Metrics newChild() {
         Metrics m = new Metrics();
         if (children == null) {
@@ -49,15 +60,20 @@ public class Metrics {
         return m;
     }
 
-    public Metrics sum() {
+    /**
+     * Generate a new metrics instance with the (inexact) sum of me and all my
+     * children. We only sync the children array really, all values are picked
+     * up as perceived by us, potentially slightly askew.
+     *
+     * @return
+     */
+    public synchronized Metrics sum() {
         if (children == null) {
             return this;
         }
         Metrics m = new Metrics(this);
-        synchronized (this) {
-            for (Metrics o : children) {
-                m.add(o);
-            }
+        for (Metrics o : children) {
+            m.add(o);
         }
         return m;
     }
