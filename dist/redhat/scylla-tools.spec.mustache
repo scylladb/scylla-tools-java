@@ -1,4 +1,4 @@
-%define     origin_version  3.0.8
+%define     origin_version  3.11.3
 
 Name:           {{product}}-tools
 Version:        {{version}}
@@ -10,7 +10,7 @@ License:        Apache
 URL:            http://www.scylladb.com/
 Source0:        %{name}-{{version}}-{{release}}.tar
 BuildArch:      noarch
-BuildRequires:  ant java-1.8.0-openjdk-devel python
+BuildRequires:  ant java-1.8.0-openjdk-devel python ant-junit
 Requires:       {{product}}-conf {{product}}-tools-core
 Conflicts:      cassandra
 
@@ -92,46 +92,7 @@ ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{origin_version}-SNAPSHOT.j
 %{_bindir}/sstablemetadata
 %{_bindir}/sstablerepairedset
 %{_prefix}/lib/python2.7/site-packages/cassandra_pylib-0.0.0-py2.7.egg-info
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/__init__.py
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/__init__.pyc
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/__init__.pyo
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/copyutil.py
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/copyutil.pyc
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/copyutil.pyo
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/cql3handling.py
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/cql3handling.pyc
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/cql3handling.pyo
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/cqlhandling.py
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/cqlhandling.pyc
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/cqlhandling.pyo
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/displaying.py
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/displaying.pyc
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/displaying.pyo
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/formatting.py
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/formatting.pyc
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/formatting.pyo
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/helptopics.py
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/helptopics.pyc
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/helptopics.pyo
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/pylexotron.py
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/pylexotron.pyc
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/pylexotron.pyo
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/saferscanner.py
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/saferscanner.pyc
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/saferscanner.pyo
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/sslhandling.py
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/sslhandling.pyc
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/sslhandling.pyo
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/tracing.py
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/tracing.pyc
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/tracing.pyo
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/util.py
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/util.pyc
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/util.pyo
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/wcwidth.py
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/wcwidth.pyc
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/wcwidth.pyo
-
+%{_prefix}/lib/python2.7/site-packages/cqlshlib/*
 
 %files core
 %{_sysconfdir}/scylla/cassandra/cassandra-env.sh
