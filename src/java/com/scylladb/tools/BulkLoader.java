@@ -234,13 +234,18 @@ public class BulkLoader {
          *            argument name
          * @param description
          *            description of the option
+         * @param optionalArg
+         *            whether the argument is optional
          * @return updated Options object
          */
-        public Options addOption(String opt, String longOpt, String argName, String description) {
+        public Options addOption(String opt, String longOpt, String argName, String description, boolean optionalArg) {
             Option option = new Option(opt, longOpt, true, description);
             option.setArgName(argName);
-
+            option.setOptionalArg(optionalArg);
             return addOption(option);
+        }
+        public Options addOption(String opt, String longOpt, String argName, String description) {
+            return addOption(opt, longOpt, argName, description, false);
         }
     }
     // this should really be contained in logging
@@ -885,7 +890,7 @@ public class BulkLoader {
 
         private static CmdLineOptions getCmdLineOptions() {
             CmdLineOptions options = new CmdLineOptions();
-            options.addOption("v", VERBOSE_OPTION, "verbose output");
+            options.addOption("v", VERBOSE_OPTION, "LEVEL", "verbose output", true);
             options.addOption("sim", SIMULATE, "simulate. Only print CQL generated");
             options.addOption("h", HELP_OPTION, "display this help message");
             options.addOption(null, NOPROGRESS_OPTION, "don't display progress");
