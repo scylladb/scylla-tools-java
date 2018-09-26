@@ -126,9 +126,10 @@ public class SSTableToCQL {
 
             @Override
             public String apply(ColumnDefinition c, Map<String, Object> params) {
-                String name = varName(c);
+                String name = columnNamesMapping.getName(c);
+                String varName = varName(c);
                 params.put(name, Collections.singleton(key));
-                return " = " + name + " - :" + name;
+                return " = " + name + " - :" + varName;
             }
 
             @Override
@@ -182,9 +183,11 @@ public class SSTableToCQL {
             @Override
             public String apply(ColumnDefinition c, Map<String, Object> params) {
                 String name = varName(c);
-                params.put(name + "_k", key);
-                params.put(name + "_v", value);
-                return "[:" + name + "_k] = :" + name + "_v";
+                String keyName = name + "_k";
+                String varName = name + "_v";
+                params.put(keyName, key);
+                params.put(varName, value);
+                return "[:" + keyName + "] = :" + varName;
             }
 
             @Override
@@ -205,9 +208,11 @@ public class SSTableToCQL {
             @Override
             public String apply(ColumnDefinition c, Map<String, Object> params) {
                 String name = varName(c);
-                params.put(name + "_k", key);
-                params.put(name + "_v", value);
-                return "[SCYLLA_TIMEUUID_LIST_INDEX(:" + name + "_k)] = :" + name + "_v";
+                String keyName = name + "_k";
+                String varName = name + "_v";
+                params.put(keyName, key);
+                params.put(varName, value);
+                return "[SCYLLA_TIMEUUID_LIST_INDEX(:" + keyName + ")] = :" + varName;
             }
 
             @Override
@@ -225,9 +230,10 @@ public class SSTableToCQL {
 
             @Override
             public String apply(ColumnDefinition c, Map<String, Object> params) {
-                String name = varName(c);
-                params.put(name, Collections.singleton(key));
-                return " = " + name + " + :" + name;
+                String name = columnNamesMapping.getName(c);
+                String varName = varName(c);
+                params.put(varName, Collections.singleton(key));
+                return " = " + name + " + :" + varName;
             }
 
             @Override
@@ -290,7 +296,7 @@ public class SSTableToCQL {
         int ttl;
         Multimap<ColumnDefinition, ColumnOp> values = MultimapBuilder.treeKeys().arrayListValues(1).build();
         Multimap<ColumnDefinition, Pair<Comp, Object>> where = MultimapBuilder.treeKeys().arrayListValues(2).build();
-        
+                
         enum Comp {
             Equal("="),
             GreaterEqual(">="),
@@ -685,6 +691,8 @@ public class SSTableToCQL {
                     Object key = ctype.nameComparator().compose(cell.path().get(0));
                     Object val = live ? cell.column().cellValueType().compose(cell.value()) : null;
 
+                    finish();
+                    
                     switch (ctype.kind) {
                     case MAP:
                         cop = new SetMapEntry(key, val);
