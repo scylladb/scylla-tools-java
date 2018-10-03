@@ -292,6 +292,7 @@ public class SSTableToCQL {
         Row row;
         boolean rowDelete;
         boolean setAllColumns;
+        boolean allowTTL = true;
         long timestamp;
         int ttl;
         Multimap<ColumnDefinition, ColumnOp> values = MultimapBuilder.treeKeys().arrayListValues(1).build();
@@ -557,7 +558,7 @@ public class SSTableToCQL {
         }
 
         private void writeUsingTTL(StringBuilder buf, Map<String, Object> params) {
-            if (ttl != invalidTTL || setAllColumns) {
+            if (ttl != invalidTTL || (setAllColumns && allowTTL)) {
                 ensureWhitespace(buf);
 
                 int adjustedTTL = ttl;
@@ -674,6 +675,8 @@ public class SSTableToCQL {
         // process an actual cell (data or tombstone)
         private void process(Cell cell, LivenessInfo liveInfo, DeletionTime d) {
             ColumnDefinition c = cell.column();
+
+            this.allowTTL = true;
             
             if (logger.isTraceEnabled()) {
                 logger.trace("Processing {}", c.name);
@@ -705,7 +708,9 @@ public class SSTableToCQL {
                         break;
                     }
                 } else if (live && type.isCounter()) {
+                    finish();
                     cop = new SetCounterEntry(type, cell.value());
+                    this.allowTTL = false;                   
                 } else if (live) {
                     cop = new SetColumn(type.compose(cell.value()));
                 } else {
