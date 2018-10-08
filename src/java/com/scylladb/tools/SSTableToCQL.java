@@ -28,10 +28,10 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.apache.cassandra.db.ClusteringBound.inclusiveEndOf;
 import static org.apache.cassandra.db.ClusteringBound.inclusiveStartOf;
-import static org.apache.cassandra.utils.UUIDGen.getUUID;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
@@ -50,6 +50,9 @@ import org.apache.cassandra.db.context.CounterContext;
 import org.apache.cassandra.db.marshal.AbstractCompositeType;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.CollectionType;
+import org.apache.cassandra.db.marshal.Int32Type;
+import org.apache.cassandra.db.marshal.LongType;
+import org.apache.cassandra.db.marshal.TupleType;
 import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.db.rows.ColumnData;
 import org.apache.cassandra.db.rows.ComplexColumnData;
@@ -236,7 +239,7 @@ public class SSTableToCQL {
             }
         }
 
-        private static class SetCounterEntry implements ColumnOp {
+        private class SetCounterEntry implements ColumnOp {
             @SuppressWarnings("unused")
             private final AbstractType<?> type;
             private final ByteBuffer value;
@@ -254,11 +257,9 @@ public class SSTableToCQL {
             @Override
             public String apply(ColumnDefinition c, Map<String, Object> params) {
                 CounterContext.ContextState state = CounterContext.ContextState.wrap(value);
-                StringBuilder buf = new StringBuilder();
+                String varName = varName(c);
+                List<ByteBuffer> list = new ArrayList<>();
                 while (state.hasRemaining()) {
-                    if (buf.length() != 0) {
-                        buf.append(", ");
-                    }
                     int type = 'r';
                     if (state.isGlobal()) {
                         type = 'g';
@@ -266,11 +267,20 @@ public class SSTableToCQL {
                     if (state.isLocal()) {
                         type = 'l';
                     }
-                    buf.append('(').append(type).append(',').append(getUUID(state.getCounterId().bytes())).append(',')
-                            .append(state.getClock()).append(',').append(state.getCount()).append(')');
+
+                    list.add(TupleType.buildValue(new ByteBuffer[] { Int32Type.instance.getSerializer().serialize(type),
+                            state.getCounterId().bytes(),
+                            LongType.instance.getSerializer().serialize(state.getClock()),
+                            LongType.instance.getSerializer().serialize(state.getCount())
+
+                    }));
+
                     state.moveToNext();
                 }
-                return " = SCYLLA_COUNTER_SHARD_LIST([" + buf.toString() + "])";
+
+
+                params.put(varName, list);
+                return " = SCYLLA_COUNTER_SHARD_LIST(:" + varName + ")";
             }
         }
 

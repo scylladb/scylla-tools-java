@@ -447,7 +447,7 @@ public class BulkLoader {
             udts.forEach(this::bindUserTypeCodec);
         }
         
-        private void bindUserTypeCodec(UserType t) {
+        private void bindUserTypeCodec(DataType t) {
             // Cassandra drivers assume incoming bound data for UDT is 
             // an actual object looking like the type. In our case, we will 
             // not have neither time to unmarchal/marshal, or even the classes
@@ -832,8 +832,8 @@ public class BulkLoader {
                                 // We do this to avoid missing something by trying to recurse 
                                 // types in the column data...
                                 DataType t = e.getCqlType();
-                                if (t instanceof UserType) {
-                                    bindUserTypeCodec((UserType)t);
+                                if (t instanceof UserType || t instanceof TupleType) {
+                                    bindUserTypeCodec(t);
                                     continue;
                                 } else if (t instanceof DataType.CustomType) {
                                     /**
