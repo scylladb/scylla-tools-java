@@ -282,8 +282,8 @@ public class BulkLoader {
         private final Map<String, ListenableFuture<PreparedStatement>> preparedStatements;
         private final ConsistencyLevel consistencyLevel;
         private final Set<String> ignoreColumns;
-        private final CodecRegistry codecRegistry = new CodecRegistry();
-        private final TypeCodec<ByteBuffer> blob = codecRegistry.codecFor(ByteBuffer.allocate(1));
+        private final CodecRegistry codecRegistry;
+        private final TypeCodec<ByteBuffer> blob;
         private boolean isRoot = false;
 
         private final Metrics metrics;
@@ -313,6 +313,9 @@ public class BulkLoader {
             this.simulate = options.simulate;
             this.verbose = options.verbose;
             this.metrics = new Metrics();
+            this.codecRegistry = new CodecRegistry();
+            this.blob = codecRegistry.codecFor(ByteBuffer.allocate(1));
+            
             Cluster.Builder builder = builder().addContactPoints(options.hosts).withProtocolVersion(PROTOCOL_VERSION)
                     .withCompression(Compression.LZ4).withPoolingOptions(poolingOptions)
                     .withLoadBalancingPolicy(new TokenAwarePolicy(DCAwareRoundRobinPolicy.builder().build()))
@@ -377,6 +380,8 @@ public class BulkLoader {
             this.simulate = other.simulate;
             this.verbose = other.verbose;
             this.cluster = other.cluster;
+            this.codecRegistry = other.codecRegistry;
+            this.blob = other.blob;
             this.session = other.session;
             this.metadata = other.metadata;
             this.keyspaceMetadata = other.keyspaceMetadata;
