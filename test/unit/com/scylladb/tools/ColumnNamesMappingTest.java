@@ -13,7 +13,10 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.marshal.Int32Type;
 import org.apache.cassandra.dht.Murmur3Partitioner;
+import org.apache.cassandra.io.sstable.Component;
+import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
+import org.apache.cassandra.utils.Pair;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -64,8 +67,8 @@ public class ColumnNamesMappingTest {
 
         MockClient client = new MockClient();
         ColumnNamesMapping columnNamesMapping = new ColumnNamesMapping(mapping);
-        for (File f : findFiles(dir)) {
-            SSTableReader r = openFile(keyspace, dir, f.getName(), columnNamesMapping, client);
+        for (Pair<Descriptor, Set<Component>> p : findFiles(keyspace, dir)) {
+            SSTableReader r = openFile(p, columnNamesMapping.getMetadata(client.getCFMetaData(keyspace, p.left.cfname)));
             if (r == null) {
                 continue;
             }

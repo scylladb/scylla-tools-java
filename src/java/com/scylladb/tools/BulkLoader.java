@@ -1259,7 +1259,7 @@ public class BulkLoader {
             DatabaseDescriptor.setPartitionerUnsafe(client.getPartitioner());
 
             final Map<InetAddress, Collection<Range<Token>>> ranges = getRanges(client);
-            final List<File> files = findFiles(dir);
+            final List<Pair<Descriptor, Set<Component>>> files = findFiles(keyspace, dir);
             final ConcurrentLinkedQueue<SSTableToCQL> tasks = new ConcurrentLinkedQueue<>();
             final CountDownLatch latch = new CountDownLatch(options.threadCount);
             final ColumnNamesMapping columnNamesMapping = new ColumnNamesMapping(options.columnNamesMappings);
@@ -1305,12 +1305,15 @@ public class BulkLoader {
         return ranges;
     }
 
-    public static List<File> findFiles(File dir) {
-        final List<File> files = new LinkedList<>();
+    public static List<Pair<Descriptor, Set<Component>>> findFiles(final String keyspace, File dir) {
+        final List<Pair<Descriptor, Set<Component>>> files = new LinkedList<>();
 
         // Find all file candidates.
         if (!dir.isDirectory()) {
-            files.add(dir);
+            Pair<Descriptor, Set<Component>> p = openFile(keyspace, dir.getParentFile(), dir.getName());
+            if (p != null) {
+                files.add(p);
+            }
         } else {
             dir.list(new FilenameFilter() {
                 @Override
@@ -1319,7 +1322,10 @@ public class BulkLoader {
                     if (f.isDirectory()) {
                         return false;
                     }
-                    files.add(f);
+                    Pair<Descriptor, Set<Component>> p = openFile(keyspace, dir, name);
+                    if (p != null) {
+                        files.add(p);
+                    }
                     return false;
                 }
             });
@@ -1327,8 +1333,7 @@ public class BulkLoader {
         return files;
     }
 
-    public static SSTableReader openFile(String keyspace, File dir, String name, ColumnNamesMapping columnNamesMapping,
-            Client client) {
+    public static Pair<Descriptor, Set<Component>> openFile(String keyspace, File dir, String name) {
         Pair<Descriptor, Component> p = SSTable.tryComponentFromFilename(dir, name);
         Descriptor desc = p == null ? null : p.left;
         if (p == null || !p.right.equals(Component.DATA)) {
@@ -1337,12 +1342,6 @@ public class BulkLoader {
 
         if (!new File(desc.filenameFor(Component.PRIMARY_INDEX)).exists()) {
             logger.info("Skipping file {} because index is missing", name);
-            return null;
-        }
-
-        CFMetaData metadata = client.getCFMetaData(keyspace, desc.cfname);
-        if (metadata == null) {
-            logger.info("Skipping file {}: column family {}.{} doesn't exist", name, keyspace, desc.cfname);
             return null;
         }
 
@@ -1358,7 +1357,10 @@ public class BulkLoader {
         if (new File(desc.filenameFor(Component.STATS)).exists()) {
             components.add(Component.STATS);
         }
-
+        return Pair.create(desc, components);
+    }
+    
+    public static SSTableReader openFile(Pair<Descriptor, Set<Component>> p, CFMetaData cfm) {
         try {
             // To conserve memory, open SSTableReaders without bloom
             // filters and discard
@@ -1366,16 +1368,16 @@ public class BulkLoader {
             // stream and the estimated
             // number of keys for each endpoint. See CASSANDRA-5555 for
             // details.
-            return openForBatch(desc, components, columnNamesMapping.getMetadata(metadata));
+            return openForBatch(p.left, p.right, cfm);
         } catch (IOException e) {
-            logger.warn("Skipping file {}, error opening it: {}", name, e.getMessage());
+            logger.warn("Skipping file {}, error opening it: {}", p.left.baseFilename(), e.getMessage());
         }
-        return null;
+        return null;        
     }
 
     // Main processing loop for worker thread, broken out into function
     private static void process(LoaderOptions options, String keyspace, ConcurrentLinkedQueue<SSTableToCQL> tasks,
-            List<File> files, Map<InetAddress, Collection<Range<Token>>> ranges, CQLClient client,
+            List<Pair<Descriptor, Set<Component>>> files, Map<InetAddress, Collection<Range<Token>>> ranges, CQLClient client,
             ColumnNamesMapping columnNamesMapping) {
         // always use a copy of the client to keep from
         // colliding with other threads.
@@ -1404,14 +1406,14 @@ public class BulkLoader {
                             triedFiles = true;
                             continue; // see if any tasks.
                         }
-                        File f = files.remove(0);
-                        SSTableReader r = openFile(keyspace, f.getParentFile(), f.getName(), columnNamesMapping,
-                                client);
+                        Pair<Descriptor, Set<Component>> p = files.remove(0);
+                        CFMetaData cfm = columnNamesMapping.getMetadata(client.getCFMetaData(keyspace, p.left.cfname));
+                        SSTableReader r = openFile(p, cfm);
                         if (r != null) {
                             // We could open it. Turn into tasks and submit to
                             // workers.
                             if (client.verbose.greaterOrEqual(Verbosity.Verbose)) {
-                                client.out.println("Adding sstable " + f.getName());
+                                client.out.println("Adding sstable " + p.left.baseFilename());
                             }
                             for (Map.Entry<InetAddress, Collection<Range<Token>>> e : ranges.entrySet()) {
                                 SStableScannerSource src = new DefaultSSTableScannerSource(r, e.getValue());
