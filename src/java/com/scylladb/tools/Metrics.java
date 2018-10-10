@@ -18,7 +18,10 @@ public class Metrics {
     public long preparationsDone;
     public long preparationsFailed;
     public long typesCreated;
-
+    public long bytesProcessed;
+    /** to deal with "extra size" found during processing */ 
+    public long additionalBytes;
+    
     private List<Metrics> children;
 
     public Metrics() {
@@ -33,6 +36,8 @@ public class Metrics {
         this.preparationsDone = m.preparationsDone;
         this.preparationsFailed = m.preparationsFailed;
         this.typesCreated = m.typesCreated;
+        this.bytesProcessed = m.bytesProcessed;
+        this.additionalBytes = m.additionalBytes;
     }
 
     public void add(Metrics m) {
@@ -44,6 +49,8 @@ public class Metrics {
         this.preparationsDone += m.preparationsDone;
         this.preparationsFailed += m.preparationsFailed;
         this.typesCreated += m.typesCreated;
+        this.bytesProcessed += m.bytesProcessed;
+        this.additionalBytes += m.additionalBytes;
     }
 
     /**

@@ -109,12 +109,14 @@ import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.BytesType;
 import org.apache.cassandra.db.marshal.UTF8Type;
+import org.apache.cassandra.db.rows.UnfilteredRowIterator;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
+import org.apache.cassandra.io.sstable.ISSTableScanner;
 import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.schema.KeyspaceParams;
@@ -1232,8 +1234,7 @@ public class BulkLoader {
     private static final String USE_UNSET = "use-unset";
 
     public static void main(String args[]) {
-        DatabaseDescriptor.toolInitialization();
-        //Config.setClientMode(true);
+        DatabaseDescriptor.clientInitialization();
         final LoaderOptions options = LoaderOptions.parseArgs(args);
         final ExecutorService executor = Executors.newFixedThreadPool(options.threadCount);
 
@@ -1260,11 +1261,15 @@ public class BulkLoader {
             DatabaseDescriptor.setPartitionerUnsafe(client.getPartitioner());
 
             final Map<InetAddress, Collection<Range<Token>>> ranges = getRanges(client);
-            final List<File> files = findFiles(dir);
+            final List<Pair<Descriptor, Set<Component>>> files = findFiles(keyspace, dir);
             final ConcurrentLinkedQueue<SSTableToCQL> tasks = new ConcurrentLinkedQueue<>();
             final CountDownLatch latch = new CountDownLatch(options.threadCount);
             final ColumnNamesMapping columnNamesMapping = new ColumnNamesMapping(options.columnNamesMappings);
 
+            long totalBytes = ranges.size() * files.stream().mapToLong((p) -> {
+                return new File(p.left.filenameFor(Component.DATA)).length();
+            }).sum();
+            
             for (int i = 0; i < options.threadCount; ++i) {
                 executor.submit(() -> {
                     try {
@@ -1278,7 +1283,7 @@ public class BulkLoader {
             boolean done = false;
             do {
                 done = latch.await(1, TimeUnit.SECONDS);
-                printSummary(client);
+                printSummary(client, totalBytes);
             } while (!done);
 
             System.out.println();
@@ -1290,10 +1295,11 @@ public class BulkLoader {
         }
     }
 
-    private static void printSummary(CQLClient client) {
+    private static void printSummary(CQLClient client, long totalBytes) {
         if (client.verbose.greaterOrEqual(Verbosity.Normal)) {
-            Metrics sum = client.metrics.sum();     
-            System.out.format("%1$8d statements sent (in %2$8d batches, %3$8d failed).\r", sum.statementsSent,
+            Metrics sum = client.metrics.sum();
+            int percent = (int) (100 * ((double)sum.bytesProcessed / (totalBytes + sum.additionalBytes)));
+            System.out.format("%1$3d%% done. %2$8d statements sent (in %3$8d batches, %4$8d failed).\r", percent, sum.statementsSent,
                     sum.batchesProcessed, sum.statementsFailed);
         }
     }
@@ -1306,12 +1312,15 @@ public class BulkLoader {
         return ranges;
     }
 
-    public static List<File> findFiles(File dir) {
-        final List<File> files = new LinkedList<>();
+    public static List<Pair<Descriptor, Set<Component>>> findFiles(final String keyspace, File dir) {
+        final List<Pair<Descriptor, Set<Component>>> files = new LinkedList<>();
 
         // Find all file candidates.
         if (!dir.isDirectory()) {
-            files.add(dir);
+            Pair<Descriptor, Set<Component>> p = openFile(keyspace, dir.getParentFile(), dir.getName());
+            if (p != null) {
+                files.add(p);
+            }
         } else {
             dir.list(new FilenameFilter() {
                 @Override
@@ -1320,7 +1329,10 @@ public class BulkLoader {
                     if (f.isDirectory()) {
                         return false;
                     }
-                    files.add(f);
+                    Pair<Descriptor, Set<Component>> p = openFile(keyspace, dir, name);
+                    if (p != null) {
+                        files.add(p);
+                    }
                     return false;
                 }
             });
@@ -1328,8 +1340,7 @@ public class BulkLoader {
         return files;
     }
 
-    public static SSTableReader openFile(String keyspace, File dir, String name, ColumnNamesMapping columnNamesMapping,
-            Client client) {
+    public static Pair<Descriptor, Set<Component>> openFile(String keyspace, File dir, String name) {
         Pair<Descriptor, Component> p = SSTable.tryComponentFromFilename(dir, name);
         Descriptor desc = p == null ? null : p.left;
         if (p == null || !p.right.equals(Component.DATA)) {
@@ -1338,12 +1349,6 @@ public class BulkLoader {
 
         if (!new File(desc.filenameFor(Component.PRIMARY_INDEX)).exists()) {
             logger.info("Skipping file {} because index is missing", name);
-            return null;
-        }
-
-        CFMetaData metadata = client.getCFMetaData(keyspace, desc.cfname);
-        if (metadata == null) {
-            logger.info("Skipping file {}: column family {}.{} doesn't exist", name, keyspace, desc.cfname);
             return null;
         }
 
@@ -1359,7 +1364,10 @@ public class BulkLoader {
         if (new File(desc.filenameFor(Component.STATS)).exists()) {
             components.add(Component.STATS);
         }
-
+        return Pair.create(desc, components);
+    }
+    
+    public static SSTableReader openFile(Pair<Descriptor, Set<Component>> p, CFMetaData cfm) {
         try {
             // To conserve memory, open SSTableReaders without bloom
             // filters and discard
@@ -1367,20 +1375,20 @@ public class BulkLoader {
             // stream and the estimated
             // number of keys for each endpoint. See CASSANDRA-5555 for
             // details.
-            return openForBatch(desc, components, columnNamesMapping.getMetadata(metadata));
+            return openForBatch(p.left, p.right, cfm);
         } catch (IOException e) {
-            logger.warn("Skipping file {}, error opening it: {}", name, e.getMessage());
+            logger.warn("Skipping file {}, error opening it: {}", p.left.baseFilename(), e.getMessage());
         }
-        return null;
+        return null;        
     }
 
     // Main processing loop for worker thread, broken out into function
     private static void process(LoaderOptions options, String keyspace, ConcurrentLinkedQueue<SSTableToCQL> tasks,
-            List<File> files, Map<InetAddress, Collection<Range<Token>>> ranges, CQLClient client,
+            List<Pair<Descriptor, Set<Component>>> files, Map<InetAddress, Collection<Range<Token>>> ranges, CQLClient client,
             ColumnNamesMapping columnNamesMapping) {
         // always use a copy of the client to keep from
         // colliding with other threads.
-        CQLClient c = client.copy();
+        final CQLClient c = client.copy();
         try {
             boolean triedFiles = false;
             while (!Thread.interrupted()) {
@@ -1405,18 +1413,65 @@ public class BulkLoader {
                             triedFiles = true;
                             continue; // see if any tasks.
                         }
-                        File f = files.remove(0);
-                        SSTableReader r = openFile(keyspace, f.getParentFile(), f.getName(), columnNamesMapping,
-                                client);
+                        Pair<Descriptor, Set<Component>> p = files.remove(0);
+                        CFMetaData cfm = columnNamesMapping.getMetadata(client.getCFMetaData(keyspace, p.left.cfname));
+                        SSTableReader r = openFile(p, cfm);
                         if (r != null) {
                             // We could open it. Turn into tasks and submit to
                             // workers.
                             if (client.verbose.greaterOrEqual(Verbosity.Verbose)) {
-                                client.out.println("Adding sstable " + f.getName());
+                                client.out.println("Adding sstable " + p.left.baseFilename());
                             }
                             for (Map.Entry<InetAddress, Collection<Range<Token>>> e : ranges.entrySet()) {
-                                tasks.add(new SSTableToCQL(e.getKey(), r, e.getValue(), columnNamesMapping, f,
-                                        options.unset && options.prepare));
+                                SStableScannerSource src = new DefaultSSTableScannerSource(r, e.getValue()) {
+                                    @Override
+                                    public ISSTableScanner scanner() {
+                                        ISSTableScanner scanner = super.scanner();
+                                        
+                                        /*
+                                         * If the data is compressed, we don't know 
+                                         * the actual data size we'll process until
+                                         * getting here. 
+                                         * 
+                                         * Add the difference between perceived 
+                                         * file size and actual data length
+                                         * to the "additional" metrics field. 
+                                         * and let parent thread add this to 
+                                         * the total bytes. 
+                                         * 
+                                         * Note that this can have the unfortunate
+                                         * result of making the percentage counter
+                                         * go backwards sometimes (esp. early on),
+                                         * but it is not 100% accurate anyway (due
+                                         * to pk ranges etc). 
+                                         */
+                                        long l1 = scanner.getLengthInBytes();
+                                        long l2 = scanner.getCompressedLengthInBytes();
+                                        c.metrics.additionalBytes += l1 - l2;
+                                        return new SSTableScannerWrapper(scanner) {
+                                            private long last = getBytesScanned();
+                                            
+                                            private void updatePos() {
+                                                long pos = getBytesScanned();
+                                                long diff = pos - last;
+                                                last = pos;
+                                                c.metrics.bytesProcessed += diff;
+                                            }
+
+                                            @Override
+                                            public void close() {
+                                                updatePos();
+                                                super.close();
+                                            }
+                                            @Override
+                                            public UnfilteredRowIterator next() {
+                                                updatePos();
+                                                return super.next();
+                                            }                                            
+                                        };                                        
+                                    }
+                                };
+                                tasks.add(new SSTableToCQL(src, columnNamesMapping, options.unset && options.prepare));
                             }
                             break;
                         }
