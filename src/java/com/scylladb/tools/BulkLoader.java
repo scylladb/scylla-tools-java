@@ -109,12 +109,14 @@ import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.BytesType;
 import org.apache.cassandra.db.marshal.UTF8Type;
+import org.apache.cassandra.db.rows.UnfilteredRowIterator;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
+import org.apache.cassandra.io.sstable.ISSTableScanner;
 import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.schema.KeyspaceParams;
@@ -1264,6 +1266,10 @@ public class BulkLoader {
             final CountDownLatch latch = new CountDownLatch(options.threadCount);
             final ColumnNamesMapping columnNamesMapping = new ColumnNamesMapping(options.columnNamesMappings);
 
+            long totalBytes = ranges.size() * files.stream().mapToLong((p) -> {
+                return new File(p.left.filenameFor(Component.DATA)).length();
+            }).sum();
+            
             for (int i = 0; i < options.threadCount; ++i) {
                 executor.submit(() -> {
                     try {
@@ -1277,7 +1283,7 @@ public class BulkLoader {
             boolean done = false;
             do {
                 done = latch.await(1, TimeUnit.SECONDS);
-                printSummary(client);
+                printSummary(client, totalBytes);
             } while (!done);
 
             System.out.println();
@@ -1289,10 +1295,11 @@ public class BulkLoader {
         }
     }
 
-    private static void printSummary(CQLClient client) {
+    private static void printSummary(CQLClient client, long totalBytes) {
         if (client.verbose.greaterOrEqual(Verbosity.Normal)) {
-            Metrics sum = client.metrics.sum();     
-            System.out.format("%1$8d statements sent (in %2$8d batches, %3$8d failed).\r", sum.statementsSent,
+            Metrics sum = client.metrics.sum();
+            int percent = (int) (100 * ((double)sum.bytesProcessed / (totalBytes + sum.additionalBytes)));
+            System.out.format("%1$3d%% done. %2$8d statements sent (in %3$8d batches, %4$8d failed).\r", percent, sum.statementsSent,
                     sum.batchesProcessed, sum.statementsFailed);
         }
     }
@@ -1381,7 +1388,7 @@ public class BulkLoader {
             ColumnNamesMapping columnNamesMapping) {
         // always use a copy of the client to keep from
         // colliding with other threads.
-        CQLClient c = client.copy();
+        final CQLClient c = client.copy();
         try {
             boolean triedFiles = false;
             while (!Thread.interrupted()) {
@@ -1416,7 +1423,54 @@ public class BulkLoader {
                                 client.out.println("Adding sstable " + p.left.baseFilename());
                             }
                             for (Map.Entry<InetAddress, Collection<Range<Token>>> e : ranges.entrySet()) {
-                                SStableScannerSource src = new DefaultSSTableScannerSource(r, e.getValue());
+                                SStableScannerSource src = new DefaultSSTableScannerSource(r, e.getValue()) {
+                                    @Override
+                                    public ISSTableScanner scanner() {
+                                        ISSTableScanner scanner = super.scanner();
+                                        
+                                        /*
+                                         * If the data is compressed, we don't know 
+                                         * the actual data size we'll process until
+                                         * getting here. 
+                                         * 
+                                         * Add the difference between perceived 
+                                         * file size and actual data length
+                                         * to the "additional" metrics field. 
+                                         * and let parent thread add this to 
+                                         * the total bytes. 
+                                         * 
+                                         * Note that this can have the unfortunate
+                                         * result of making the percentage counter
+                                         * go backwards sometimes (esp. early on),
+                                         * but it is not 100% accurate anyway (due
+                                         * to pk ranges etc). 
+                                         */
+                                        long l1 = scanner.getLengthInBytes();
+                                        long l2 = scanner.getCompressedLengthInBytes();
+                                        c.metrics.additionalBytes += l1 - l2;
+                                        return new SSTableScannerWrapper(scanner) {
+                                            private long last = getBytesScanned();
+                                            
+                                            private void updatePos() {
+                                                long pos = getBytesScanned();
+                                                long diff = pos - last;
+                                                last = pos;
+                                                c.metrics.bytesProcessed += diff;
+                                            }
+
+                                            @Override
+                                            public void close() {
+                                                updatePos();
+                                                super.close();
+                                            }
+                                            @Override
+                                            public UnfilteredRowIterator next() {
+                                                updatePos();
+                                                return super.next();
+                                            }                                            
+                                        };                                        
+                                    }
+                                };
                                 tasks.add(new SSTableToCQL(src, columnNamesMapping, options.unset && options.prepare));
                             }
                             break;
