@@ -1232,8 +1232,7 @@ public class BulkLoader {
     private static final String USE_UNSET = "use-unset";
 
     public static void main(String args[]) {
-        DatabaseDescriptor.toolInitialization();
-        //Config.setClientMode(true);
+        DatabaseDescriptor.clientInitialization();
         final LoaderOptions options = LoaderOptions.parseArgs(args);
         final ExecutorService executor = Executors.newFixedThreadPool(options.threadCount);
 
