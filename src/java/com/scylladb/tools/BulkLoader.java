@@ -618,8 +618,8 @@ public class BulkLoader {
         // This method has to be synchronized because it can be called from different threads.
         // Usually it's called just from a single thread - the one that owns the client but for
         // prepared statements it's called from callbacks that have their own thread pool which runs them.
-        private synchronized void send(DecoratedKey key, Statement s) {
-            if (batch && batchStatement != null && batchSize < maxBatchSize
+        private synchronized void send(DecoratedKey key, Statement s, boolean allowBatch) {
+            if (allowBatch && batch && batchStatement != null && batchSize < maxBatchSize
                     && this.key.equals(key)) {
                 batchStatement.add(s);
                 batchSize += s.requestSizeInBytes(PROTOCOL_VERSION, codecRegistry);
@@ -631,7 +631,7 @@ public class BulkLoader {
                 batchSize = 0;
                 ++metrics.batchesProcessed;
             }
-            if (batch) {
+            if (batch && allowBatch) {
                 batchStatement = new BatchStatement(BatchStatement.Type.UNLOGGED);
                 batchStatement.add(s);
                 batchSize = batchStatement.requestSizeInBytes(PROTOCOL_VERSION, codecRegistry);
@@ -742,19 +742,21 @@ public class BulkLoader {
                 out.println();
             }
 
+            boolean allowBatch = what.indexOf("SCYLLA_COUNTER_SHARD_LIST") == -1;
+
             if (preparedStatements != null) {
-                sendPrepared(key, timestamp, what, objects);
+                sendPrepared(key, timestamp, what, objects, allowBatch);
             } else {
-                send(key, timestamp, what, objects);
+                send(key, timestamp, what, objects, allowBatch);
             }
         }
 
         private static final Pattern variable = Pattern.compile("\\:(\\w+)");
 
-        private void send(DecoratedKey key, long timestamp, String what, Map<String, Object> objects) {
+        private void send(DecoratedKey key, long timestamp, String what, Map<String, Object> objects, boolean allowBatch) {
             SimpleStatement s;
 
-            if (batch) {
+            if (batch && allowBatch) {
                 List<Object> values = new ArrayList<>();
                 Matcher m = variable.matcher(what);
                 StringBuffer sb = new StringBuffer();
@@ -779,11 +781,11 @@ public class BulkLoader {
             s.setKeyspace(getKeyspace());
             s.setRoutingKey(key.getKey());
 
-            send(key, s);
+            send(key, s, allowBatch);
         }
 
         private void sendPrepared(final DecoratedKey key, final long timestamp, String what,
-                final Map<String, Object> objects) {
+                final Map<String, Object> objects, final boolean allowBatch) {
             ListenableFuture<PreparedStatement> f = preparedStatements.computeIfAbsent(what, k -> {
                 if (verbose.greaterOrEqual(Verbosity.Chatty)) {
                     out.println("Preparing: " + k + " on thread " + Thread.currentThread().getId());
@@ -871,7 +873,7 @@ public class BulkLoader {
                                                 
                         s.setRoutingKey(key.getKey());
                         s.setDefaultTimestamp(timestamp);
-                        send(key, s);
+                        send(key, s, allowBatch);
                         preparations.release();
                         ++metrics.preparationsDone;
                     }
