@@ -4,8 +4,6 @@ import static com.scylladb.tools.BulkLoader.findFiles;
 import static com.scylladb.tools.BulkLoader.openFile;
 
 import java.io.File;
-import java.net.InetAddress;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -14,10 +12,7 @@ import java.util.Set;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.marshal.Int32Type;
-import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Murmur3Partitioner;
-import org.apache.cassandra.dht.Range;
-import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.junit.Assert;
 import org.junit.Test;
@@ -74,7 +69,8 @@ public class ColumnNamesMappingTest {
             if (r == null) {
                 continue;
             }
-            SSTableToCQL ssTableToCQL = new SSTableToCQL(null, r, null, columnNamesMapping, f, false);
+            SStableScannerSource src = new DefaultSSTableScannerSource(r, null);
+            SSTableToCQL ssTableToCQL = new SSTableToCQL(src, columnNamesMapping, false);
             ssTableToCQL.run(client);
         }
         client.assertStatements();

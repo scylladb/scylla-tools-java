@@ -30,8 +30,6 @@ import static org.apache.cassandra.db.ClusteringBound.inclusiveEndOf;
 import static org.apache.cassandra.db.ClusteringBound.inclusiveStartOf;
 import static org.apache.cassandra.utils.UUIDGen.getUUID;
 
-import java.io.File;
-import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.Collection;
@@ -61,12 +59,8 @@ import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.db.rows.Row.Deletion;
 import org.apache.cassandra.db.rows.Unfiltered;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
-import org.apache.cassandra.dht.Range;
-import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
-import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.utils.Pair;
-import org.apache.cassandra.utils.concurrent.Ref;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -867,20 +861,13 @@ public class SSTableToCQL {
 
     private static final Logger logger = LoggerFactory.getLogger(SSTableToCQL.class);
 
-    private final InetAddress address;
-    private final Ref<SSTableReader> readerRef;
-    private final Collection<Range<Token>> range;
+    private final SStableScannerSource source;
     private final ColumnNamesMapping columnNamesMapping;
-    private final File file;
     private final boolean setAllColumns;
 
-    public SSTableToCQL(InetAddress address, SSTableReader reader, Collection<Range<Token>> range,
-            ColumnNamesMapping columnNamesMapping, File file, boolean setAllColumns) {
-        this.address = address;
-        this.readerRef = reader.ref();
-        this.range = range;
+    public SSTableToCQL(SStableScannerSource source, ColumnNamesMapping columnNamesMapping, boolean setAllColumns) {
+        this.source = source;
         this.columnNamesMapping = columnNamesMapping;
-        this.file = file;
         this.setAllColumns = setAllColumns;
     }
 
@@ -890,18 +877,16 @@ public class SSTableToCQL {
      * @param client
      */
     public void run(Client client) {
-        SSTableReader reader = readerRef.get();
-        ISSTableScanner scanner = range != null ? reader.getScanner(range, null) : reader.getScanner();
+        ISSTableScanner scanner = source.scanner();
         try {
             RowBuilder builder = new RowBuilder(client, setAllColumns, columnNamesMapping);
-            logger.info("Processing {} on address {}", file.getName(), address);
+            logger.info("Processing {}", scanner.getBackingFiles());
             while (scanner.hasNext()) {
                 UnfilteredRowIterator ri = scanner.next();
                 builder.process(ri);
             }
         } finally {
             scanner.close();
-            readerRef.release();
         }
     }
 }

@@ -1414,8 +1414,8 @@ public class BulkLoader {
                                 client.out.println("Adding sstable " + f.getName());
                             }
                             for (Map.Entry<InetAddress, Collection<Range<Token>>> e : ranges.entrySet()) {
-                                tasks.add(new SSTableToCQL(e.getKey(), r, e.getValue(), columnNamesMapping, f,
-                                        options.unset && options.prepare));
+                                SStableScannerSource src = new DefaultSSTableScannerSource(r, e.getValue());
+                                tasks.add(new SSTableToCQL(src, columnNamesMapping, options.unset && options.prepare));
                             }
                             break;
                         }
