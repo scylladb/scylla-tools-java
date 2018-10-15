@@ -260,25 +260,19 @@ public class SSTableToCQL {
                 String varName = varName(c);
                 List<ByteBuffer> list = new ArrayList<>();
                 while (state.hasRemaining()) {
-                    int type = 'r';
                     if (state.isGlobal()) {
-                        type = 'g';
+                        int type = 'g';
+                        list.add(TupleType.buildValue(new ByteBuffer[] { Int32Type.instance.getSerializer().serialize(type),
+                                state.getCounterId().bytes(),                            
+                                LongType.instance.getSerializer().serialize(state.getClock()),
+                                LongType.instance.getSerializer().serialize(state.getCount())
+    
+                        }));
                     }
-                    if (state.isLocal()) {
-                        type = 'l';
-                    }
-
-                    list.add(TupleType.buildValue(new ByteBuffer[] { Int32Type.instance.getSerializer().serialize(type),
-                            state.getCounterId().bytes(),
-                            LongType.instance.getSerializer().serialize(state.getClock()),
-                            LongType.instance.getSerializer().serialize(state.getCount())
-
-                    }));
 
                     state.moveToNext();
                 }
-
-
+                
                 params.put(varName, list);
                 return " = SCYLLA_COUNTER_SHARD_LIST(:" + varName + ")";
             }
