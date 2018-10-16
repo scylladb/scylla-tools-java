@@ -73,8 +73,10 @@ public class ColumnNamesMappingTest {
                 continue;
             }
             SStableScannerSource src = new DefaultSSTableScannerSource(r, null);
-            SSTableToCQL ssTableToCQL = new SSTableToCQL(src, columnNamesMapping, false);
-            ssTableToCQL.run(client);
+            SSTableToCQL.Options options = new SSTableToCQL.Options();
+            options.columnNamesMapping = columnNamesMapping;
+            SSTableToCQL ssTableToCQL = new SSTableToCQL(src);
+            ssTableToCQL.run(client, options);
         }
         client.assertStatements();
     }

@@ -100,6 +100,11 @@ public class SSTableToCQL {
     public static final String TIMESTAMP_VAR_NAME = "timestamp";
     public static final String TTL_VAR_NAME = "ttl";
 
+    public static class Options {
+        public boolean setAllColumns;
+        public ColumnNamesMapping columnNamesMapping;
+    }
+    
     /**
      * SSTable row worker.
      *
@@ -123,7 +128,7 @@ public class SSTableToCQL {
 
             @Override
             public String apply(ColumnDefinition c, Map<String, Object> params) {
-                String name = columnNamesMapping.getName(c);
+                String name = columnName(c);
                 String varName = varName(c);
                 params.put(name, Collections.singleton(key));
                 return " = " + name + " - :" + varName;
@@ -227,7 +232,7 @@ public class SSTableToCQL {
 
             @Override
             public String apply(ColumnDefinition c, Map<String, Object> params) {
-                String name = columnNamesMapping.getName(c);
+                String name = columnName(c);
                 String varName = varName(c);
                 params.put(varName, Collections.singleton(key));
                 return " = " + name + " + :" + varName;
@@ -282,8 +287,8 @@ public class SSTableToCQL {
         private static final int invalidTTL = LivenessInfo.NO_TTL;
 
         private final Client client;
-        private final ColumnNamesMapping columnNamesMapping;
-
+        private final Options options;
+        
         Op op;
         CFMetaData cfMetaData;
         DecoratedKey key;
@@ -314,10 +319,14 @@ public class SSTableToCQL {
         }
         // sorted atoms?
 
-        public RowBuilder(Client client, boolean setAllColumns, ColumnNamesMapping columnNamesMapping) {
+        public RowBuilder(Client client, Options options) {
             this.client = client;
-            this.columnNamesMapping = columnNamesMapping;
-            this.setAllColumns = setAllColumns;
+            this.options = options;
+        }
+
+
+        private String columnName(ColumnDefinition c) {
+            return options.columnNamesMapping.getName(c);
         }
 
         /**
@@ -453,7 +462,7 @@ public class SSTableToCQL {
                         buf.append(", ");
                     }
                     ensureWhitespace(buf);
-                    buf.append(columnNamesMapping.getName(c));
+                    buf.append(columnName(c));
                     if (s != null) {
                         buf.append(s);
                     }
@@ -505,7 +514,7 @@ public class SSTableToCQL {
                     if (i++ > 0) {
                         buf.append(" AND ");
                     }
-                    buf.append(columnNamesMapping.getName(e.getKey()));
+                    buf.append(columnName(e.getKey()));
                     buf.append(' ');
                     buf.append(e.getValue().left.toString());
                     buf.append(" :");
@@ -527,7 +536,7 @@ public class SSTableToCQL {
                     if (i++ > 0) {
                         buf.append(',');
                     }
-                    buf.append(columnNamesMapping.getName(c));
+                    buf.append(columnName(c));
                 }
             }
             buf.append(") values (");
@@ -866,13 +875,9 @@ public class SSTableToCQL {
     private static final Logger logger = LoggerFactory.getLogger(SSTableToCQL.class);
 
     private final SStableScannerSource source;
-    private final ColumnNamesMapping columnNamesMapping;
-    private final boolean setAllColumns;
-
-    public SSTableToCQL(SStableScannerSource source, ColumnNamesMapping columnNamesMapping, boolean setAllColumns) {
+    
+    public SSTableToCQL(SStableScannerSource source) {
         this.source = source;
-        this.columnNamesMapping = columnNamesMapping;
-        this.setAllColumns = setAllColumns;
     }
 
     /** 
@@ -880,10 +885,10 @@ public class SSTableToCQL {
      * This can be called exactly once. 
      * @param client
      */
-    public void run(Client client) {
+    public void run(Client client, Options options) {
         ISSTableScanner scanner = source.scanner();
         try {
-            RowBuilder builder = new RowBuilder(client, setAllColumns, columnNamesMapping);
+            RowBuilder builder = new RowBuilder(client, options);
             logger.info("Processing {}", scanner.getBackingFiles());
             while (scanner.hasNext()) {
                 UnfilteredRowIterator ri = scanner.next();

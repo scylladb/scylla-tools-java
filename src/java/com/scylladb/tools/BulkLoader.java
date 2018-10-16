@@ -896,7 +896,7 @@ public class BulkLoader {
         }
     }
 
-    static class LoaderOptions {
+    static class LoaderOptions extends SSTableToCQL.Options {
         private static void errorMsg(String msg, CmdLineOptions options) {
             System.err.println(msg);
             printUsage(options);
@@ -1008,6 +1008,8 @@ public class BulkLoader {
                 }
 
                 if (cmd.hasOption(TRANSLATE_OPTION)) {
+                    Map<String, String> columnNamesMappings = new HashMap<>();
+
                     for (String mapping : cmd.getOptionValue(TRANSLATE_OPTION).split(",")) {
                         String[] parts = mapping.split(":");
                         if (parts.length != 2) {
@@ -1018,11 +1020,12 @@ public class BulkLoader {
                         if (sourceName.isEmpty() || targetName.isEmpty()) {
                             errorMsg("Invalid column name mapping: " + mapping, options);
                         }
-                        if (opts.columnNamesMappings.containsKey(sourceName)) {
+                        if (columnNamesMappings.containsKey(sourceName)) {
                             throw new RuntimeException("Mapping is not unique, key already exists: " + sourceName);
                         }
-                        opts.columnNamesMappings.put(sourceName, targetName);
+                        columnNamesMappings.put(sourceName, targetName);                        
                     }
+                    opts.columnNamesMapping = new ColumnNamesMapping(columnNamesMappings);
                 }
 
                 if (cmd.hasOption(CONSISTENCY_LEVEL_OPTION)) {
@@ -1138,7 +1141,7 @@ public class BulkLoader {
                     opts.batch = true;
                 }
                 if (cmd.hasOption(USE_UNSET)) {
-                    opts.unset = true;
+                    opts.setAllColumns = true;
                 }
                 if (cmd.hasOption(IGNORE_MISSING_COLUMNS)) {
                     opts.ignoreColumns.addAll(Arrays.asList(cmd.getOptionValues(IGNORE_MISSING_COLUMNS)));
@@ -1187,11 +1190,7 @@ public class BulkLoader {
 
         public String tokenRanges;
         
-        public Map<String, String> columnNamesMappings = new HashMap<>();
-
         public ConsistencyLevel consistencyLevel = ConsistencyLevel.ONE;
-
-        public boolean unset;
 
         public EncryptionOptions encOptions = new EncryptionOptions.ClientEncryptionOptions();
 
@@ -1278,7 +1277,6 @@ public class BulkLoader {
             final List<Pair<Descriptor, Set<Component>>> files = findFiles(keyspace, dir);
             final ConcurrentLinkedQueue<SSTableToCQL> tasks = new ConcurrentLinkedQueue<>();
             final CountDownLatch latch = new CountDownLatch(options.threadCount);
-            final ColumnNamesMapping columnNamesMapping = new ColumnNamesMapping(options.columnNamesMappings);
 
             long totalBytes = ranges.size() * files.stream().mapToLong((p) -> {
                 return new File(p.left.filenameFor(Component.DATA)).length();
@@ -1287,7 +1285,7 @@ public class BulkLoader {
             for (int i = 0; i < options.threadCount; ++i) {
                 executor.submit(() -> {
                     try {
-                        process(options, keyspace, tasks, files, ranges, client, columnNamesMapping);
+                        process(options, keyspace, tasks, files, ranges, client);
                     } finally {
                         latch.countDown();
                     }
@@ -1411,8 +1409,8 @@ public class BulkLoader {
 
     // Main processing loop for worker thread, broken out into function
     private static void process(LoaderOptions options, String keyspace, ConcurrentLinkedQueue<SSTableToCQL> tasks,
-            List<Pair<Descriptor, Set<Component>>> files, Map<InetAddress, Collection<Range<Token>>> ranges, CQLClient client,
-            ColumnNamesMapping columnNamesMapping) {
+            List<Pair<Descriptor, Set<Component>>> files, Map<InetAddress, Collection<Range<Token>>> ranges,
+            CQLClient client) {
         // always use a copy of the client to keep from
         // colliding with other threads.
         final CQLClient c = client.copy();
@@ -1423,7 +1421,7 @@ public class BulkLoader {
                 // sstable slice)
                 SSTableToCQL t;
                 if ((t = tasks.poll()) != null) {
-                    t.run(c);
+                    t.run(c, options);
                     continue;
                 }
 
@@ -1441,7 +1439,7 @@ public class BulkLoader {
                             continue; // see if any tasks.
                         }
                         Pair<Descriptor, Set<Component>> p = files.remove(0);
-                        CFMetaData cfm = columnNamesMapping.getMetadata(client.getCFMetaData(keyspace, p.left.cfname));
+                        CFMetaData cfm = options.columnNamesMapping.getMetadata(client.getCFMetaData(keyspace, p.left.cfname));
                         SSTableReader r = openFile(p, cfm);
                         if (r != null) {
                             // We could open it. Turn into tasks and submit to
@@ -1498,7 +1496,7 @@ public class BulkLoader {
                                         };                                        
                                     }
                                 };
-                                tasks.add(new SSTableToCQL(src, columnNamesMapping, options.unset && options.prepare));
+                                tasks.add(new SSTableToCQL(src));
                             }
                             break;
                         }
