@@ -457,6 +457,11 @@ public final class JsonTransformer
                 json.writeEndObject();
                 objectIndenter.setCompact(false);
             }
+            else if (cellType.isCounter())
+            {
+                json.writeFieldName("value");
+                json.writeString(cellType.getString(cell.value()));
+            }
             else
             {
                 json.writeFieldName("value");
