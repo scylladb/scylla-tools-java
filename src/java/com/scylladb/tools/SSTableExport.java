@@ -5,6 +5,7 @@ import java.io.IOException;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Config;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.Descriptor;
@@ -19,8 +20,7 @@ public class SSTableExport extends org.apache.cassandra.tools.SSTableExport {
             return super.metadataFromSSTable(desc);
         }
 
-        Config.setClientMode(false);
-
+        DatabaseDescriptor.clientInitialization(false);
         Util.initDatabaseDescriptor();
         // load keyspace descriptions.
         Schema.instance.loadFromDiskForTool();
