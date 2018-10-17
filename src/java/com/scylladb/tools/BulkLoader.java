@@ -595,6 +595,8 @@ public class BulkLoader {
                 rateLimiter.acquire(s.requestSizeInBytes(PROTOCOL_VERSION, codecRegistry));
             }
 
+            final int numStatements = (s instanceof BatchStatement ? ((BatchStatement) s).size() : 1);
+
             try {
                 semaphore.acquire();
                 try {
@@ -603,13 +605,13 @@ public class BulkLoader {
                         @Override
                         public void onSuccess(ResultSet result) {
                             semaphore.release();
-                            ++metrics.statementsSent;
+                            metrics.statementsSent += numStatements;
                         }
 
                         @Override
                         public void onFailure(Throwable t) {
                             semaphore.release();
-                            ++metrics.statementsFailed;
+                            metrics.statementsFailed += numStatements;
                             out.println(t);
                         }
                     }, MoreExecutors.directExecutor());
