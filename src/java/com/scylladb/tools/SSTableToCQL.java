@@ -103,6 +103,7 @@ public class SSTableToCQL {
     public static class Options {
         public boolean setAllColumns;
         public ColumnNamesMapping columnNamesMapping;
+        public boolean ignoreDroppedCounterData;
     }
     
     /**
@@ -273,6 +274,9 @@ public class SSTableToCQL {
                                 LongType.instance.getSerializer().serialize(state.getCount())
     
                         }));
+                    } else if (!options.ignoreDroppedCounterData) {
+                        throw new RuntimeException(
+                                (state.isLocal() ? "Local" : "Remote") + " counter shard found. Data loss may occur");
                     }
 
                     state.moveToNext();

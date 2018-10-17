@@ -980,6 +980,7 @@ public class BulkLoader {
             options.addOption("u", USE_UNSET, "Use 'unset' values in prepared statements");
 
             options.addOption("g", IGNORE_MISSING_COLUMNS, "COLUMN NAMES...", "ignore named missing columns in tables");
+            options.addOption("ic", IGNORE_DROPPED_COUNTER_DATA, "ignore dropping local and remote counter shard data");
             options.addOption("ir", NO_INFINITE_RETRY_OPTION, "Disable infinite retry policy");
             options.addOption("j", THREADS_COUNT_OPTION, "Number of threads to execute tasks", "Run tasks in parallel");
             options.addOption("bs", BATCH_SIZE_OPTION, "Number of bytes above which batch is being sent out", "Does not work with -nb");
@@ -1186,6 +1187,9 @@ public class BulkLoader {
                 if (cmd.hasOption(IGNORE_MISSING_COLUMNS)) {
                     opts.ignoreColumns.addAll(Arrays.asList(cmd.getOptionValues(IGNORE_MISSING_COLUMNS)));
                 }
+                if (cmd.hasOption(IGNORE_DROPPED_COUNTER_DATA)) {
+                    opts.ignoreDroppedCounterData = true;
+                }
 
                 opts.tokenRanges = cmd.getOptionValue(TOKEN_RANGES, null);
 
@@ -1250,6 +1254,7 @@ public class BulkLoader {
     private static final String TOOL_NAME = "sstableloader";
     private static final String SIMULATE = "simulate";
     private static final String IGNORE_MISSING_COLUMNS = "ignore-missing-columns";
+    private static final String IGNORE_DROPPED_COUNTER_DATA = "ignore-dropped-counter-data";
     private static final String VERBOSE_OPTION = "verbose";
     private static final String HELP_OPTION = "help";
     private static final String NOPROGRESS_OPTION = "no-progress";
