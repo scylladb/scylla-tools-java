@@ -126,6 +126,7 @@ import com.datastax.driver.core.PoolingOptions;
 import com.datastax.driver.core.PreparedStatement;
 import com.datastax.driver.core.ProtocolOptions.Compression;
 import com.datastax.driver.core.ProtocolVersion;
+import com.datastax.driver.core.QueryOptions;
 import com.datastax.driver.core.ResultSet;
 import com.datastax.driver.core.ResultSetFuture;
 import com.datastax.driver.core.Row;
@@ -231,7 +232,9 @@ public class BulkLoader {
             this.verbose = options.verbose;
             Cluster.Builder builder = builder().addContactPoints(options.hosts).withProtocolVersion(ProtocolVersion.V3)
                     .withCompression(Compression.LZ4).withPoolingOptions(poolingOptions)
-                    .withCodecRegistry(codecRegistry);
+                    .withCodecRegistry(codecRegistry)
+                    .withQueryOptions(new QueryOptions().setDefaultIdempotence(true))
+                    ;
 
             if (options.user != null && options.passwd != null) {
                 builder = builder.withCredentials(options.user, options.passwd);
