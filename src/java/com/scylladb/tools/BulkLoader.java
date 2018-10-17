@@ -179,6 +179,7 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.RateLimiter;
+import com.scylladb.tools.SSTableToCQL.Statistics;
 
 public class BulkLoader {
     public static class InfiniteRetryPolicy implements RetryPolicy {
@@ -1322,6 +1323,7 @@ public class BulkLoader {
             final List<Pair<Descriptor, Set<Component>>> files = findFiles(keyspace, dir);
             final ConcurrentLinkedQueue<SSTableToCQL> tasks = new ConcurrentLinkedQueue<>();
             final CountDownLatch latch = new CountDownLatch(options.threadCount);
+            final List<SSTableToCQL.Statistics> stats = new ArrayList<>();
 
             long totalBytes = ranges.size() * files.stream().mapToLong((p) -> {
                 return new File(p.left.filenameFor(Component.DATA)).length();
@@ -1330,7 +1332,7 @@ public class BulkLoader {
             for (int i = 0; i < options.threadCount; ++i) {
                 executor.submit(() -> {
                     try {
-                        process(options, keyspace, tasks, files, ranges, client);
+                        process(options, keyspace, tasks, files, ranges, client, stats);
                     } finally {
                         latch.countDown();
                     }
@@ -1344,11 +1346,35 @@ public class BulkLoader {
             } while (!done);
 
             System.out.println();
+
+            printStats(client, stats);
+
             System.exit(0);
         } catch (Throwable t) {
             executor.shutdownNow();
             t.printStackTrace();
             System.exit(1);
+        }
+    }
+
+    private static void printStats(CQLClient client, List<Statistics> stats) {
+        if (client.verbose.greaterOrEqual(Verbosity.Normal)) {
+            Statistics s = new Statistics();
+            for (Statistics os : stats) {
+                s.add(os);
+            }
+
+            System.out.format("%1$8d statements generated.\n", s.statementsGenerated);
+            System.out.format("%1$8d cql rows processed in %2$8d partitions.\n", s.rowsProcessed,
+                    s.partitionsProcessed);
+            System.out.format("%1$8d cql rows and %2$8d partitions deleted.\n", s.rowsDeleted, s.partitionsDeletes);
+            System.out.format("%1$8d local and %2$8d remote counter shards where skipped.\n", s.localCountersSkipped,
+                    s.remoteCountersSkipped);
+
+            if (s.localCountersSkipped > 0 || s.remoteCountersSkipped > 0) {
+                System.err.println("Warning: remote/local counter shards skipped. Data loss may have occurred.");
+                System.err.println("Ensure the data set imported was complete.");
+            }
         }
     }
 
@@ -1455,7 +1481,7 @@ public class BulkLoader {
     // Main processing loop for worker thread, broken out into function
     private static void process(LoaderOptions options, String keyspace, ConcurrentLinkedQueue<SSTableToCQL> tasks,
             List<Pair<Descriptor, Set<Component>>> files, Map<InetAddress, Collection<Range<Token>>> ranges,
-            CQLClient client) {
+            CQLClient client, List<SSTableToCQL.Statistics> stats) {
         // always use a copy of the client to keep from
         // colliding with other threads.
         final CQLClient c = client.copy();
@@ -1468,7 +1494,10 @@ public class BulkLoader {
                 // sstable slice)
                 SSTableToCQL t;
                 if ((t = tasks.poll()) != null) {
-                    t.run(c, options);
+                    SSTableToCQL.Statistics s = t.run(c, options);
+                    synchronized (stats) {
+                        stats.add(s);
+                    }
                     continue;
                 }
 

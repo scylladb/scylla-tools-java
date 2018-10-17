@@ -23,6 +23,7 @@
 
 package com.scylladb.tools;
 
+import static java.util.Collections.emptyMap;
 import static java.util.concurrent.TimeUnit.MICROSECONDS;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -102,8 +103,28 @@ public class SSTableToCQL {
 
     public static class Options {
         public boolean setAllColumns;
-        public ColumnNamesMapping columnNamesMapping;
+        public ColumnNamesMapping columnNamesMapping = new ColumnNamesMapping(emptyMap());
         public boolean ignoreDroppedCounterData;
+    }
+
+    public static class Statistics {
+        public long partitionsProcessed;
+        public long rowsProcessed;
+        public long rowsDeleted;
+        public long partitionsDeletes;
+        public long statementsGenerated;
+        public long localCountersSkipped;
+        public long remoteCountersSkipped;
+
+        public void add(Statistics s) {
+            partitionsProcessed += s.partitionsProcessed;
+            rowsProcessed += s.rowsProcessed;
+            rowsDeleted += s.rowsDeleted;
+            partitionsDeletes += s.partitionsDeletes;
+            statementsGenerated += s.statementsGenerated;
+            localCountersSkipped += s.localCountersSkipped;
+            remoteCountersSkipped += s.remoteCountersSkipped;
+        }
     }
     
     /**
@@ -277,6 +298,10 @@ public class SSTableToCQL {
                     } else if (!options.ignoreDroppedCounterData) {
                         throw new RuntimeException(
                                 (state.isLocal() ? "Local" : "Remote") + " counter shard found. Data loss may occur");
+                    } else if (state.isLocal()) {
+                        ++stats.localCountersSkipped;
+                    } else if (state.isRemote()) {
+                        ++stats.remoteCountersSkipped;
                     }
 
                     state.moveToNext();
@@ -292,6 +317,7 @@ public class SSTableToCQL {
 
         private final Client client;
         private final Options options;
+        private final Statistics stats = new Statistics();
         
         Op op;
         CFMetaData cfMetaData;
@@ -333,6 +359,10 @@ public class SSTableToCQL {
             return options.columnNamesMapping.getName(c);
         }
 
+        public Statistics getStatistics() {
+            return stats;
+        }
+        
         /**
          * Figure out the "WHERE" clauses (except for PK) for a column name
          *
@@ -388,15 +418,17 @@ public class SSTableToCQL {
             this.key = key;
             this.cfMetaData = cfMetaData;
             clear();
+            ++stats.partitionsProcessed;
         }
 
         private void beginRow(Row row) {
             where.clear();
             this.row = row;
+            ++stats.rowsProcessed;
         }
         private void endRow() {
             this.row = null;
-            this.rowDelete = false;
+            this.rowDelete = false;            
         }
         
         private void clear() {
@@ -415,12 +447,14 @@ public class SSTableToCQL {
             setOp(Op.DELETE, timestamp, invalidTTL);                        
             setWhere(start, end);
             finish();
+            ++stats.rowsDeleted;
         }
 
         // Delete the whole partition
         private void deletePartition(DecoratedKey key, DeletionTime topLevelDeletion) {
             setOp(Op.DELETE, topLevelDeletion.markedForDeleteAt(), invalidTTL);
             finish();
+            ++stats.partitionsDeletes;
         };
 
         // Genenerate the CQL query for this CQL row
@@ -615,6 +649,7 @@ public class SSTableToCQL {
         // Dispatch the CQL
         private void makeStatement(DecoratedKey key, long timestamp, String what, Map<String, Object> objects) {
             client.processStatment(key, timestamp, what, objects);
+            ++stats.statementsGenerated;
         }
 
         private void process(Row row) {
@@ -889,7 +924,7 @@ public class SSTableToCQL {
      * This can be called exactly once. 
      * @param client
      */
-    public void run(Client client, Options options) {
+    public Statistics run(Client client, Options options) {
         ISSTableScanner scanner = source.scanner();
         try {
             RowBuilder builder = new RowBuilder(client, options);
@@ -898,6 +933,7 @@ public class SSTableToCQL {
                 UnfilteredRowIterator ri = scanner.next();
                 builder.process(ri);
             }
+            return builder.getStatistics();
         } finally {
             scanner.close();
         }
