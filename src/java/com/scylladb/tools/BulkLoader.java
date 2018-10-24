@@ -113,6 +113,7 @@ import org.apache.cassandra.db.rows.UnfilteredRowIterator;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.dht.Token.TokenFactory;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
@@ -942,6 +943,7 @@ public class BulkLoader {
             options.addOption("bs", BATCH_SIZE_OPTION, "Number of bytes above which batch is being sent out", "Does not work with -nb");
             options.addOption("translate", TRANSLATE_OPTION, "mapping list", "comma-separated list of column name mappings");
             options.addOption("cl", CONSISTENCY_LEVEL_OPTION, "consistency level (default: ONE)", "sets the consistency level for statements");
+            options.addOption("tr", TOKEN_RANGES, "<lo>:<hi>,...", "import only partitions that satisfy lo < token(partition) <= hi");
 
             return options;
         }
@@ -1140,6 +1142,8 @@ public class BulkLoader {
                     opts.ignoreColumns.addAll(Arrays.asList(cmd.getOptionValues(IGNORE_MISSING_COLUMNS)));
                 }
 
+                opts.tokenRanges = cmd.getOptionValue(TOKEN_RANGES, null);
+
                 return opts;
             } catch (ParseException | ConfigurationException | MalformedURLException e) {
                 errorMsg(e.getMessage(), options);
@@ -1178,6 +1182,8 @@ public class BulkLoader {
 
         public boolean batch;
         public boolean prepare;
+
+        public String tokenRanges;
         
         public Map<String, String> columnNamesMappings = new HashMap<>();
 
@@ -1237,6 +1243,7 @@ public class BulkLoader {
     private static final String NO_PREPARED = "no-prepared";
 
     private static final String USE_UNSET = "use-unset";
+    private static final String TOKEN_RANGES = "token-ranges";
 
     public static void main(String args[]) {
         DatabaseDescriptor.clientInitialization();
@@ -1265,7 +1272,7 @@ public class BulkLoader {
             // "partitioner" field.
             DatabaseDescriptor.setPartitionerUnsafe(client.getPartitioner());
 
-            final Map<InetAddress, Collection<Range<Token>>> ranges = getRanges(client);
+            final Map<InetAddress, Collection<Range<Token>>> ranges = getRanges(options, client);
             final List<Pair<Descriptor, Set<Component>>> files = findFiles(keyspace, dir);
             final ConcurrentLinkedQueue<SSTableToCQL> tasks = new ConcurrentLinkedQueue<>();
             final CountDownLatch latch = new CountDownLatch(options.threadCount);
@@ -1309,7 +1316,20 @@ public class BulkLoader {
         }
     }
 
-    private static Map<InetAddress, Collection<Range<Token>>> getRanges(CQLClient client) {
+    private static Map<InetAddress, Collection<Range<Token>>> getRanges(LoaderOptions options, CQLClient client) {
+        if (options.tokenRanges != null) {
+            TokenFactory f = client.getPartitioner().getTokenFactory();
+            List<Range<Token>> ranges = new ArrayList<>();
+            for (String ts : options.tokenRanges.split(",")) {
+                String pair[] = ts.split(":");
+                if (pair.length != 2) {
+                    throw new IllegalArgumentException(ts);
+                }
+                ranges.add(new Range<Token>(f.fromString(pair[0]), f.fromString(pair[1])));
+            }
+            return Collections.singletonMap(null, ranges);
+        }
+
         Map<InetAddress, Collection<Range<Token>>> ranges = client.getEndpointRanges();
         if (ranges == null || ranges.isEmpty()) {
             ranges = Collections.singletonMap(null, null);
