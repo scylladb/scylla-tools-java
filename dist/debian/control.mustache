@@ -2,13 +2,12 @@ Source: {{product}}-tools
 Section: misc
 Priority: extra
 Maintainer: Takuya ASADA <syuu@scylladb.com>
-Build-Depends: debhelper (>= 5), openjdk-8-jdk-headless, ant (>= 1.7), ant-optional (>= 1.7), bash-completion, python | python-all | python-dev | python-all-dev
 Homepage: http://www.scylladb.com
 Standards-Version: 3.9.5
 
 Package: {{product}}-tools
 Architecture: all
-Depends: {{product}}-conf, {{product}}-tools-core (>= 2.0~rc0), ${misc:Depends}{{#python-support}}, python-support (>= 0.90.0){{/python-support}}
+Depends: {{product}}-conf, {{product}}-tools-core (>= 2.0~rc0), ${misc:Depends}
 Recommends: ntp | time-daemon
 Conflicts: cassandra
 Description: Scylla database tools
