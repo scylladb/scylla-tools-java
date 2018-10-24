@@ -122,4 +122,4 @@ elif [ "$TARGET" = "jessie" ]; then
 else
     sed -i -e "s/@@BUILD_DEPENDS@@//g" debian/control
 fi
-sudo -E DIST=$TARGET pdebuild --buildresult build/debs --configfile ./dist/debian/pbuilderrc
+sudo -E DIST=$TARGET pdebuild --configfile ./dist/debian/pbuilderrc --buildresult build/debs
