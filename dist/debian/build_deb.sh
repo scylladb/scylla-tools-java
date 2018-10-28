@@ -4,15 +4,16 @@ PRODUCT=scylla
 
 . /etc/os-release
 print_usage() {
-    echo "build_deb.sh -target <codename>"
-    echo "  --target target distribution codename"
+    echo "build_deb.sh --reloc-pkg build/scylla-tools-package.tar.gz"
+    echo "  --reloc-pkg specify relocatable package path"
     exit 1
 }
-TARGET=
+TARGET=stable
+RELOC_PKG=
 while [ $# -gt 0 ]; do
     case "$1" in
-        "--target")
-            TARGET=$2
+        "--reloc-pkg")
+            RELOC_PKG=$2
             shift 2
             ;;
         *)
@@ -27,19 +28,6 @@ is_redhat_variant() {
 is_debian_variant() {
     [ -f /etc/debian_version ]
 }
-is_debian() {
-    case "$1" in
-        jessie|stretch) return 0;;
-        *) return 1;;
-    esac
-}
-is_ubuntu() {
-    case "$1" in
-        trusty|xenial|bionic) return 0;;
-        *) return 1;;
-    esac
-}
-
 pkg_install() {
     if is_redhat_variant; then
         sudo yum install -y $1
@@ -51,10 +39,11 @@ pkg_install() {
     fi
 }
 
-if [ ! -e dist/debian/build_deb.sh ]; then
-    echo "run build_deb.sh in top of scylla dir"
+if [ ! -e SCYLLA-RELOCATABLE-FILE ]; then
+    echo "do not directly execute build_rpm.sh, use reloc/build_rpm.sh instead."
     exit 1
 fi
+
 if [ "$(arch)" != "x86_64" ]; then
     echo "Unsupported architecture: $(arch)"
     exit 1
@@ -78,11 +67,8 @@ fi
 if [ ! -f /usr/bin/python ]; then
     pkg_install python
 fi
-if [ ! -f /usr/sbin/pbuilder ]; then
-    pkg_install pbuilder
-fi
-if [ ! -f /usr/bin/ant ]; then
-    pkg_install ant
+if [ ! -f /usr/sbin/debuild ]; then
+    pkg_install devscripts
 fi
 if [ ! -f /usr/bin/dh_testdir ]; then
     pkg_install debhelper
@@ -113,12 +99,12 @@ if [ -z "$TARGET" ]; then
         exit 1
     fi
 fi
+RELOC_PKG_FULLPATH=$(readlink -f $RELOC_PKG)
+RELOC_PKG_BASENAME=$(basename $RELOC_PKG)
+SCYLLA_VERSION=$(cat SCYLLA-VERSION-FILE | sed 's/\.rc/~rc/')
+SCYLLA_RELEASE=$(cat SCYLLA-RELEASE-FILE)
 
-VERSION=$(./SCYLLA-VERSION-GEN)
-SCYLLA_VERSION=$(cat build/SCYLLA-VERSION-FILE | sed 's/\.rc/~rc/')
-SCYLLA_RELEASE=$(cat build/SCYLLA-RELEASE-FILE)
-echo $VERSION > version
-./scripts/git-archive-all --extra version --force-submodules --prefix $PRODUCT-tools ../$PRODUCT-tools_$SCYLLA_VERSION-$SCYLLA_RELEASE.orig.tar.gz 
+ln -fv $RELOC_PKG_FULLPATH ../$PRODUCT-tools_$SCYLLA_VERSION-$SCYLLA_RELEASE.orig.tar.gz
 
 cp -a dist/debian/debian debian
 if [ "$PRODUCT" != "scylla" ]; then
@@ -126,31 +112,12 @@ if [ "$PRODUCT" != "scylla" ]; then
         mv $i ${i/scylla-/$PRODUCT-}
     done
 fi
-PYTHON_SUPPORT=false
-if is_debian $TARGET; then
-    REVISION="1~$TARGET"
-elif is_ubuntu $TARGET; then
-    REVISION="0ubuntu1~$TARGET"
-else
-   echo "Unknown distribution: $TARGET"
-fi
-if [ "$TARGET" = "jessie" ] || [ "$TARGET" = "trusty" ]; then
-    PYTHON_SUPPORT=true
-fi
 
+REVISION="1"
 MUSTACHE_DIST="\"debian\": true, \"$TARGET\": true, \"product\": \"$PRODUCT\", \"$PRODUCT\": true"
 pystache dist/debian/changelog.mustache "{ $MUSTACHE_DIST, \"version\": \"$SCYLLA_VERSION\", \"release\": \"$SCYLLA_RELEASE\", \"revision\": \"$REVISION\", \"codename\": \"$TARGET\" }" > debian/changelog
-pystache dist/debian/control.mustache "{ $MUSTACHE_DIST, \"python-support\": $PYTHON_SUPPORT }" > debian/control
+pystache dist/debian/control.mustache "{ $MUSTACHE_DIST }" > debian/control
 pystache dist/debian/rules.mustache "{ $MUSTACHE_DIST }" > debian/rules
 chmod a+rx debian/rules
 
-sudo rm -fv /var/cache/pbuilder/$PRODUCT-tools-$TARGET.tgz
-sudo PRODUCT=$PRODUCT DIST=$TARGET /usr/sbin/pbuilder clean --configfile ./dist/debian/pbuilderrc
-sudo PRODUCT=$PRODUCT DIST=$TARGET /usr/sbin/pbuilder create --configfile ./dist/debian/pbuilderrc
-sudo PRODUCT=$PRODUCT DIST=$TARGET /usr/sbin/pbuilder update --configfile ./dist/debian/pbuilderrc
-if [ "$TARGET" = "jessie" ]; then
-    echo "apt-get install -y -t jessie-backports ca-certificates-java" > build/jessie-pkginst.sh
-    chmod a+rx build/jessie-pkginst.sh
-    sudo PRODUCT=$PRODUCT DIST=$TARGET /usr/sbin/pbuilder execute --configfile ./dist/debian/pbuilderrc build/jessie-pkginst.sh
-fi
-sudo PRODUCT=$PRODUCT DIST=$TARGET pdebuild --configfile ./dist/debian/pbuilderrc --buildresult build/debs
+debuild -rfakeroot -us -uc

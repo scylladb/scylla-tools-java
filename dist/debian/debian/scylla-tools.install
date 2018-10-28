@@ -11,3 +11,5 @@ tools/bin/sstablelevelreset usr/bin
 tools/bin/sstablemetadata usr/bin
 tools/bin/sstablerepairedset usr/bin
 tools/bin/sstablesplit usr/bin
+dist/common/nodetool-completion etc/bash_completion.d/nodetool
+pylib/usr/* usr
