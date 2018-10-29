@@ -44,7 +44,8 @@ public abstract class SchemaStatement extends PartitionOperation
     final int[] argumentIndex;
     final Object[] bindBuffer;
     final ColumnDefinitions definitions;
-
+    final boolean printStatementsOnError;
+    
     public SchemaStatement(Timer timer, StressSettings settings, DataSpec spec,
                            PreparedStatement statement, List<String> bindNames, Integer thriftId, ConsistencyLevel cl)
     {
@@ -61,6 +62,7 @@ public abstract class SchemaStatement extends PartitionOperation
 
         if (statement != null)
             statement.setConsistencyLevel(JavaDriverClient.from(cl));
+        this.printStatementsOnError = settings.log.printStatementsOnError;
     }
 
     BoundStatement bindRow(Row row)
@@ -108,4 +110,13 @@ public abstract class SchemaStatement extends PartitionOperation
         }
     }
 
+    @Override
+    protected String getExceptionMessage(Exception e) {
+        String s = super.getExceptionMessage(e);
+        if (printStatementsOnError && statement != null) {
+            String q = statement.getQueryString();
+            s = String.valueOf(q) + ": " + s;
+        }
+        return s;
+    }
 }
