@@ -148,6 +148,17 @@ public final class CompressionParams
         return new CompressionParams(LZ4Compressor.create(Collections.emptyMap()), chunkLength, Collections.emptyMap());
     }
 
+    public static CompressionParams zstd()
+    {
+        return zstd(DEFAULT_CHUNK_LENGTH);
+    }
+
+    public static CompressionParams zstd(Integer chunkLength)
+    {
+        ZstdCompressor compressor = ZstdCompressor.create(Collections.emptyMap());
+        return new CompressionParams(compressor, chunkLength, Collections.emptyMap());
+    }
+
     public CompressionParams(String sstableCompressorClass, Integer chunkLength, Map<String, String> otherOptions) throws ConfigurationException
     {
         this(createCompressor(parseCompressorClass(sstableCompressorClass), otherOptions), chunkLength, otherOptions);
