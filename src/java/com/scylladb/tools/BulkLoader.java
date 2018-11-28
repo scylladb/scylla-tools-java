@@ -687,6 +687,9 @@ public class BulkLoader {
             if (cfm == null) {
                 KeyspaceMetadata ks = metadata.getKeyspace(keyspace);
                 TableMetadata cf = ks.getTable(cfName);
+                if (cf == null) {
+                    throw new IllegalArgumentException("Could not find table named " + keyspace + "." + cfName);
+                }
                 CFStatement parsed = (CFStatement) QueryProcessor.parseStatement(cf.asCQLQuery());
                 org.apache.cassandra.schema.KeyspaceMetadata ksm = Schema.instance.getKSMetaData(keyspace);
                 CreateTableStatement statement = (CreateTableStatement) ((CreateTableStatement.RawStatement) parsed)
