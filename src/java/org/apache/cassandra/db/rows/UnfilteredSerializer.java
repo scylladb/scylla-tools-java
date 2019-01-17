@@ -117,6 +117,8 @@ public class UnfilteredSerializer
      */
     @Deprecated
     private final static int HAS_SHADOWABLE_DELETION = 0x02; // Whether the row deletion is shadowable. If there is no extended flag (or no row deletion), the deletion is assumed not shadowable.
+    // A Scylla-specific flag (not supported by Cassandra) that indicates the presence of a shadowable tombstone.
+    private final static int HAS_SCYLLA_SHADOWABLE_DELETION = 0x80;
 
     public void serialize(Unfiltered unfiltered, SerializationHeader header, DataOutputPlus out, int version)
     throws IOException
@@ -480,6 +482,10 @@ public class UnfilteredSerializer
             return deserializeRowBody(in, header, helper, flags, extendedFlags, builder);
         }
     }
+    
+    private static DeletionTime readScyllaShadowableDeletion(DataInputPlus in, SerializationHeader header, int flags) throws IOException {
+        return (flags & HAS_SCYLLA_SHADOWABLE_DELETION) != 0 ? header.readDeletionTime(in) : null;
+    }
 
     public Unfiltered deserializeTombstonesOnly(FileDataInput in, SerializationHeader header, SerializationHelper helper)
     throws IOException
@@ -519,12 +525,15 @@ public class UnfilteredSerializer
                         }
                     }
 
-                    Deletion deletion = new Row.Deletion(header.readDeletionTime(in), deletionIsShadowable);
+                    Deletion deletion = new Row.Deletion(header.readDeletionTime(in),
+                                                         deletionIsShadowable,
+                                                         readScyllaShadowableDeletion(in, header, extendedFlags));
                     in.seek(nextPosition);
                     return BTreeRow.emptyDeletedRow(clustering, deletion);
                 }
                 else
                 {
+                    readScyllaShadowableDeletion(in, header, extendedFlags);
                     Clustering.serializer.skip(in, helper.version, header.clusteringTypes());
                     skipRowBody(in);
                     // Continue with next item.
@@ -594,7 +603,13 @@ public class UnfilteredSerializer
             }
 
             builder.addPrimaryKeyLivenessInfo(rowLiveness);
-            builder.addRowDeletion(hasDeletion ? new Row.Deletion(header.readDeletionTime(in), deletionIsShadowable) : Row.Deletion.LIVE);
+            if (hasDeletion) {
+                builder.addRowDeletion(new Row.Deletion(header.readDeletionTime(in),
+                                                        deletionIsShadowable,
+                                                        readScyllaShadowableDeletion(in, header, extendedFlags)));
+            } else {
+                builder.addRowDeletion(Row.Deletion.live(readScyllaShadowableDeletion(in, header, extendedFlags)));
+            }
 
             Columns columns = hasAllColumns ? headerColumns : Columns.serializer.deserializeSubset(headerColumns, in);
 
