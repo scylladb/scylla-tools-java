@@ -278,7 +278,7 @@ public class BTreeRow extends AbstractRow
                 newInfo = LivenessInfo.EMPTY;
             // note that mayHaveShadowed means the activeDeletion shadows the row deletion. So if don't have setActiveDeletionToRow,
             // the row deletion is shadowed and we shouldn't return it.
-            newDeletion = setActiveDeletionToRow ? Deletion.regular(activeDeletion) : Deletion.LIVE;
+            newDeletion = setActiveDeletionToRow ? Deletion.regular(activeDeletion, deletion.scyllaShadowableTime()) : Deletion.live(deletion.scyllaShadowableTime());
         }
 
         Columns columns = filter.fetchedColumns().columns(isStatic());
@@ -376,8 +376,10 @@ public class BTreeRow extends AbstractRow
         // If the deletion is shadowable and the row has a timestamp, we'll forced the deletion timestamp to be less than the row one, so we
         // should get rid of said deletion.
         Deletion newDeletion = deletion.isLive() || (deletion.isShadowable() && !primaryKeyLivenessInfo.isEmpty())
-                             ? Deletion.LIVE
-                             : new Deletion(new DeletionTime(newTimestamp - 1, deletion.time().localDeletionTime()), deletion.isShadowable());
+                             ? Deletion.live(deletion.scyllaShadowableTime())
+                             : new Deletion(new DeletionTime(newTimestamp - 1, deletion.time().localDeletionTime()),
+                                            deletion.isShadowable(),
+                                            deletion.scyllaShadowableTime() != null ? new DeletionTime(newTimestamp - 1, deletion.scyllaShadowableTime().localDeletionTime()) : null);
 
         return transformAndFilter(newInfo, newDeletion, (cd) -> cd.updateAllTimestamp(newTimestamp));
     }
@@ -400,7 +402,7 @@ public class BTreeRow extends AbstractRow
             return this;
 
         LivenessInfo newInfo = purger.shouldPurge(primaryKeyLivenessInfo, nowInSec) ? LivenessInfo.EMPTY : primaryKeyLivenessInfo;
-        Deletion newDeletion = purger.shouldPurge(deletion.time()) ? Deletion.LIVE : deletion;
+        Deletion newDeletion = purger.shouldPurge(deletion.time()) ? Deletion.live(deletion.scyllaShadowableTime()) : deletion;
 
         // when enforceStrictLiveness is set, a row is considered dead when it's PK liveness info is not present
         if (enforceStrictLiveness && newDeletion.isLive() && newInfo.isEmpty())
@@ -786,7 +788,7 @@ public class BTreeRow extends AbstractRow
             Object[] btree = getCells().build();
 
             if (deletion.isShadowedBy(primaryKeyLivenessInfo))
-                deletion = Deletion.LIVE;
+                deletion = Deletion.live(deletion.scyllaShadowableTime());
 
             int minDeletionTime = minDeletionTime(btree, primaryKeyLivenessInfo, deletion.time());
             Row row = BTreeRow.create(clustering, primaryKeyLivenessInfo, deletion, btree, minDeletionTime);
