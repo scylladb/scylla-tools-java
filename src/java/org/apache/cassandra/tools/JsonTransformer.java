@@ -270,6 +270,9 @@ public final class JsonTransformer
             {
                 serializeDeletion(row.deletion().time());
             }
+            if (row.deletion().scyllaShadowableTime() != null) {
+                serializeDeletion("scylla_shadowable_deletion_info", row.deletion().scyllaShadowableTime());
+            }
             json.writeFieldName("cells");
             json.writeStartArray();
             for (ColumnData cd : row)
@@ -355,7 +358,12 @@ public final class JsonTransformer
 
     private void serializeDeletion(DeletionTime deletion) throws IOException
     {
-        json.writeFieldName("deletion_info");
+        serializeDeletion("deletion_info", deletion);
+    }
+
+    private void serializeDeletion(String field_name, DeletionTime deletion) throws IOException
+    {
+        json.writeFieldName(field_name);
         objectIndenter.setCompact(true);
         json.writeStartObject();
         json.writeFieldName("marked_deleted");

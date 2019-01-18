@@ -279,6 +279,10 @@ public abstract class Rows
 
         Row.Deletion rowDeletion = existing.deletion().supersedes(update.deletion()) ? existing.deletion() : update.deletion();
 
+        if (rowDeletion.scyllaShadowableTime() != null) {
+            throw new UnsupportedOperationException("Merging Scylla shadowable tombstone is not implemented");
+        }
+        
         if (rowDeletion.deletes(mergedInfo))
             mergedInfo = LivenessInfo.EMPTY;
         else if (rowDeletion.isShadowedBy(mergedInfo))
