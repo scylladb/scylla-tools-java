@@ -42,6 +42,7 @@
 package com.scylladb.tools;
 
 import static com.datastax.driver.core.Cluster.builder;
+import static com.scylladb.tools.BulkLoader.Verbosity.Normal;
 import static com.scylladb.tools.SSTableToCQL.TIMESTAMP_VAR_NAME;
 import static com.scylladb.tools.SSTableToCQL.TTL_VAR_NAME;
 import static java.lang.Thread.currentThread;
@@ -178,6 +179,7 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.RateLimiter;
+import com.scylladb.tools.SSTableToCQL.Statistics;
 
 public class BulkLoader {
     public static class InfiniteRetryPolicy implements RetryPolicy {
@@ -266,7 +268,10 @@ public class BulkLoader {
 
     private static final Logger logger = LoggerFactory.getLogger(BulkLoader.class);
 
-    static class CQLClient implements Client {
+    @SuppressWarnings("serial")
+    private static class StopExecution extends Error {}
+    
+    private static class CQLClient implements Client {
         private static final ProtocolVersion PROTOCOL_VERSION = ProtocolVersion.V4;
 
         private final Cluster cluster;
@@ -288,11 +293,13 @@ public class BulkLoader {
         private final Set<String> ignoreColumns;
         private final CodecRegistry codecRegistry;
         private final TypeCodec<ByteBuffer> blob;
-        private boolean isRoot = false;
+        private final CQLClient parent;
 
         private final Metrics metrics;
 
         private PrintStream out = System.out;
+        
+        private volatile boolean failed = false;
         
         public CQLClient(LoaderOptions options, String keyspace)
                 throws NoSuchAlgorithmException, FileNotFoundException, IOException, KeyStoreException,
@@ -379,7 +386,7 @@ public class BulkLoader {
             this.preparedStatements = options.prepare ? new ConcurrentHashMap<>() : null;
             this.ignoreColumns = options.ignoreColumns;
             this.consistencyLevel = options.consistencyLevel;
-            this.isRoot = true;
+            this.parent = null;
         }
 
         private CQLClient(CQLClient other, Metrics metrics) {
@@ -399,16 +406,29 @@ public class BulkLoader {
             this.ignoreColumns = other.ignoreColumns;
             this.maxBatchSize = other.maxBatchSize;
             this.metrics = metrics;
+            this.parent = other;
         }
 
         public CQLClient copy() {
             return new CQLClient(this, metrics.newChild());
         }
 
-        public Cluster getCluster( ) {
-            return cluster;
+        public void checkStop() {
+            if (failed) {
+                throw new StopExecution();
+            }
+            if (parent != null) {
+                parent.checkStop();
+            }            
         }
-
+        
+        public void signalFailure() {
+            failed = true;
+            if (parent != null) {
+                parent.signalFailure();
+            }
+        }
+        
         // Load user defined types. Since loading a UDT entails validation
         // of the field types against known types, we may fail to load a UDT if
         // it references a UDT that has not yet been loaded. So we run a
@@ -581,12 +601,14 @@ public class BulkLoader {
                 semaphore.acquire(maxStatements);
             } catch (InterruptedException e) {
             }
-            if (isRoot && cluster != null) {
+            if (parent == null && cluster != null) {
                 cluster.close();
             }
         }
 
         private void send(Statement s) {
+            checkStop();
+            
             if (simulate) {
                 return;
             }
@@ -594,6 +616,8 @@ public class BulkLoader {
             if (rateLimiter != null) {
                 rateLimiter.acquire(s.requestSizeInBytes(PROTOCOL_VERSION, codecRegistry));
             }
+
+            final int numStatements = (s instanceof BatchStatement ? ((BatchStatement) s).size() : 1);
 
             try {
                 semaphore.acquire();
@@ -603,13 +627,13 @@ public class BulkLoader {
                         @Override
                         public void onSuccess(ResultSet result) {
                             semaphore.release();
-                            ++metrics.statementsSent;
+                            metrics.statementsSent += numStatements;
                         }
 
                         @Override
                         public void onFailure(Throwable t) {
                             semaphore.release();
-                            ++metrics.statementsFailed;
+                            metrics.statementsFailed += numStatements;
                             out.println(t);
                         }
                     }, MoreExecutors.directExecutor());
@@ -625,6 +649,7 @@ public class BulkLoader {
         private synchronized void send(DecoratedKey key, Statement s, boolean allowBatch) {
             if (allowBatch && batch && batchStatement != null && batchSize < maxBatchSize
                     && this.key.equals(key)) {
+                checkStop();
                 batchStatement.add(s);
                 batchSize += s.requestSizeInBytes(PROTOCOL_VERSION, codecRegistry);
                 return;
@@ -790,6 +815,8 @@ public class BulkLoader {
 
         private void sendPrepared(final DecoratedKey key, final long timestamp, String what,
                 final Map<String, Object> objects, final boolean allowBatch) {
+            checkStop();
+            
             ListenableFuture<PreparedStatement> f = preparedStatements.computeIfAbsent(what, k -> {
                 if (verbose.greaterOrEqual(Verbosity.Chatty)) {
                     out.println("Preparing: " + k + " on thread " + Thread.currentThread().getId());
@@ -803,82 +830,98 @@ public class BulkLoader {
                 Futures.addCallback(f, new FutureCallback<PreparedStatement>() {
                     @Override
                     public void onSuccess(PreparedStatement p) {
-                        BoundStatement s = p.bind();
+                        try {
+                            BoundStatement s = p.bind();
 
-                        retry:
-                        for (;;) {
-                            try {
-                                CodecRegistry r = p.getCodecRegistry();
-                                for (ColumnDefinitions.Definition d : p.getVariables()) {
-                                    String name = d.getName();
-                                    // allow null object
-                                    if (objects.containsKey(name)) {
-                                        Object value = objects.get(name);
-                                        if (value == null) {
-                                            // various types do not allow null as value, 
-                                            // but we should be able to null a column
-                                            s.setToNull(name);
-                                        } else {
-                                            // CMH. driver special treats token values, but
-                                            // we know we will never get a driver type token here.
-                                            s.set(name, value, r.codecFor(d.getType(), value));
+                            retry: for (;;) {
+                                try {
+                                    CodecRegistry r = p.getCodecRegistry();
+                                    for (ColumnDefinitions.Definition d : p.getVariables()) {
+                                        String name = d.getName();
+                                        // allow null object
+                                        if (objects.containsKey(name)) {
+                                            Object value = objects.get(name);
+                                            if (value == null) {
+                                                // various types do not allow
+                                                // null as value,
+                                                // but we should be able to null
+                                                // a column
+                                                s.setToNull(name);
+                                            } else {
+                                                // CMH. driver special treats
+                                                // token values, but
+                                                // we know we will never get a
+                                                // driver type token here.
+                                                s.set(name, value, r.codecFor(d.getType(), value));
+                                            }
                                         }
                                     }
-                                }
-                                break;
-                            } catch (CodecNotFoundException e) {
-                                // If we get here with a user type, it means we have
-                                // a subtle difference in the types we got from the cluster, and
-                                // what the statement parser created. (text instead of varchar etc).
-                                // Register a UDT codec for the "new" type and try again. 
-                                // Eventually we will run out of UDT:s...
-                                //
-                                // We do this to avoid missing something by trying to recurse 
-                                // types in the column data...
-                                DataType t = e.getCqlType();
-                                if (t instanceof UserType || t instanceof TupleType) {
-                                    bindUserTypeCodec(t);
-                                    continue;
-                                } else if (t instanceof DataType.CustomType) {
-                                    /**
-                                     * #59. Some types, like SimpleDate, show up as "custom" type
-                                     * in prepared statement types. These cannot bind their data (booh!)
-                                     * but we can handle this by trying to find the type 
-                                     * referenced (in classname) and binding it into a codec, then retry this 
-                                     * whole thing. 
-                                     */
-                                    DataType.CustomType ct = (DataType.CustomType) t;
-                                    String name = ct.getCustomTypeClassName();
-                                    try {
-                                        Class<?> c = Class.forName(name, true, currentThread().getContextClassLoader());
-                                        @SuppressWarnings("rawtypes")
-                                        Class<? extends AbstractType> ac = c.asSubclass(AbstractType.class);
-                                        Field f = ac.getField("instance");
-                                        AbstractType<?> atype = (AbstractType<?>) f.get(null);
-                                        bindCustomType(ct, atype);
+                                    break;
+                                } catch (CodecNotFoundException e) {
+                                    // If we get here with a user type, it means
+                                    // we have
+                                    // a subtle difference in the types we got
+                                    // from the cluster, and
+                                    // what the statement parser created. (text
+                                    // instead of varchar etc).
+                                    // Register a UDT codec for the "new" type
+                                    // and try again.
+                                    // Eventually we will run out of UDT:s...
+                                    //
+                                    // We do this to avoid missing something by
+                                    // trying to recurse
+                                    // types in the column data...
+                                    DataType t = e.getCqlType();
+                                    if (t instanceof UserType || t instanceof TupleType) {
+                                        bindUserTypeCodec(t);
                                         continue;
-                                    } catch (ClassNotFoundException | IllegalAccessException | NoSuchFieldException
-                                            | SecurityException ce) {
-                                        throw e;
-                                    }
-                                } else if (t instanceof DataType.NativeType) {
-                                    // v4 protocol
-                                    Class<?> c = e.getJavaType().getRawType();
-                                    for (CQL3Type.Native ct : CQL3Type.Native.values()) {
-                                        if (ct.getType().getSerializer().getType() == c) {
-                                            bindCustomType(t, ct.getType());
-                                            continue retry;
+                                    } else if (t instanceof DataType.CustomType) {
+                                        /**
+                                         * #59. Some types, like SimpleDate,
+                                         * show up as "custom" type in prepared
+                                         * statement types. These cannot bind
+                                         * their data (booh!) but we can handle
+                                         * this by trying to find the type
+                                         * referenced (in classname) and binding
+                                         * it into a codec, then retry this
+                                         * whole thing.
+                                         */
+                                        DataType.CustomType ct = (DataType.CustomType) t;
+                                        String name = ct.getCustomTypeClassName();
+                                        try {
+                                            Class<?> c = Class.forName(name, true,
+                                                    currentThread().getContextClassLoader());
+                                            @SuppressWarnings("rawtypes")
+                                            Class<? extends AbstractType> ac = c.asSubclass(AbstractType.class);
+                                            Field f = ac.getField("instance");
+                                            AbstractType<?> atype = (AbstractType<?>) f.get(null);
+                                            bindCustomType(ct, atype);
+                                            continue;
+                                        } catch (ClassNotFoundException | IllegalAccessException | NoSuchFieldException
+                                                | SecurityException ce) {
+                                            throw e;
+                                        }
+                                    } else if (t instanceof DataType.NativeType) {
+                                        // v4 protocol
+                                        Class<?> c = e.getJavaType().getRawType();
+                                        for (CQL3Type.Native ct : CQL3Type.Native.values()) {
+                                            if (ct.getType().getSerializer().getType() == c) {
+                                                bindCustomType(t, ct.getType());
+                                                continue retry;
+                                            }
                                         }
                                     }
+                                    throw e;
                                 }
-                                throw e;
                             }
+
+                            s.setRoutingKey(key.getKey());
+                            s.setDefaultTimestamp(timestamp);
+                            send(key, s, allowBatch);
+                        } catch (StopExecution e) {
+                        } finally {
+                            preparations.release();
                         }
-                                                
-                        s.setRoutingKey(key.getKey());
-                        s.setDefaultTimestamp(timestamp);
-                        send(key, s, allowBatch);
-                        preparations.release();
                         ++metrics.preparationsDone;
                     }
 
@@ -894,7 +937,7 @@ public class BulkLoader {
         }
     }
 
-    static class LoaderOptions {
+    static class LoaderOptions extends SSTableToCQL.Options {
         private static void errorMsg(String msg, CmdLineOptions options) {
             System.err.println(msg);
             printUsage(options);
@@ -938,6 +981,7 @@ public class BulkLoader {
             options.addOption("u", USE_UNSET, "Use 'unset' values in prepared statements");
 
             options.addOption("g", IGNORE_MISSING_COLUMNS, "COLUMN NAMES...", "ignore named missing columns in tables");
+            options.addOption("ic", IGNORE_DROPPED_COUNTER_DATA, "ignore dropping local and remote counter shard data");
             options.addOption("ir", NO_INFINITE_RETRY_OPTION, "Disable infinite retry policy");
             options.addOption("j", THREADS_COUNT_OPTION, "Number of threads to execute tasks", "Run tasks in parallel");
             options.addOption("bs", BATCH_SIZE_OPTION, "Number of bytes above which batch is being sent out", "Does not work with -nb");
@@ -1006,6 +1050,8 @@ public class BulkLoader {
                 }
 
                 if (cmd.hasOption(TRANSLATE_OPTION)) {
+                    Map<String, String> columnNamesMappings = new HashMap<>();
+
                     for (String mapping : cmd.getOptionValue(TRANSLATE_OPTION).split(",")) {
                         String[] parts = mapping.split(":");
                         if (parts.length != 2) {
@@ -1016,11 +1062,12 @@ public class BulkLoader {
                         if (sourceName.isEmpty() || targetName.isEmpty()) {
                             errorMsg("Invalid column name mapping: " + mapping, options);
                         }
-                        if (opts.columnNamesMappings.containsKey(sourceName)) {
+                        if (columnNamesMappings.containsKey(sourceName)) {
                             throw new RuntimeException("Mapping is not unique, key already exists: " + sourceName);
                         }
-                        opts.columnNamesMappings.put(sourceName, targetName);
+                        columnNamesMappings.put(sourceName, targetName);                        
                     }
+                    opts.columnNamesMapping = new ColumnNamesMapping(columnNamesMappings);
                 }
 
                 if (cmd.hasOption(CONSISTENCY_LEVEL_OPTION)) {
@@ -1136,10 +1183,13 @@ public class BulkLoader {
                     opts.batch = true;
                 }
                 if (cmd.hasOption(USE_UNSET)) {
-                    opts.unset = true;
+                    opts.setAllColumns = true;
                 }
                 if (cmd.hasOption(IGNORE_MISSING_COLUMNS)) {
                     opts.ignoreColumns.addAll(Arrays.asList(cmd.getOptionValues(IGNORE_MISSING_COLUMNS)));
+                }
+                if (cmd.hasOption(IGNORE_DROPPED_COUNTER_DATA)) {
+                    opts.ignoreDroppedCounterData = true;
                 }
 
                 opts.tokenRanges = cmd.getOptionValue(TOKEN_RANGES, null);
@@ -1185,11 +1235,7 @@ public class BulkLoader {
 
         public String tokenRanges;
         
-        public Map<String, String> columnNamesMappings = new HashMap<>();
-
         public ConsistencyLevel consistencyLevel = ConsistencyLevel.ONE;
-
-        public boolean unset;
 
         public EncryptionOptions encOptions = new EncryptionOptions.ClientEncryptionOptions();
 
@@ -1209,6 +1255,7 @@ public class BulkLoader {
     private static final String TOOL_NAME = "sstableloader";
     private static final String SIMULATE = "simulate";
     private static final String IGNORE_MISSING_COLUMNS = "ignore-missing-columns";
+    private static final String IGNORE_DROPPED_COUNTER_DATA = "ignore-dropped-counter-data";
     private static final String VERBOSE_OPTION = "verbose";
     private static final String HELP_OPTION = "help";
     private static final String NOPROGRESS_OPTION = "no-progress";
@@ -1276,7 +1323,7 @@ public class BulkLoader {
             final List<Pair<Descriptor, Set<Component>>> files = findFiles(keyspace, dir);
             final ConcurrentLinkedQueue<SSTableToCQL> tasks = new ConcurrentLinkedQueue<>();
             final CountDownLatch latch = new CountDownLatch(options.threadCount);
-            final ColumnNamesMapping columnNamesMapping = new ColumnNamesMapping(options.columnNamesMappings);
+            final List<SSTableToCQL.Statistics> stats = new ArrayList<>();
 
             long totalBytes = ranges.size() * files.stream().mapToLong((p) -> {
                 return new File(p.left.filenameFor(Component.DATA)).length();
@@ -1285,7 +1332,7 @@ public class BulkLoader {
             for (int i = 0; i < options.threadCount; ++i) {
                 executor.submit(() -> {
                     try {
-                        process(options, keyspace, tasks, files, ranges, client, columnNamesMapping);
+                        process(options, keyspace, tasks, files, ranges, client, stats);
                     } finally {
                         latch.countDown();
                     }
@@ -1299,11 +1346,35 @@ public class BulkLoader {
             } while (!done);
 
             System.out.println();
+
+            printStats(client, stats);
+
             System.exit(0);
         } catch (Throwable t) {
             executor.shutdownNow();
             t.printStackTrace();
             System.exit(1);
+        }
+    }
+
+    private static void printStats(CQLClient client, List<Statistics> stats) {
+        if (client.verbose.greaterOrEqual(Verbosity.Normal)) {
+            Statistics s = new Statistics();
+            for (Statistics os : stats) {
+                s.add(os);
+            }
+
+            System.out.format("%1$8d statements generated.\n", s.statementsGenerated);
+            System.out.format("%1$8d cql rows processed in %2$8d partitions.\n", s.rowsProcessed,
+                    s.partitionsProcessed);
+            System.out.format("%1$8d cql rows and %2$8d partitions deleted.\n", s.rowsDeleted, s.partitionsDeletes);
+            System.out.format("%1$8d local and %2$8d remote counter shards where skipped.\n", s.localCountersSkipped,
+                    s.remoteCountersSkipped);
+
+            if (s.localCountersSkipped > 0 || s.remoteCountersSkipped > 0) {
+                System.err.println("Warning: remote/local counter shards skipped. Data loss may have occurred.");
+                System.err.println("Ensure the data set imported was complete.");
+            }
         }
     }
 
@@ -1409,19 +1480,24 @@ public class BulkLoader {
 
     // Main processing loop for worker thread, broken out into function
     private static void process(LoaderOptions options, String keyspace, ConcurrentLinkedQueue<SSTableToCQL> tasks,
-            List<Pair<Descriptor, Set<Component>>> files, Map<InetAddress, Collection<Range<Token>>> ranges, CQLClient client,
-            ColumnNamesMapping columnNamesMapping) {
+            List<Pair<Descriptor, Set<Component>>> files, Map<InetAddress, Collection<Range<Token>>> ranges,
+            CQLClient client, List<SSTableToCQL.Statistics> stats) {
         // always use a copy of the client to keep from
         // colliding with other threads.
         final CQLClient c = client.copy();
         try {
             boolean triedFiles = false;
             while (!Thread.interrupted()) {
+                c.checkStop();
+                
                 // First try to get a ready task to process (i.e.
                 // sstable slice)
                 SSTableToCQL t;
                 if ((t = tasks.poll()) != null) {
-                    t.run(c);
+                    SSTableToCQL.Statistics s = t.run(c, options);
+                    synchronized (stats) {
+                        stats.add(s);
+                    }
                     continue;
                 }
 
@@ -1439,7 +1515,7 @@ public class BulkLoader {
                             continue; // see if any tasks.
                         }
                         Pair<Descriptor, Set<Component>> p = files.remove(0);
-                        CFMetaData cfm = columnNamesMapping.getMetadata(client.getCFMetaData(keyspace, p.left.cfname));
+                        CFMetaData cfm = options.columnNamesMapping.getMetadata(client.getCFMetaData(keyspace, p.left.cfname));
                         SSTableReader r = openFile(p, cfm);
                         if (r != null) {
                             // We could open it. Turn into tasks and submit to
@@ -1496,13 +1572,20 @@ public class BulkLoader {
                                         };                                        
                                     }
                                 };
-                                tasks.add(new SSTableToCQL(src, columnNamesMapping, options.unset && options.prepare));
+                                tasks.add(new SSTableToCQL(src));
                             }
                             break;
                         }
                     }
                 }
             }
+        } catch (StopExecution e) {
+            // other thread
+        } catch (Throwable t) {
+            if (c.verbose.greaterOrEqual(Normal)) {
+                t.printStackTrace();
+            }
+            c.signalFailure();
         } finally {
             // drain all remaining statements in queue before terminating.
             c.close();

@@ -23,6 +23,7 @@
 
 package com.scylladb.tools;
 
+import static java.util.Collections.emptyMap;
 import static java.util.concurrent.TimeUnit.MICROSECONDS;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -100,6 +101,32 @@ public class SSTableToCQL {
     public static final String TIMESTAMP_VAR_NAME = "timestamp";
     public static final String TTL_VAR_NAME = "ttl";
 
+    public static class Options {
+        public boolean setAllColumns;
+        public ColumnNamesMapping columnNamesMapping = new ColumnNamesMapping(emptyMap());
+        public boolean ignoreDroppedCounterData;
+    }
+
+    public static class Statistics {
+        public long partitionsProcessed;
+        public long rowsProcessed;
+        public long rowsDeleted;
+        public long partitionsDeletes;
+        public long statementsGenerated;
+        public long localCountersSkipped;
+        public long remoteCountersSkipped;
+
+        public void add(Statistics s) {
+            partitionsProcessed += s.partitionsProcessed;
+            rowsProcessed += s.rowsProcessed;
+            rowsDeleted += s.rowsDeleted;
+            partitionsDeletes += s.partitionsDeletes;
+            statementsGenerated += s.statementsGenerated;
+            localCountersSkipped += s.localCountersSkipped;
+            remoteCountersSkipped += s.remoteCountersSkipped;
+        }
+    }
+    
     /**
      * SSTable row worker.
      *
@@ -123,7 +150,7 @@ public class SSTableToCQL {
 
             @Override
             public String apply(ColumnDefinition c, Map<String, Object> params) {
-                String name = columnNamesMapping.getName(c);
+                String name = columnName(c);
                 String varName = varName(c);
                 params.put(name, Collections.singleton(key));
                 return " = " + name + " - :" + varName;
@@ -227,7 +254,7 @@ public class SSTableToCQL {
 
             @Override
             public String apply(ColumnDefinition c, Map<String, Object> params) {
-                String name = columnNamesMapping.getName(c);
+                String name = columnName(c);
                 String varName = varName(c);
                 params.put(varName, Collections.singleton(key));
                 return " = " + name + " + :" + varName;
@@ -268,6 +295,13 @@ public class SSTableToCQL {
                                 LongType.instance.getSerializer().serialize(state.getCount())
     
                         }));
+                    } else if (!options.ignoreDroppedCounterData) {
+                        throw new RuntimeException(
+                                (state.isLocal() ? "Local" : "Remote") + " counter shard found. Data loss may occur");
+                    } else if (state.isLocal()) {
+                        ++stats.localCountersSkipped;
+                    } else if (state.isRemote()) {
+                        ++stats.remoteCountersSkipped;
                     }
 
                     state.moveToNext();
@@ -282,8 +316,9 @@ public class SSTableToCQL {
         private static final int invalidTTL = LivenessInfo.NO_TTL;
 
         private final Client client;
-        private final ColumnNamesMapping columnNamesMapping;
-
+        private final Options options;
+        private final Statistics stats = new Statistics();
+        
         Op op;
         CFMetaData cfMetaData;
         DecoratedKey key;
@@ -314,12 +349,20 @@ public class SSTableToCQL {
         }
         // sorted atoms?
 
-        public RowBuilder(Client client, boolean setAllColumns, ColumnNamesMapping columnNamesMapping) {
+        public RowBuilder(Client client, Options options) {
             this.client = client;
-            this.columnNamesMapping = columnNamesMapping;
-            this.setAllColumns = setAllColumns;
+            this.options = options;
         }
 
+
+        private String columnName(ColumnDefinition c) {
+            return options.columnNamesMapping.getName(c);
+        }
+
+        public Statistics getStatistics() {
+            return stats;
+        }
+        
         /**
          * Figure out the "WHERE" clauses (except for PK) for a column name
          *
@@ -375,15 +418,17 @@ public class SSTableToCQL {
             this.key = key;
             this.cfMetaData = cfMetaData;
             clear();
+            ++stats.partitionsProcessed;
         }
 
         private void beginRow(Row row) {
             where.clear();
             this.row = row;
+            ++stats.rowsProcessed;
         }
         private void endRow() {
             this.row = null;
-            this.rowDelete = false;
+            this.rowDelete = false;            
         }
         
         private void clear() {
@@ -402,12 +447,14 @@ public class SSTableToCQL {
             setOp(Op.DELETE, timestamp, invalidTTL);                        
             setWhere(start, end);
             finish();
+            ++stats.rowsDeleted;
         }
 
         // Delete the whole partition
         private void deletePartition(DecoratedKey key, DeletionTime topLevelDeletion) {
             setOp(Op.DELETE, topLevelDeletion.markedForDeleteAt(), invalidTTL);
             finish();
+            ++stats.partitionsDeletes;
         };
 
         // Genenerate the CQL query for this CQL row
@@ -453,7 +500,7 @@ public class SSTableToCQL {
                         buf.append(", ");
                     }
                     ensureWhitespace(buf);
-                    buf.append(columnNamesMapping.getName(c));
+                    buf.append(columnName(c));
                     if (s != null) {
                         buf.append(s);
                     }
@@ -505,7 +552,7 @@ public class SSTableToCQL {
                     if (i++ > 0) {
                         buf.append(" AND ");
                     }
-                    buf.append(columnNamesMapping.getName(e.getKey()));
+                    buf.append(columnName(e.getKey()));
                     buf.append(' ');
                     buf.append(e.getValue().left.toString());
                     buf.append(" :");
@@ -527,7 +574,7 @@ public class SSTableToCQL {
                     if (i++ > 0) {
                         buf.append(',');
                     }
-                    buf.append(columnNamesMapping.getName(c));
+                    buf.append(columnName(c));
                 }
             }
             buf.append(") values (");
@@ -602,6 +649,7 @@ public class SSTableToCQL {
         // Dispatch the CQL
         private void makeStatement(DecoratedKey key, long timestamp, String what, Map<String, Object> objects) {
             client.processStatment(key, timestamp, what, objects);
+            ++stats.statementsGenerated;
         }
 
         private void process(Row row) {
@@ -866,13 +914,9 @@ public class SSTableToCQL {
     private static final Logger logger = LoggerFactory.getLogger(SSTableToCQL.class);
 
     private final SStableScannerSource source;
-    private final ColumnNamesMapping columnNamesMapping;
-    private final boolean setAllColumns;
-
-    public SSTableToCQL(SStableScannerSource source, ColumnNamesMapping columnNamesMapping, boolean setAllColumns) {
+    
+    public SSTableToCQL(SStableScannerSource source) {
         this.source = source;
-        this.columnNamesMapping = columnNamesMapping;
-        this.setAllColumns = setAllColumns;
     }
 
     /** 
@@ -880,15 +924,16 @@ public class SSTableToCQL {
      * This can be called exactly once. 
      * @param client
      */
-    public void run(Client client) {
+    public Statistics run(Client client, Options options) {
         ISSTableScanner scanner = source.scanner();
         try {
-            RowBuilder builder = new RowBuilder(client, setAllColumns, columnNamesMapping);
+            RowBuilder builder = new RowBuilder(client, options);
             logger.info("Processing {}", scanner.getBackingFiles());
             while (scanner.hasNext()) {
                 UnfilteredRowIterator ri = scanner.next();
                 builder.process(ri);
             }
+            return builder.getStatistics();
         } finally {
             scanner.close();
         }
