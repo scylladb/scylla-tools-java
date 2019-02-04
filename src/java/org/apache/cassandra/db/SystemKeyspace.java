@@ -177,6 +177,9 @@ public final class SystemKeyspace
                 + "tokens set<varchar>,"
                 + "truncated_at map<uuid, blob>,"
                 + "supported_features text,"
+                + "scylla_cpu_sharding_algorithm text,"
+                + "scylla_nr_shards int,"
+                + "scylla_msb_ignore int,"
                 + "PRIMARY KEY ((key)))");
 
     private static final CFMetaData Peers =
