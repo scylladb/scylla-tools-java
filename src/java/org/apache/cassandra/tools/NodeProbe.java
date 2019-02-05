@@ -413,7 +413,7 @@ public class NodeProbe implements AutoCloseable
         ColumnFamilyStoreMBean cfsProxy = getCfsProxy(ks, cf);
         for(Sampler sampler : samplers)
         {
-            cfsProxy.beginLocalSampling(sampler.name(), capacity);
+            cfsProxy.beginLocalSampling(sampler.name() + ":" + duration, capacity);
         }
         Uninterruptibles.sleepUninterruptibly(duration, TimeUnit.MILLISECONDS);
         Map<Sampler, CompositeData> result = Maps.newHashMap();

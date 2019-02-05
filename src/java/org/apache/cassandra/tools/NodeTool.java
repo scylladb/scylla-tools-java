@@ -138,7 +138,7 @@ public class NodeTool
                 Drain.class,
                 // Remove for GA: TruncateHints.class,
                 // Remove for GA: TpStats.class,
-                // Remove for GA: TopPartitions.class,
+                TopPartitions.class,
                 SetLoggingLevel.class,
                 GetLoggingLevels.class,
                 // Remove until proven otherwise: DisableHintsForDC.class,
