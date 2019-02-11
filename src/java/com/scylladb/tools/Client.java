@@ -31,5 +31,5 @@ import org.apache.cassandra.db.DecoratedKey;
 interface Client {
     CFMetaData getCFMetaData(String keyspace, String cfName);
 
-    void processStatment(DecoratedKey key, long timestamp, String what, Map<String, Object> objects);
+    void processStatment(DecoratedKey key, long timestamp, String what, Map<String, Object> objects, boolean isCounter);
 }

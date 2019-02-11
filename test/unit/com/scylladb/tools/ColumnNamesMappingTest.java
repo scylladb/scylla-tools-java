@@ -39,7 +39,7 @@ public class ColumnNamesMappingTest {
         }
 
         @Override
-        public void processStatment(DecoratedKey key, long timestamp, String what, Map<String, Object> objects) {
+        public void processStatment(DecoratedKey key, long timestamp, String what, Map<String, Object> objects, boolean isCounter) {
             statements.add(what);
         }
 

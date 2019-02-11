@@ -637,6 +637,9 @@ public class SSTableToCQL {
         }
 
         private void writeUsingTimestamp(StringBuilder buf, Map<String, Object> params) {
+            if (cfMetaData.isCounter()) {
+                return;
+            }
             if (timestamp != invalidTimestamp || setAllColumns) {
                 ensureWhitespace(buf);
                 buf.append("USING TIMESTAMP :" + TIMESTAMP_VAR_NAME);
@@ -648,7 +651,7 @@ public class SSTableToCQL {
 
         // Dispatch the CQL
         private void makeStatement(DecoratedKey key, long timestamp, String what, Map<String, Object> objects) {
-            client.processStatment(key, timestamp, what, objects);
+            client.processStatment(key, timestamp, what, objects, cfMetaData.isCounter());
             ++stats.statementsGenerated;
         }
 

@@ -606,7 +606,7 @@ public class BulkLoader {
             }
         }
 
-        private void send(Statement s) {
+        private void send(final Statement s) {
             checkStop();
             
             if (simulate) {
@@ -634,6 +634,7 @@ public class BulkLoader {
                         public void onFailure(Throwable t) {
                             semaphore.release();
                             metrics.statementsFailed += numStatements;
+                            out.println("Error sending: " + s);
                             out.println(t);
                         }
                     }, MoreExecutors.directExecutor());
@@ -759,7 +760,7 @@ public class BulkLoader {
 
         @Override
         public void processStatment(DecoratedKey key, long timestamp, String what,
-                Map<String, Object> objects) {
+                Map<String, Object> objects, boolean isCounter) {
             if (verbose.greaterOrEqual(Verbosity.Chatty)) {
                 out.print("CQL: '");
                 out.print(what);
@@ -771,7 +772,7 @@ public class BulkLoader {
                 out.println();
             }
 
-            boolean allowBatch = what.indexOf("SCYLLA_COUNTER_SHARD_LIST") == -1;
+            boolean allowBatch = !isCounter;
 
             if (preparedStatements != null) {
                 sendPrepared(key, timestamp, what, objects, allowBatch);
