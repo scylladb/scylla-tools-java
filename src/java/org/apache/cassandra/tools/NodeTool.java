@@ -64,7 +64,7 @@ public class NodeTool
                 // Remove for GA: Scrub.class,
                 // Remove until proven otherwise: Verify.class,
                 Flush.class,
-                // Remove for GA: UpgradeSSTable.class,
+                UpgradeSSTable.class,
                 // Remove until supported: GarbageCollect.class,
                 // Remove for GA: DisableAutoCompaction.class,
                 // Remove for GA: EnableAutoCompaction.class,
