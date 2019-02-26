@@ -69,27 +69,30 @@ public class SchemaInsert extends SchemaStatement
     private class JavaDriverRun extends Runner
     {
         final JavaDriverClient client;
+        List<BoundStatement> stmts;
 
         private JavaDriverRun(JavaDriverClient client)
         {
             this.client = client;
+            this.stmts = new ArrayList<>();
         }
 
         public boolean run() throws Exception
         {
-            List<BoundStatement> stmts = new ArrayList<>();
             partitionCount = partitions.size();
 
-            for (PartitionIterator iterator : partitions)
-                while (iterator.hasNext())
-                    stmts.add(bindRow(iterator.next()));
+            if (stmts.size() == 0) {
+                for (PartitionIterator iterator : partitions)
+                    while (iterator.hasNext())
+                        stmts.add(bindRow(iterator.next()));
+            }
 
             rowCount += stmts.size();
 
             // 65535 is max number of stmts per batch, so if we have more, we need to manually batch them
-            for (int j = 0 ; j < stmts.size() ; j += 65535)
+            while (stmts.size() > 0)
             {
-                List<BoundStatement> substmts = stmts.subList(j, Math.min(j + stmts.size(), j + 65535));
+                List<BoundStatement> substmts = stmts.subList(0, Math.min(stmts.size(), 65535));
                 Statement stmt;
                 if (stmts.size() == 1)
                 {
@@ -104,6 +107,7 @@ public class SchemaInsert extends SchemaStatement
                 }
 
                 client.getSession().execute(stmt);
+                stmts = stmts.subList(substmts.size(),stmts.size());
             }
             return true;
         }
