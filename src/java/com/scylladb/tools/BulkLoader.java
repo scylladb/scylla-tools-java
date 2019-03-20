@@ -735,6 +735,9 @@ public class BulkLoader {
         }
 
         public Map<InetAddress, Collection<Range<Token>>> getEndpointRanges() {
+            if (getClusterPartitioner() != getPartitioner()) {
+                return null;
+            }
             HashMap<InetAddress, Collection<Range<Token>>> map = new HashMap<>();
             for (TokenRange range : metadata.getTokenRanges()) {
                 Range<Token> tr = new Range<Token>(getToken(range.getStart()), getToken(range.getEnd()));
