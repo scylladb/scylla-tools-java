@@ -140,7 +140,7 @@ chmod a+rx debian/rules
 
 sudo rm -fv /var/cache/pbuilder/$PRODUCT-tools-$TARGET.tgz
 sudo PRODUCT=$PRODUCT DIST=$TARGET /usr/sbin/pbuilder clean --configfile ./dist/debian/pbuilderrc
-sudo PRODUCT=$PRODUCT DIST=$TARGET /usr/sbin/pbuilder create --configfile ./dist/debian/pbuilderrc
+sudo PRODUCT=$PRODUCT DIST=$TARGET /usr/sbin/pbuilder create --configfile ./dist/debian/pbuilderrc --aptconfdir dist/debian/apt
 sudo PRODUCT=$PRODUCT DIST=$TARGET /usr/sbin/pbuilder update --configfile ./dist/debian/pbuilderrc
 if [ "$TARGET" = "jessie" ]; then
     echo "apt-get install -y -t jessie-backports ca-certificates-java" > build/jessie-pkginst.sh
