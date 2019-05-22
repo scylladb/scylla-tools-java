@@ -3,7 +3,7 @@
 # Uncomment to enable verbose mode.
 #export DH_VERBOSE=1
 
-VERSION = $(shell dpkg-parsechangelog | sed -ne 's/^Version: \([^-|~|+]*.*\)-1/\1/p')
+VERSION = $(shell dpkg-parsechangelog | sed -ne 's/^Version: \([^-|~|+]*.*\)-1/\1/p' | sed -e 's/~rc/.rc/g')
 
 clean:
 	dh_testdir
