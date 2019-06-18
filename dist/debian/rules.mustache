@@ -23,20 +23,8 @@ install:
 	dh_installdirs
 	dh_install
 
-	# Copy in the jar and symlink to something stable
-	dh_install -p {{product}}-tools-core apache-cassandra-$(VERSION).jar \
-		usr/share/scylla/cassandra
-	dh_install apache-cassandra-thrift-$(VERSION).jar \
-		usr/share/scylla/cassandra
-	dh_install -p {{product}}-tools-core scylla-tools-$(VERSION).jar \
-		usr/share/scylla/cassandra
-
-	# Copy stress jars
-	dh_install stress.jar \
-		usr/share/scylla/cassandra
-
-	dh_link -p {{product}}-tools-core usr/share/scylla/cassandra/apache-cassandra-$(VERSION).jar \
-		usr/share/scylla/cassandra/apache-cassandra.jar
+	dh_link -p {{product}}-tools-core usr/share/scylla/cassandra/lib/apache-cassandra-$(VERSION).jar \
+		usr/share/scylla/cassandra/lib/apache-cassandra.jar
 
 # Build architecture-independent files here.
 binary-indep: build install
