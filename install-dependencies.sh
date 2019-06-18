@@ -22,5 +22,5 @@
 if [ "$ID" = "ubuntu" ] || [ "$ID" = "debian" ]; then
     apt -y install openjdk-8-jdk-headless ant ant-optional python
 elif [ "$ID" = "fedora" ] || [ "$ID" = "centos" ]; then
-    yum install -y ant java-1.8.0-openjdk-devel python ant-junit
+    yum install -y ant java-1.8.0-openjdk-devel python ant-junit fakeroot
 fi
