@@ -607,6 +607,13 @@ public class SSTableToCQL {
                 ensureWhitespace(buf);
 
                 int adjustedTTL = ttl;
+
+                // if the row is in fact not actually live, i.e. already explicitly 
+                // marked dead by ttl == expired, set it to a minimal value 
+                // so we can hope it expires again as soon as possible. 
+                if (adjustedTTL == LivenessInfo.EXPIRED_LIVENESS_TTL) {
+                    adjustedTTL = 1;
+                }
                 
                 if (timestamp == invalidTimestamp) {
                     buf.append("USING ");
@@ -619,7 +626,7 @@ public class SSTableToCQL {
                     if (exp < now) {
                         adjustedTTL = 1; // 0 -> no ttl. 1 should disappear fast enoug
                     } else {
-                        adjustedTTL = (int)Math.min(ttl, exp - now);
+                        adjustedTTL = (int)Math.min(adjustedTTL, exp - now);
                     }                    
                 }
                 buf.append(" TTL :" + TTL_VAR_NAME);
