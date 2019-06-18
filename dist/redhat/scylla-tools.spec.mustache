@@ -21,7 +21,11 @@ Requires:       java-headless
 Summary:        Core files for Scylla tools
 Version:        {{version}}
 Release:        {{release}}%{?dist}
-Requires:       java-1.8.0-openjdk-headless python python-yaml
+Requires:       java-1.8.0-openjdk-headless python2
+# Since RHEL7 and RHEL8 has different pacakge name for pyyaml,
+# we need to use a file path to the resolve package name on
+# current distribution.
+Requires:       /usr/lib64/python2.7/site-packages/_yaml.so
 
 %description core
 Core files for scylla tools.
