@@ -70,13 +70,8 @@ install -m644 lib/*.zip $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/lib/
 install -d -m755 $RPM_BUILD_ROOT%{_docdir}/scylla/cassandra/licenses/
 install -m644 lib/licenses/* $RPM_BUILD_ROOT%{_docdir}/scylla/cassandra/licenses/
 
-install -m644 apache-cassandra-%{version}-%{release}.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra
-install -m644 apache-cassandra-thrift-%{version}-%{release}.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra
-install -m644 scylla-tools-%{version}-%{release}.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra
-install -m644 stress.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra
-
 cd $RPM_BUILD_ROOT
-ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{version}-%{release}.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/apache-cassandra.jar
+ln -s %{_datadir}/scylla/cassandra/lib/apache-cassandra-%{version}-%{release}.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/lib/apache-cassandra.jar
 
 %files
 %{_sysconfdir}/bash_completion.d/nodetool-completion
@@ -104,7 +99,6 @@ ln -s %{_datadir}/scylla/cassandra/apache-cassandra-%{version}-%{release}.jar $R
 %{_datadir}/scylla/cassandra/lib/*.jar
 %{_datadir}/scylla/cassandra/lib/*.zip
 %{_docdir}/scylla/cassandra/licenses
-%{_datadir}/scylla/cassandra/*.jar
 %{_bindir}/scylla-sstableloader
 
 %changelog
