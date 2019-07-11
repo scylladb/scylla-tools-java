@@ -57,11 +57,15 @@ public class TableHistograms extends NodeToolCmd
         {
             checkArgument(false, "tablehistograms requires keyspace and table name arguments");
         }
-
-        // calculate percentile of row size and column count
-        long[] estimatedPartitionSize = (long[]) probe.getColumnFamilyMetric(keyspace, table, "EstimatedPartitionSizeHistogram");
-        long[] estimatedColumnCount = (long[]) probe.getColumnFamilyMetric(keyspace, table, "EstimatedColumnCountHistogram");
-
+        long[] estimatedPartitionSize;
+        long[] estimatedColumnCount;
+        try {
+            // calculate percentile of row size and column count
+            estimatedPartitionSize = (long[]) probe.getColumnFamilyMetric(keyspace, table, "EstimatedPartitionSizeHistogram");
+            estimatedColumnCount = (long[]) probe.getColumnFamilyMetric(keyspace, table, "EstimatedColumnCountHistogram");
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Unknown table: " + table + " or keyspace: " + keyspace);
+        }
         // build arrays to store percentile values
         double[] estimatedRowSizePercentiles = new double[7];
         double[] estimatedColumnCountPercentiles = new double[7];
