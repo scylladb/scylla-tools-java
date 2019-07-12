@@ -75,11 +75,11 @@ public class RESTNodeProbe extends NodeProbe
      * @param port TCP port of the remote JMX agent
      * @throws IOException on connection failures
      */
-    public RESTNodeProbe(String host, int port, String username, String password) throws IOException
+    public RESTNodeProbe(String host, int port, int rport, String username, String password) throws IOException
     {
         super(host,port,username,password);
         System.setProperty("apiaddress", host);
-        System.getProperty("apiport", String.valueOf(port) );
+        System.getProperty("apiport", String.valueOf(rport) );
         //TODO add username and password support - first in scylla-apiclient, then here
         config = new APIConfig();
         client = new APIClient(config);
@@ -92,11 +92,11 @@ public class RESTNodeProbe extends NodeProbe
      * @param port TCP port of the remote JMX agent
      * @throws IOException on connection failures
      */
-    public RESTNodeProbe(String host, int port) throws IOException
+    public RESTNodeProbe(String host, int port, int rport) throws IOException
     {
         super(host,port);
         System.setProperty("apiaddress", host);
-        System.getProperty("apiport", String.valueOf(port) );
+        System.getProperty("apiport", String.valueOf(rport) );
         config = new APIConfig();
         client = new APIClient(config);
     }

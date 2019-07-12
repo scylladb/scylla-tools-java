@@ -251,6 +251,9 @@ public class NodeTool
         @Option(type = OptionType.GLOBAL, name = {"-p", "--port"}, description = "Remote jmx agent port number")
         private String port = "7199";
 
+        @Option(type = OptionType.GLOBAL, name = {"-o", "--restport"}, description = "Remote Scylla REST port number")
+        private String rport = "10000";
+
         @Option(type = OptionType.GLOBAL, name = {"-u", "--username"}, description = "Remote jmx agent username")
         private String username = EMPTY;
 
@@ -335,13 +338,13 @@ public class NodeTool
             {
                 if (username.isEmpty())
                     if (REST.equals(protocol)) {
-                        nodeClient = new RESTNodeProbe(host, parseInt(port));
+                        nodeClient = new RESTNodeProbe(host, parseInt(port), parseInt(rport));
                     } else {
                         nodeClient = new NodeProbe(host, parseInt(port));
                     }
                 else
                 if (REST.equals(protocol)) {
-                    nodeClient = new RESTNodeProbe(host, parseInt(port), username, password);
+                    nodeClient = new RESTNodeProbe(host, parseInt(port), parseInt(rport), username, password);
                 } else {
                     nodeClient = new NodeProbe(host, parseInt(port), username, password);
                 }
