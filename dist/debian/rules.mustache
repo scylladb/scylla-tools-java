@@ -20,6 +20,9 @@ build:
 install:
 	dh_testdir
 	dh_testroot
+	mkdir -p $(CURDIR)pylib/usr
+	cd $(CURDIR)/pylib && python setup.py install --no-compile --root $(CURDIR)/pylib/usr
+	cd $(CURDIR)
 	dh_installdirs
 	dh_install
 

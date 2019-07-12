@@ -42,7 +42,8 @@ mkdir -p $RPM_BUILD_ROOT%{_bindir}
 mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/bash_completion.d
 mkdir -p $RPM_BUILD_ROOT%{_datadir}
 
-cp -a pylib/* $RPM_BUILD_ROOT/
+cd pylib && python setup.py install --no-compile --root %{buildroot}
+cd -
 install -m644 dist/common/nodetool-completion $RPM_BUILD_ROOT%{_sysconfdir}/bash_completion.d
 install -d -m755 $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra
 install -m644 conf/cassandra-env.sh $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/

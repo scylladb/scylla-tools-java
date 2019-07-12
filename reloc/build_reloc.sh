@@ -55,7 +55,4 @@ fi
 VERSION=$(./SCYLLA-VERSION-GEN)
 printf "version=%s" $VERSION > build.properties
 ant jar
-mkdir -p build/pylib
-cd pylib && python setup.py install --no-compile --root ../build/pylib
-cd -
 scripts/create-relocatable-package.py --version $VERSION build/scylla-tools-package.tar.gz
