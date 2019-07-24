@@ -146,7 +146,9 @@ public class NodeTool
                 // Remove until proven otherwise: FailureDetectorInfo.class,
                 // Remove until proven otherwise: RefreshSizeEstimates.class
                 // Remove until proven otherwise: RelocateSSTables.class,
-                ViewBuildStatus.class
+                ViewBuildStatus.class,
+                
+                SSTableInfo.class
         );
 
         Cli.CliBuilder<Runnable> builder = Cli.builder("nodetool");
