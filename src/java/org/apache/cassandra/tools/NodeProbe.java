@@ -42,10 +42,13 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import javax.management.InstanceNotFoundException;
 import javax.management.JMX;
+import javax.management.MBeanException;
 import javax.management.MBeanServerConnection;
 import javax.management.MalformedObjectNameException;
 import javax.management.ObjectName;
+import javax.management.ReflectionException;
 import javax.management.openmbean.CompositeData;
 import javax.management.openmbean.OpenDataException;
 import javax.management.openmbean.TabularData;
@@ -812,6 +815,17 @@ public class NodeProbe implements AutoCloseable
         }
     }
 
+    // Note. We're not unpacking this, or changing the local definition of 
+    // the MBean interface, to avoid skewing. 
+    // The return value will be a list of CompositeData
+    public Object getSSTableInfo(String keyspace, String table) throws IOException {
+        try {
+            return mbeanServerConn.invoke(new ObjectName(ssObjName), "getSSTableInfo", new Object[] { keyspace,  table }, new String[] { String.class.getName(), String.class.getName() });
+        } catch (InstanceNotFoundException | MalformedObjectNameException | MBeanException | ReflectionException e) {
+            throw new IOException(e);
+        }        
+    }
+    
     public EndpointSnitchInfoMBean getEndpointSnitchInfoProxy()
     {
         try
