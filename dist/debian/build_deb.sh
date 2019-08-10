@@ -73,6 +73,9 @@ fi
 if [ ! -f /usr/bin/dh_testdir ]; then
     pkg_install debhelper
 fi
+if [ ! -f /usr/bin/fakeroot ]; then
+    pkg_install fakeroot
+fi
 if [ ! -f /usr/bin/pystache ]; then
     if is_redhat_variant; then
         sudo yum install -y /usr/bin/pystache
