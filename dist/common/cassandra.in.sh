@@ -2,6 +2,13 @@
 SCYLLA_HOME=/var/lib/scylla
 SCYLLA_CONF=/etc/scylla
 
+function cp_conf_dir {
+    cp -a "$1"/*.yaml "$2"  2>/dev/null || true
+    cp -a "$1"/*.xml "$2"  2>/dev/null || true
+    cp -a "$1"/*.options "$2"  2>/dev/null || true
+    cp -a "$1"/*.properties "$2"  2>/dev/null || true
+}
+
 # Scylla adaption. Some one will still have to find us SCYLLA_HOME
 # or place us there.
 if [ -f "$SCYLLA_CONF/scylla.yaml" ]; then
@@ -11,10 +18,11 @@ if [ -f "$SCYLLA_CONF/scylla.yaml" ]; then
         # Create a temp config dir for just this execution
         TMPCONF=`mktemp -d`
         trap "rm -rf $TMPCONF" EXIT
-        cp -a "$SCYLLA_CONF"/* "$TMPCONF"
-        # extract config files under /etc/scylla/cassandra/ to $TMPCONF
-        mv $TMPCONF/cassandra/* $TMPCONF
-        rm -rf $TMPCONF/cassandra/
+        cp_conf_dir "$SCYLLA_CONF" "$TMPCONF"
+        if [ -d $SCYLLA_CONF/cassandra/ ]; then
+            # extract config files under /etc/scylla/cassandra/ to $TMPCONF
+            cp_conf_dir "$SCYLLA_CONF/cassandra" "$TMPCONF"
+        fi
         # Filter out scylla specific options that make
         # cassandra options parser go boom.
         # Also add attributes not present in scylla.yaml
