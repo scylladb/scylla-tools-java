@@ -49,9 +49,19 @@ public class NodeTool
 
     public static void main(String... args)
     {
-        List<Class<? extends Runnable>> commands = asList(
+        boolean REST=true;
+        for (String arg:args) {
+            if (arg.startsWith("-r") || arg.startsWith("--protocol")) {
+                String[] param=arg.split("=");
+                if (param.length>1) {
+                    if (!"rest".equals(param[1].toLowerCase())) {
+                System.out.println("Other than REST detected, falling back to jmx");
+                        REST = false; }
+                }
+            }
+        }
+        List<Class<? extends Runnable>> commands = new ArrayList<>(asList(
                 Help.class,
-                Info.class,
                 Ring.class,
                 NetStats.class,
                 CfStats.class,
@@ -147,9 +157,10 @@ public class NodeTool
                 // Remove until proven otherwise: RefreshSizeEstimates.class
                 // Remove until proven otherwise: RelocateSSTables.class,
                 ViewBuildStatus.class,
-                
                 SSTableInfo.class
-        );
+        ));
+
+        if (REST) { commands.add(RESTInfo.class); } else { commands.add(Info.class); }
 
         Cli.CliBuilder<Runnable> builder = Cli.builder("nodetool");
 
@@ -232,11 +243,17 @@ public class NodeTool
     public static abstract class NodeToolCmd implements Runnable
     {
 
+        private final String REST = "rest";
+        private final String JMX = "jmx";
+
         @Option(type = OptionType.GLOBAL, name = {"-h", "--host"}, description = "Node hostname or ip address")
         private String host = "127.0.0.1";
 
         @Option(type = OptionType.GLOBAL, name = {"-p", "--port"}, description = "Remote jmx agent port number")
         private String port = "7199";
+
+        @Option(type = OptionType.GLOBAL, name = {"-o", "--restport"}, description = "Remote Scylla REST port number")
+        private String rport = "10000";
 
         @Option(type = OptionType.GLOBAL, name = {"-u", "--username"}, description = "Remote jmx agent username")
         private String username = EMPTY;
@@ -246,6 +263,9 @@ public class NodeTool
 
         @Option(type = OptionType.GLOBAL, name = {"-pwf", "--password-file"}, description = "Path to the JMX password file")
         private String passwordFilePath = EMPTY;
+
+        @Option(type = OptionType.GLOBAL, name = {"-r", "--protocol"}, description = "Use rest(default, only for what is ported) or jmx(legacy) protocol")
+        private String protocol = REST;
 
         @Override
         public void run()
@@ -317,10 +337,19 @@ public class NodeTool
 
             try
             {
-                if (username.isEmpty())
-                    nodeClient = new NodeProbe(host, parseInt(port));
-                else
-                    nodeClient = new NodeProbe(host, parseInt(port), username, password);
+                if (username.isEmpty()) {
+                    if (REST.equals(protocol)) {
+                        nodeClient = new RESTNodeProbe(host, parseInt(port), parseInt(rport));
+                    } else {
+                        nodeClient = new NodeProbe(host, parseInt(port));
+                    }
+                } else {
+                    if (REST.equals(protocol)) {
+                        nodeClient = new RESTNodeProbe(host, parseInt(port), parseInt(rport), username, password);
+                    } else {
+                        nodeClient = new NodeProbe(host, parseInt(port), username, password);
+                    }
+                }
             } catch (IOException | SecurityException e)
             {
                 Throwable rootCause = Throwables.getRootCause(e);
