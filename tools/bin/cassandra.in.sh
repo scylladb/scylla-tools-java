@@ -46,6 +46,14 @@ fi
 if [ "x$SCYLLA_CONF" = "x" ]; then
     SCYLLA_CONF="$SCYLLA_HOME/conf"
 fi
+
+function cp_conf_dir {
+    cp -a "$1"/*.yaml "$2"  2>/dev/null || true
+    cp -a "$1"/*.xml "$2"  2>/dev/null || true
+    cp -a "$1"/*.options "$2"  2>/dev/null || true
+    cp -a "$1"/*.properties "$2"  2>/dev/null || true
+}
+
 if [ -f "$SCYLLA_CONF/scylla.yaml" ]; then
     if [ -f "$SCYLLA_CONF/cassandra.yaml" ]; then
     CASSANDRA_CONF=$SCYLLA_CONF
@@ -53,8 +61,8 @@ if [ -f "$SCYLLA_CONF/scylla.yaml" ]; then
     # Create a temp config dir for just this execution
     TMPCONF=`mktemp -d`
     trap "rm -rf $TMPCONF" EXIT
-    cp -a "$CASSANDRA_CONF"/* "$TMPCONF"
-    cp -a "$SCYLLA_CONF"/* "$TMPCONF"
+    cp_conf_dir "$CASSANDRA_CONF" "$TMPCONF"
+    cp_conf_dir "$SCYLLA_CONF" "$TMPCONF"
     # Filter out scylla specific options that make
     # cassandra options parser go boom.
     # Also add attributes not present in scylla.yaml
