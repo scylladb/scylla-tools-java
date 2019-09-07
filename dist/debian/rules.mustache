@@ -20,10 +20,9 @@ build:
 install:
 	dh_testdir
 	dh_testroot
-	mkdir -p $(CURDIR)pylib/usr
+	mkdir -p $(CURDIR)pylib/root
 	# Debian overrides site-packages to dist-packages; humor it or nothing works
-	cd $(CURDIR)/pylib && python setup.py install --no-compile --root $(CURDIR)/pylib/usr --install-lib /usr/lib/python2.7/dist-packages
-	cd $(CURDIR)
+	cd $(CURDIR)/pylib && python setup.py install --no-compile --root $(CURDIR)/pylib/root --install-lib /usr/lib/python2.7/dist-packages
 	dh_installdirs
 	dh_install
 
