@@ -972,7 +972,7 @@ public class BulkLoader {
             options.addOption("cph", CONNECTIONS_PER_HOST, "connectionsPerHost",
                     "number of concurrent connections-per-host.");
             // ssl connection-related options
-            options.addOption("s", SSL, "SSL", "Use SSL connection(s)");
+            options.addOption("s", SSL, "SSL", "Use SSL connection(s)", true);
             options.addOption("ts", SSL_TRUSTSTORE, "TRUSTSTORE", "Client SSL: full path to truststore");
             options.addOption("tspw", SSL_TRUSTSTORE_PW, "TRUSTSTORE-PASSWORD",
                     "Client SSL: password of the truststore");
