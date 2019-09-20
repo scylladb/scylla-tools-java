@@ -52,6 +52,7 @@ function cp_conf_dir {
     cp -a "$1"/*.xml "$2"  2>/dev/null || true
     cp -a "$1"/*.options "$2"  2>/dev/null || true
     cp -a "$1"/*.properties "$2"  2>/dev/null || true
+    cp -a "$1"/cassandra-env.sh "$2"  2>/dev/null || true
 }
 
 if [ -f "$SCYLLA_CONF/scylla.yaml" ]; then
