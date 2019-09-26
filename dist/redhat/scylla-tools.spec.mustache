@@ -70,6 +70,8 @@ install -m644 lib/*.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/lib/
 install -m644 lib/*.zip $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/lib/
 install -d -m755 $RPM_BUILD_ROOT%{_docdir}/scylla/cassandra/licenses/
 install -m644 lib/licenses/* $RPM_BUILD_ROOT%{_docdir}/scylla/cassandra/licenses/
+install -d -m755 $RPM_BUILD_ROOT%{_docdir}/scylla/cassandra/
+install -m644 doc/cql3/CQL.css doc/cql3/CQL.html $RPM_BUILD_ROOT%{_docdir}/scylla/cassandra/
 
 cd $RPM_BUILD_ROOT
 ln -s %{_datadir}/scylla/cassandra/lib/apache-cassandra-%{version}-%{release}.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/lib/apache-cassandra.jar
@@ -100,6 +102,8 @@ ln -s %{_datadir}/scylla/cassandra/lib/apache-cassandra-%{version}-%{release}.ja
 %{_datadir}/scylla/cassandra/lib/*.jar
 %{_datadir}/scylla/cassandra/lib/*.zip
 %{_docdir}/scylla/cassandra/licenses
+%{_docdir}/scylla/cassandra/CQL.css
+%{_docdir}/scylla/cassandra/CQL.html
 %{_bindir}/scylla-sstableloader
 
 %changelog
