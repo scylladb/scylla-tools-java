@@ -47,7 +47,7 @@ if [ "x$SCYLLA_CONF" = "x" ]; then
     SCYLLA_CONF="$SCYLLA_HOME/conf"
 fi
 
-function cp_conf_dir () {
+cp_conf_dir () {
     cp -a "$1"/*.yaml "$2"  2>/dev/null || true
     cp -a "$1"/*.xml "$2"  2>/dev/null || true
     cp -a "$1"/*.options "$2"  2>/dev/null || true

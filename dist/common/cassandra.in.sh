@@ -2,7 +2,7 @@
 SCYLLA_HOME=/var/lib/scylla
 SCYLLA_CONF=/etc/scylla
 
-function cp_conf_dir () {
+cp_conf_dir () {
     cp -a "$1"/*.yaml "$2"  2>/dev/null || true
     cp -a "$1"/*.xml "$2"  2>/dev/null || true
     cp -a "$1"/*.options "$2"  2>/dev/null || true
