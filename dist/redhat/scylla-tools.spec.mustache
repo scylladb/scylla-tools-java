@@ -41,62 +41,7 @@ Core files for scylla tools.
 
 %install
 rm -rf $RPM_BUILD_ROOT
-mkdir -p $RPM_BUILD_ROOT%{_bindir}
-mkdir -p $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/bin
-mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/bash_completion.d
-mkdir -p $RPM_BUILD_ROOT%{_datadir}
-
-install -d -m755 $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/pylib
-cp -r pylib/cqlshlib $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/pylib
-install -m644 dist/common/nodetool-completion $RPM_BUILD_ROOT%{_sysconfdir}/bash_completion.d
-install -d -m755 $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra
-install -m644 conf/cassandra-env.sh $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
-install -m644 conf/logback.xml $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
-install -m644 conf/logback-tools.xml $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
-install -m644 conf/jvm.options $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
-install -d -m755 $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/
-install -m644 dist/common/cassandra.in.sh $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/bin
-install -d -m755 $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/bin
-install -m755 bin/nodetool $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/bin
-install -m755 bin/sstableloader $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/bin
-install -m755 bin/scylla-sstableloader $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/bin
-install -m755 bin/cqlsh $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/bin
-install -m755 bin/cqlsh.py $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/bin
-install -m755 tools/bin/filter_cassandra_attributes.py $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/bin
-install -m755 tools/bin/cassandra_attributes.py $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/bin
-install -m755 tools/bin/cassandra-stress $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/bin
-install -m755 tools/bin/cassandra-stressd $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/bin
-install -m755 tools/bin/sstabledump $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/bin
-install -m755 tools/bin/sstablelevelreset $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/bin
-install -m755 tools/bin/sstablemetadata $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/bin
-install -m755 tools/bin/sstablerepairedset $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/bin
-THUNK='#!/usr/bin/env bash
-b="$(basename "$0")"
-bindir="/opt/scylladb/share/cassandra/bin"
-PATH="$bindir:$PATH" exec -a "$0" "$b"'
-
-# install thunk scripts for scylla-tools-core
-for i in filter_cassandra_attributes.py cassandra_attributes.py scylla-sstableloader; do
-    echo "$THUNK" > $RPM_BUILD_ROOT%{_bindir}/$i
-    chmod 755 $RPM_BUILD_ROOT%{_bindir}/$i
-done
-
-# install thunk scripts for scylla-tools
-for i in nodetool sstableloader cqlsh cqlsh.py cassandra-stress cassandra-stressd sstabledump sstablelevelreset sstablemetadata sstablerepairedset; do
-    echo "$THUNK" > $RPM_BUILD_ROOT%{_bindir}/$i
-    chmod 755 $RPM_BUILD_ROOT%{_bindir}/$i
-done
-
-install -d -m755 $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/lib/
-install -m644 lib/*.jar $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/lib/
-install -m644 lib/*.zip $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/lib/
-install -d -m755 $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/lib/licenses/
-install -m644 lib/licenses/* $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/lib/licenses/
-install -d -m755 $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/doc/cql3/
-install -m644 doc/cql3/CQL.css doc/cql3/CQL.html $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/doc/cql3/
-
-cd $RPM_BUILD_ROOT
-ln -s /opt/scylladb/share/cassandra/lib/apache-cassandra-%{version}-%{release}.jar $RPM_BUILD_ROOT/opt/scylladb/share/cassandra/lib/apache-cassandra.jar
+./install.sh --root "$RPM_BUILD_ROOT"
 
 %files
 %{_sysconfdir}/bash_completion.d/nodetool-completion
