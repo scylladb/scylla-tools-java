@@ -8,31 +8,7 @@ override_dh_auto_clean:
 
 override_dh_auto_install:
 	dh_auto_install
-	mkdir -p $(CURDIR)/debian/{{product}}-tools/opt/scylladb/share/cassandra/pylib
-	cp -r $(CURDIR)/pylib/cqlshlib $(CURDIR)/debian/{{product}}-tools/opt/scylladb/share/cassandra/pylib
-
-	dh_link -p {{product}}-tools-core opt/scylladb/share/cassandra/lib/apache-cassandra-$(VERSION).jar \
-		opt/scylladb/share/cassandra/lib/apache-cassandra.jar
-
-	mkdir -p $(CURDIR)/debian/{{product}}-tools-core/usr/bin
-# install thunk scripts for scylla-tools-core
-	for i in filter_cassandra_attributes.py cassandra_attributes.py scylla-sstableloader; do \
-		echo '#!/usr/bin/env bash' > $(CURDIR)/debian/{{product}}-tools-core/usr/bin/$$i; \
-		echo 'b="$$(basename "$$0")"' >> $(CURDIR)/debian/{{product}}-tools-core/usr/bin/$$i; \
-		echo 'bindir="/opt/scylladb/share/cassandra/bin"' >> $(CURDIR)/debian/{{product}}-tools-core/usr/bin/$$i; \
-		echo 'PATH="$$bindir:$$PATH" exec -a "$$0" "$$b"' >> $(CURDIR)/debian/{{product}}-tools-core/usr/bin/$$i; \
-		chmod 755 $(CURDIR)/debian/{{product}}-tools-core/usr/bin/$$i; \
-	done
-
-	mkdir -p $(CURDIR)/debian/{{product}}-tools/usr/bin
-# install thunk scripts for scylla-tools
-	for i in nodetool sstableloader cqlsh cqlsh.py cassandra-stress cassandra-stressd sstabledump sstablelevelreset sstablemetadata sstablerepairedset; do \
-		echo '#!/usr/bin/env bash' > $(CURDIR)/debian/{{product}}-tools/usr/bin/$$i; \
-		echo 'b="$$(basename "$$0")"' >> $(CURDIR)/debian/{{product}}-tools/usr/bin/$$i; \
-		echo 'bindir="/opt/scylladb/share/cassandra/bin"' >> $(CURDIR)/debian/{{product}}-tools/usr/bin/$$i; \
-		echo 'PATH="$$bindir:$$PATH" exec -a "$$0" "$$b"' >> $(CURDIR)/debian/{{product}}-tools/usr/bin/$$i; \
-		chmod 755 $(CURDIR)/debian/{{product}}-tools/usr/bin/$$i; \
-	done
+	./install.sh --root "$(CURDIR)/debian/tmp"
 
 override_dh_makeshlibs:
 
