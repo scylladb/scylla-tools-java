@@ -30,14 +30,15 @@ Options:
   --root /path/to/root     alternative install root (default /)
   --prefix /prefix         directory prefix (default /usr)
   --etcdir /etc            specify etc directory path (default /etc)
+  --nonroot                install Scylla without required root priviledge
   --help                   this helpful message
 EOF
     exit 1
 }
 
 root=/
-prefix=/opt/scylladb
 etcdir=/etc
+nonroot=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -53,6 +54,10 @@ while [ $# -gt 0 ]; do
             etcdir="$2"
             shift 2
             ;;
+        "--nonroot")
+            nonroot=true
+            shift 1
+            ;;
         "--help")
             shift 1
 	    print_usage
@@ -63,15 +68,29 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+if [ -z "$prefix" ]; then
+    if $nonroot; then
+        prefix=~/scylladb
+    else
+        prefix=/opt/scylladb
+    fi
+fi
+
 scylla_version=$(cat SCYLLA-VERSION-FILE)
 scylla_release=$(cat SCYLLA-RELEASE-FILE)
 
-rprefix="$root/$prefix"
-retc="$root/$etcdir"
-rusr="$root/usr"
+rprefix=$(realpath -m "$root/$prefix")
+if ! $nonroot; then
+    retc="$root/$etcdir"
+    rusr="$root/usr"
+else
+    retc="$rprefix/$etcdir"
+fi
 
 install -d -m755 "$rprefix"/share/cassandra/bin
-install -d -m755 "$rusr"/bin
+if ! $nonroot; then
+    install -d -m755 "$rusr"/bin
+fi
 
 thunk="#!/usr/bin/env bash
 b=\"\$(basename \"\$0\")\"
@@ -97,9 +116,16 @@ install -m644 dist/common/cassandra.in.sh "$rprefix"/share/cassandra/bin
 for i in tools/bin/{filter_cassandra_attributes.py,cassandra_attributes.py} bin/scylla-sstableloader; do
     bn=$(basename $i)
     install -m755 $i "$rprefix"/share/cassandra/bin
-    echo "$thunk" > "$rusr"/bin/$bn
-    chmod 755 "$rusr"/bin/$bn
+    if ! $nonroot; then
+        echo "$thunk" > "$rusr"/bin/$bn
+        chmod 755 "$rusr"/bin/$bn
+    fi
 done
+if $nonroot; then
+    sed -i -e "s#/var/lib/scylla#$rprefix#g" "$rprefix"/share/cassandra/bin/cassandra.in.sh
+    sed -i -e "s#/etc/scylla#$retc/scylla#g" "$rprefix"/share/cassandra/bin/cassandra.in.sh
+    sed -i -e "s#/opt/scylladb/#$rprefix/#g" "$rprefix"/share/cassandra/bin/cassandra.in.sh
+fi
 
 # scylla-tools
 install -d -m755 "$rprefix"/share/cassandra/pylib
@@ -109,6 +135,8 @@ cp -r pylib/cqlshlib "$rprefix"/share/cassandra/pylib
 for i in bin/{nodetool,sstableloader,cqlsh,cqlsh.py} tools/bin/{cassandra-stress,cassandra-stressd,sstabledump,sstablelevelreset,sstablemetadata,sstablerepairedset}; do
     bn=$(basename $i)
     install -m755 $i "$rprefix"/share/cassandra/bin
-    echo "$thunk" > "$rusr"/bin/$bn
-    chmod 755 "$rusr"/bin/$bn
+    if ! $nonroot; then
+        echo "$thunk" > "$rusr"/bin/$bn
+        chmod 755 "$rusr"/bin/$bn
+    fi
 done
