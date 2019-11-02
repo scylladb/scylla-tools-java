@@ -1088,9 +1088,9 @@ or         public EstimatedHistogram(JsonObject obj) {
 
         uriCFMetricRegistry.put("LiveDiskSpaceUsed", "live_disk_space_used");
         uriCFMetricRegistry.put("TotalDiskSpaceUsed", "total_disk_space_used");
-//        uriCFMetricRegistry.put("MinPartitionSize", "MinRowSize", "min_row_size");
-//        uriCFMetricRegistry.put("MaxPartitionSize", "MaxRowSize", "max_row_size");
-//        uriCFMetricRegistry.put("MeanPartitionSize", "MeanRowSize", "mean_row_size");
+        uriCFMetricRegistry.put("MinPartitionSize", "min_row_size");
+        uriCFMetricRegistry.put("MaxPartitionSize", "max_row_size");
+        uriCFMetricRegistry.put("MeanPartitionSize", "mean_row_size");
 
         uriCFMetricRegistry.put("BloomFilterFalsePositives", "bloom_filter_false_positives");
         uriCFMetricRegistry.put("RecentBloomFilterFalsePositives", "recent_bloom_filter_false_positives");
@@ -1136,6 +1136,15 @@ or         public EstimatedHistogram(JsonObject obj) {
         uriCFMetricRegistry.put("CoordinatorReadLatency", "coordinator/read");
         uriCFMetricRegistry.put("CoordinatorScanLatency", "coordinator/scan");
         uriCFMetricRegistry.put("WaitingOnFreeMemtableSpace", "waiting_on_free_memtable");
+
+
+        uriCFMetricRegistry.put("WriteLatency", "write_latency/estimated_recent_histogram");
+        uriCFMetricRegistry.put("ReadLatency", "read_latency/estimated_recent_histogram");
+
+        uriCFMetricRegistry.put("WriteTotalLatency", "write_latency/estimated_histogram");
+        uriCFMetricRegistry.put("ReadTotalLatency", "read_latency/estimated_histogram");
+
+
 
         //TODO latencyMetrics fromTableMetrics
 
