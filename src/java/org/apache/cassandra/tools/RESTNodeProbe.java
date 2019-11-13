@@ -31,6 +31,8 @@ import org.apache.cassandra.db.marshal.AsciiType;
 import org.apache.cassandra.locator.DynamicEndpointSnitchMBean;
 import org.apache.cassandra.locator.EndpointSnitchInfoMBean;
 import org.apache.cassandra.metrics.CassandraMetricsRegistry;
+import org.apache.cassandra.metrics.ScyllaJmxHistogram;
+import org.apache.cassandra.metrics.ScyllaJmxTimer;
 import org.apache.cassandra.metrics.StorageMetrics;
 import org.apache.cassandra.metrics.TableMetrics;
 import org.apache.cassandra.metrics.TableMetrics.Sampler;
@@ -1123,7 +1125,7 @@ or         public EstimatedHistogram(JsonObject obj) {
         uriCFMetricRegistry.put("RowCacheHit", "row_cache_hit");
         uriCFMetricRegistry.put("RowCacheMiss", "row_cache_miss");
         // TODO: implement
-//        uriCFMetricRegistry.put("PercentRepaired","");
+        uriCFMetricRegistry.put("PercentRepaired","");
 
         //TODO globalLatency from TableMetrics
 
@@ -1137,19 +1139,19 @@ or         public EstimatedHistogram(JsonObject obj) {
         uriCFMetricRegistry.put("CoordinatorScanLatency", "coordinator/scan");
         uriCFMetricRegistry.put("WaitingOnFreeMemtableSpace", "waiting_on_free_memtable");
 
+        //TODO verify latencyMetrics fromTableMetrics
+        uriCFMetricRegistry.put("WriteLatency", "write_latency/moving_average_histogram");
+        uriCFMetricRegistry.put("ReadLatency", "read_latency/moving_average_histogram");
 
-        uriCFMetricRegistry.put("WriteLatency", "write_latency/estimated_recent_histogram");
-        uriCFMetricRegistry.put("ReadLatency", "read_latency/estimated_recent_histogram");
+        uriCFMetricRegistry.put("WriteTotalLatency", "write_latency");
+        uriCFMetricRegistry.put("ReadTotalLatency", "read_latency");
 
-        uriCFMetricRegistry.put("WriteTotalLatency", "write_latency/estimated_histogram");
-        uriCFMetricRegistry.put("ReadTotalLatency", "read_latency/estimated_histogram");
-
-
-
-        //TODO latencyMetrics fromTableMetrics
+        uriCFMetricRegistry.put("CasPrepare","cas_prepare");
+        uriCFMetricRegistry.put("CasPropose","cas_propose");
+        uriCFMetricRegistry.put("CasCommit","cas_commit");
 
         // TODO: implement
-        //registry.createDummyTableCounter("DroppedMutations");
+        uriCFMetricRegistry.put("DroppedMutations","");
 
 
     }
@@ -1174,6 +1176,9 @@ or         public EstimatedHistogram(JsonObject obj) {
         if (ks!=null && cf!=null) {
             post="/" + ks + ":" + cf;
         }
+        if (!uriCFMetricRegistry.containsKey(metricName)) {
+            throw new RuntimeException("Table metric lacks its REST mapping:" + metricName);
+        }
             switch(metricName)
             {
                 case "BloomFilterDiskSpaceUsed":
@@ -1191,13 +1196,6 @@ or         public EstimatedHistogram(JsonObject obj) {
                 case "RecentBloomFilterFalsePositives":
                 case "SnapshotsSize": {
                     return client.getLongValue("/column_family/metrics/" + uriCFMetricRegistry.get(metricName) + post);
-//                    return JMX.newMBeanProxy(mbeanServerConn, oName, CassandraMetricsRegistry.JmxGaugeMBean.class).getValue();
-                }
-                case "EstimatedPartitionSizeHistogram":
-                case "EstimatedColumnCountHistogram": {
-                    return client.getEstimatedHistogramAsLongArrValue("/column_family/metrics/"+ uriCFMetricRegistry.get(metricName)+post); //TODO fix conversion
-                    //TODO
-                    // APIClient::getEstimatedHistogramAsLongArrValue
                 }
                 case "LiveSSTableCount": //Integer
                 case "PendingCompactions": {
@@ -1206,21 +1204,17 @@ or         public EstimatedHistogram(JsonObject obj) {
                         return client.getLongValue("/column_family/metrics/" + uriCFMetricRegistry.get(metricName) + post);
                     }
                     return client.getIntValue("/column_family/metrics/" + uriCFMetricRegistry.get(metricName) + post);
-//                    return JMX.newMBeanProxy(mbeanServerConn, oName, CassandraMetricsRegistry.JmxGaugeMBean.class).getValue();
                 }
                 case "KeyCacheHitRate":
                 case "BloomFilterFalseRatio": //Double
                 case "CompressionRatio":
                 case "RecentBloomFilterFalseRatio":
                 {
-
                     return client.getDoubleValue("/column_family/metrics/" + uriCFMetricRegistry.get(metricName) + post);
-//                    return JMX.newMBeanProxy(mbeanServerConn, oName, CassandraMetricsRegistry.JmxGaugeMBean.class).getValue();
                 }
-                case "PercentRepaired": //Double //TODO types dedup - similar as with getReader on getCacheMetric !!!
+                case "PercentRepaired":
                 { //TODO - this needs server implementation !!!!
                     return 0D;
-//                    return JMX.newMBeanProxy(mbeanServerConn, oName, CassandraMetricsRegistry.JmxGaugeMBean.class).getValue();
                 }
                 case "LiveDiskSpaceUsed":
                 case "MemtableSwitchCount":
@@ -1229,33 +1223,32 @@ or         public EstimatedHistogram(JsonObject obj) {
                 case "WriteTotalLatency":
                 case "ReadTotalLatency":
                 case "PendingFlushes":
-                case "DroppedMutations":
                     return client.getLongValue("/column_family/metrics/"+ uriCFMetricRegistry.get(metricName)+ post);
-//                    return JMX.newMBeanProxy(mbeanServerConn, oName, CassandraMetricsRegistry.JmxCounterMBean.class).getCount();
+                case "DroppedMutations":
+                    return 0L;
+                case "CasPrepare":
+                case "CasPropose":
+                case "CasCommit":
                 case "CoordinatorReadLatency":
                 case "CoordinatorScanLatency":
                 case "ReadLatency":
                 case "WriteLatency": //TODO return histogram???
                 {
-                    // TODO: this is not atomic.
-//                    super.update(obj.getJsonObject("meter"));
-//                    histogram = new Histogram(obj.getJsonObject("hist"));
-
-                    JsonObject obj = client.getJsonObj("/column_family/metrics/"+ uriCFMetricRegistry.get(metricName)+ post,null);
-//                    JsonArray rates = obj.getJsonArray("rates");
-//                    Double oneMinuteRate = rates.getJsonNumber(0).doubleValue();
-//                    Double fiveMinuteRate = rates.getJsonNumber(1).doubleValue();
-//                    Double fifteenMinuteRate = rates.getJsonNumber(2).doubleValue();
-//                    Double meanRate = obj.getJsonNumber("mean_rate").doubleValue();
-                    Long count = obj.getJsonNumber("count").longValue();
-                    return count;
+                    String alias=uriCFMetricRegistry.get(metricName);
+                    try {
+                        JsonObject obj = client.getJsonObj("/column_family/metrics/" + alias + post, null);
+                        return new ScyllaJmxTimer(obj, metricName);
+                    } catch (IllegalStateException e) {
+                        return new ScyllaJmxTimer();
+                    }
                 }
-//                    return JMX.newMBeanProxy(mbeanServerConn, oName, CassandraMetricsRegistry.JmxTimerMBean.class);
+                case "EstimatedPartitionSizeHistogram":
+                case "EstimatedColumnCountHistogram":
                 case "LiveScannedHistogram":
                 case "SSTablesPerReadHistogram":
                 case "TombstoneScannedHistogram": //TODO return histogram???
-                    return client.getEstimatedHistogramAsLongArrValue("/column_family/metrics/"+ uriCFMetricRegistry.get(metricName)+"/"+ks+":"+cf); //TODO fix conversion
-//                    return JMX.newMBeanProxy(mbeanServerConn, oName, CassandraMetricsRegistry.JmxHistogramMBean.class);
+                    JsonObject obj = client.getJsonObj("/column_family/metrics/"+ uriCFMetricRegistry.get(metricName)+post, null);
+                    return new ScyllaJmxHistogram(obj,metricName);
                 default:
                     throw new RuntimeException("Unknown table metric " + metricName);
             }
