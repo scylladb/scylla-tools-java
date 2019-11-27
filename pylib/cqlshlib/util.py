@@ -15,14 +15,22 @@
 # limitations under the License.
 
 
+from __future__ import print_function
 import cProfile
 import codecs
 import pstats
 
-from itertools import izip
+try:
+    from itertools import izip
+except ImportError:
+    izip = zip
+    
 from datetime import timedelta, tzinfo
-from StringIO import StringIO
-
+try:
+    from StringIO import StringIO
+except ImportError:
+    from io import StringIO
+    
 try:
     from line_profiler import LineProfiler
     HAS_LINE_PROFILER = True
@@ -161,6 +169,6 @@ def profile_off(pr, file_name):
     ret = s.getvalue()
     if file_name:
         with open(file_name, 'w') as f:
-            print "Writing to %s\n" % (f.name, )
+            print("Writing to %s\n" % (f.name, ))
             f.write(ret)
     return ret

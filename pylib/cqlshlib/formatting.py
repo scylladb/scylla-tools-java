@@ -485,7 +485,7 @@ def format_value_text(val, encoding, colormap, quote=False, **_):
     if quote:
         bval = "'%s'" % bval
 
-    return bval if colormap is NO_COLOR_MAP else color_text(bval, colormap, wcwidth.wcswidth(bval.decode(encoding)))
+    return bval if colormap is NO_COLOR_MAP else color_text(bval.decode(encoding), colormap, wcwidth.wcswidth(bval.decode(encoding)))
 
 
 # name alias
