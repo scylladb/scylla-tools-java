@@ -78,7 +78,7 @@ public class RESTInfo extends NodeToolCmd
         // Exceptions
         System.out.printf("%-23s: %s%n", "Exceptions", probe.getStorageMetric("Exceptions"));
 
-        RESTNodeProbe cacheService = probe;
+        CacheServiceMBean cacheService = probe.getCacheServiceMBean();
 
         // Key Cache: Hits, Requests, RecentHitRate, SavePeriodInSeconds
         System.out.printf("%-23s: entries %d, size %s, capacity %s, %d hits, %d requests, %.3f recent hit rate, %d save period in seconds%n",
