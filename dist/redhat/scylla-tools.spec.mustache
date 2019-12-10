@@ -29,7 +29,6 @@ Requires:       /usr/lib64/python2.7/site-packages/_yaml.so
 
 %global __brp_python_bytecompile %{nil}
 %global __brp_mangle_shebangs %{nil}
-%global __brp_python_hardlink %{nil}
 
 %description core
 Core files for scylla tools.
@@ -46,7 +45,7 @@ mkdir -p $RPM_BUILD_ROOT%{_bindir}
 mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/bash_completion.d
 mkdir -p $RPM_BUILD_ROOT%{_datadir}
 
-cd pylib && python setup.py install --no-compile --root %{buildroot}
+cd pylib && python2 setup.py install --no-compile --root %{buildroot}
 cd -
 install -m644 dist/common/nodetool-completion $RPM_BUILD_ROOT%{_sysconfdir}/bash_completion.d
 install -d -m755 $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra
