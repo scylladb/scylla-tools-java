@@ -27,6 +27,10 @@ Requires:       java-1.8.0-openjdk-headless python2
 # current distribution.
 Requires:       /usr/lib64/python2.7/site-packages/_yaml.so
 
+%global __brp_python_bytecompile %{nil}
+%global __brp_mangle_shebangs %{nil}
+%global __brp_python_hardlink %{nil}
+
 %description core
 Core files for scylla tools.
 
