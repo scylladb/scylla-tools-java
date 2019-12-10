@@ -78,4 +78,4 @@ ln -fv $RELOC_PKG $RPMBUILD/SOURCES/
 pystache dist/redhat/scylla-tools.spec.mustache "{ \"version\": \"$SCYLLA_VERSION\", \"release\": \"$SCYLLA_RELEASE\", \"product\": \"$PRODUCT\", \"$PRODUCT\": true }" > $RPMBUILD/SPECS/scylla-tools.spec
 
 # this rpm can be install on both fedora / centos7, so drop distribution name from the file name
-rpmbuild -ba --define "_topdir $RPMBUILD" --undefine "dist" $RPM_JOBS_OPTS $RPMBUILD/SPECS/scylla-tools.spec
+rpmbuild -ba --define '_binary_payload w2.xzdio' --define "_topdir $RPMBUILD" --undefine "dist" $RPM_JOBS_OPTS $RPMBUILD/SPECS/scylla-tools.spec
