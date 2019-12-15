@@ -41,44 +41,20 @@ Core files for scylla tools.
 
 %install
 rm -rf $RPM_BUILD_ROOT
-mkdir -p $RPM_BUILD_ROOT%{_bindir}
-mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/bash_completion.d
-mkdir -p $RPM_BUILD_ROOT%{_datadir}
-
-cd pylib && python2 setup.py install --no-compile --root %{buildroot}
-cd -
-install -m644 dist/common/nodetool-completion $RPM_BUILD_ROOT%{_sysconfdir}/bash_completion.d
-install -d -m755 $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra
-install -m644 conf/cassandra-env.sh $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
-install -m644 conf/logback.xml $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
-install -m644 conf/logback-tools.xml $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
-install -m644 conf/jvm.options $RPM_BUILD_ROOT%{_sysconfdir}/scylla/cassandra/
-install -d -m755 $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
-install -m644 dist/common/cassandra.in.sh $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/
-install -m755 bin/nodetool $RPM_BUILD_ROOT%{_bindir}
-install -m755 bin/sstableloader $RPM_BUILD_ROOT%{_bindir}
-install -m755 bin/scylla-sstableloader $RPM_BUILD_ROOT%{_bindir}
-install -m755 bin/cqlsh $RPM_BUILD_ROOT%{_bindir}
-install -m755 bin/cqlsh.py $RPM_BUILD_ROOT%{_bindir}
-install -m755 tools/bin/filter_cassandra_attributes.py $RPM_BUILD_ROOT%{_bindir}
-install -m755 tools/bin/cassandra_attributes.py $RPM_BUILD_ROOT%{_bindir}
-install -m755 tools/bin/cassandra-stress $RPM_BUILD_ROOT%{_bindir}
-install -m755 tools/bin/cassandra-stressd $RPM_BUILD_ROOT%{_bindir}
-install -m755 tools/bin/sstabledump $RPM_BUILD_ROOT%{_bindir}
-install -m755 tools/bin/sstablelevelreset $RPM_BUILD_ROOT%{_bindir}
-install -m755 tools/bin/sstablemetadata $RPM_BUILD_ROOT%{_bindir}
-install -m755 tools/bin/sstablerepairedset $RPM_BUILD_ROOT%{_bindir}
-install -d -m755 $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/lib/
-install -m644 lib/*.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/lib/
-install -m644 lib/*.zip $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/lib/
-install -d -m755 $RPM_BUILD_ROOT%{_docdir}/scylla/cassandra/licenses/
-install -m644 lib/licenses/* $RPM_BUILD_ROOT%{_docdir}/scylla/cassandra/licenses/
-
-cd $RPM_BUILD_ROOT
-ln -s %{_datadir}/scylla/cassandra/lib/apache-cassandra-%{version}-%{release}.jar $RPM_BUILD_ROOT%{_datadir}/scylla/cassandra/lib/apache-cassandra.jar
+./install.sh --root "$RPM_BUILD_ROOT"
 
 %files
 %{_sysconfdir}/bash_completion.d/nodetool-completion
+/opt/scylladb/share/cassandra/bin/nodetool
+/opt/scylladb/share/cassandra/bin/sstableloader
+/opt/scylladb/share/cassandra/bin/cqlsh
+/opt/scylladb/share/cassandra/bin/cqlsh.py
+/opt/scylladb/share/cassandra/bin/cassandra-stress
+/opt/scylladb/share/cassandra/bin/cassandra-stressd
+/opt/scylladb/share/cassandra/bin/sstabledump
+/opt/scylladb/share/cassandra/bin/sstablelevelreset
+/opt/scylladb/share/cassandra/bin/sstablemetadata
+/opt/scylladb/share/cassandra/bin/sstablerepairedset
 %{_bindir}/nodetool
 %{_bindir}/sstableloader
 %{_bindir}/cqlsh
@@ -89,21 +65,25 @@ ln -s %{_datadir}/scylla/cassandra/lib/apache-cassandra-%{version}-%{release}.ja
 %{_bindir}/sstablelevelreset
 %{_bindir}/sstablemetadata
 %{_bindir}/sstablerepairedset
-%{_prefix}/lib/python2.7/site-packages/cassandra_pylib-0.0.0-py2.7.egg-info
-%{_prefix}/lib/python2.7/site-packages/cqlshlib/*
+/opt/scylladb/share/cassandra/pylib/*
 
 %files core
 %{_sysconfdir}/scylla/cassandra/cassandra-env.sh
 %{_sysconfdir}/scylla/cassandra/logback.xml
 %{_sysconfdir}/scylla/cassandra/logback-tools.xml
 %{_sysconfdir}/scylla/cassandra/jvm.options
+/opt/scylladb/share/cassandra/bin/filter_cassandra_attributes.py
+/opt/scylladb/share/cassandra/bin/cassandra_attributes.py
 %{_bindir}/filter_cassandra_attributes.py
 %{_bindir}/cassandra_attributes.py
-%{_datadir}/scylla/cassandra/cassandra.in.sh
-%{_datadir}/scylla/cassandra/lib/*.jar
-%{_datadir}/scylla/cassandra/lib/*.zip
-%{_docdir}/scylla/cassandra/licenses
 %{_bindir}/scylla-sstableloader
+/opt/scylladb/share/cassandra/bin/cassandra.in.sh
+/opt/scylladb/share/cassandra/lib/*.jar
+/opt/scylladb/share/cassandra/lib/*.zip
+/opt/scylladb/share/cassandra/lib/licenses
+/opt/scylladb/share/cassandra/doc/cql3/CQL.css
+/opt/scylladb/share/cassandra/doc/cql3/CQL.html
+/opt/scylladb/share/cassandra/bin/scylla-sstableloader
 
 %changelog
 * Fri Aug  7 2015 Takuya ASADA Takuya ASADA <syuu@cloudius-systems.com>

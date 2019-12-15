@@ -1,53 +1,25 @@
 #!/usr/bin/make -f
 
-# Uncomment to enable verbose mode.
-#export DH_VERBOSE=1
+override_dh_auto_configure:
 
-VERSION = $(shell dpkg-parsechangelog | sed -ne 's/^Version: \([^-|~|+]*.*\)-1/\1/p' | sed -e 's/~rc/.rc/g')
+override_dh_auto_build:
 
-clean:
-	dh_testdir
-	dh_testroot
-	rm -f build-stamp build.properties
-	rm -rf bin/java
-	find -name "*.pyc" -exec rm '{}' ';'
-	find -name "*py.class" -exec rm '{}' ';'
-	$(RM) -r pylib/build
-	dh_clean
+override_dh_auto_clean:
 
-build:
+override_dh_auto_install:
+	dh_auto_install
+	./install.sh --root "$(CURDIR)/debian/tmp"
 
-install:
-	dh_testdir
-	dh_testroot
-	mkdir -p $(CURDIR)pylib/root
-	# Debian overrides site-packages to dist-packages; humor it or nothing works
-	cd $(CURDIR)/pylib && python setup.py install --no-compile --root $(CURDIR)/pylib/root --install-lib /usr/lib/python2.7/dist-packages
-	dh_installdirs
-	dh_install
+override_dh_makeshlibs:
 
-	dh_link -p {{product}}-tools-core usr/share/scylla/cassandra/lib/apache-cassandra-$(VERSION).jar \
-		usr/share/scylla/cassandra/lib/apache-cassandra.jar
+override_dh_shlibdeps:
 
-# Build architecture-independent files here.
-binary-indep: build install
-	dh_testdir
-	dh_testroot
-	dh_installchangelogs
-	dh_installinit -u'start 50 2 3 4 5 . stop 50 0 1 6 .'
-	dh_installdocs README.asc CHANGES.txt NEWS.txt doc/cql3/CQL.css doc/cql3/CQL.html CASSANDRA-14092.txt
-	dh_installexamples tools/*.yaml
-#	dh_bash-completion
-	dh_compress
+override_dh_fixperms:
 	dh_fixperms
-	dh_installdeb
-	dh_gencontrol
-	dh_md5sums
-	dh_builddeb
+	chmod 755 $(CURDIR)/debian/{{product}}-tools-core/opt/scylladb/share/cassandra/bin/cassandra_attributes.py
+	chmod 755 $(CURDIR)/debian/{{product}}-tools-core/opt/scylladb/share/cassandra/bin/filter_cassandra_attributes.py
 
-# Build architecture-dependent files here.
-binary-arch: build install
-# We have nothing to do by default.
+override_dh_strip_nondeterminism:
 
-binary: binary-indep binary-arch
-.PHONY: build clean binary-indep binary-arch binary install
+%:
+	dh $@

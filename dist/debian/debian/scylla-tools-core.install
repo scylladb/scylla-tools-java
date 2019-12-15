@@ -1,11 +1,16 @@
-conf/cassandra-env.sh etc/scylla/cassandra
-conf/logback.xml etc/scylla/cassandra
-conf/logback-tools.xml etc/scylla/cassandra
-conf/jvm.options etc/scylla/cassandra
-bin/scylla-sstableloader usr/bin
-tools/bin/cassandra_attributes.py usr/bin
-tools/bin/filter_cassandra_attributes.py usr/bin
-dist/common/cassandra.in.sh usr/share/scylla/cassandra
-lib/*.jar usr/share/scylla/cassandra/lib
-lib/*.zip usr/share/scylla/cassandra/lib
-lib/licenses usr/share/doc/scylla/cassandra
+etc/scylla/cassandra/cassandra-env.sh
+etc/scylla/cassandra/logback.xml
+etc/scylla/cassandra/logback-tools.xml
+etc/scylla/cassandra/jvm.options
+opt/scylladb/share/cassandra/bin/filter_cassandra_attributes.py
+opt/scylladb/share/cassandra/bin/cassandra_attributes.py
+usr/bin/filter_cassandra_attributes.py
+usr/bin/cassandra_attributes.py
+usr/bin/scylla-sstableloader
+opt/scylladb/share/cassandra/bin/cassandra.in.sh
+opt/scylladb/share/cassandra/lib/*.jar
+opt/scylladb/share/cassandra/lib/*.zip
+opt/scylladb/share/cassandra/lib/licenses
+opt/scylladb/share/cassandra/doc/cql3/CQL.css
+opt/scylladb/share/cassandra/doc/cql3/CQL.html
+opt/scylladb/share/cassandra/bin/scylla-sstableloader
