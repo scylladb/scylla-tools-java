@@ -79,6 +79,8 @@
 # auxiliary function for binary search in interval table
 
 
+from __future__ import print_function
+
 def bisearch(ucs, table):
     min = 0
     max = len(table) - 1
@@ -375,4 +377,4 @@ if __name__ == "__main__":
 
     assert wcswidth(u'foobar\u200b\a') < 0
 
-    print 'tests pass.'
+    print('tests pass.')
