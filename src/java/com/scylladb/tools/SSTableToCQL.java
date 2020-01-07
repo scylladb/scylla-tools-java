@@ -153,7 +153,7 @@ public class SSTableToCQL {
                 String name = columnName(c);
                 String varName = varName(c);
                 params.put(name, Collections.singleton(key));
-                return " = " + name + " - :" + varName;
+                return " = \"" + name + "\" - :" + varName;
             }
 
             @Override
@@ -257,7 +257,7 @@ public class SSTableToCQL {
                 String name = columnName(c);
                 String varName = varName(c);
                 params.put(varName, Collections.singleton(key));
-                return " = " + name + " + :" + varName;
+                return " = \"" + name + "\" + :" + varName;
             }
 
             @Override
@@ -500,7 +500,7 @@ public class SSTableToCQL {
                         buf.append(", ");
                     }
                     ensureWhitespace(buf);
-                    buf.append(columnName(c));
+                    writeColumnName(buf, c);
                     if (s != null) {
                         buf.append(s);
                     }
@@ -552,7 +552,7 @@ public class SSTableToCQL {
                     if (i++ > 0) {
                         buf.append(" AND ");
                     }
-                    buf.append(columnName(e.getKey()));
+                    writeColumnName(buf, e.getKey());
                     buf.append(' ');
                     buf.append(e.getValue().left.toString());
                     buf.append(" :");
@@ -574,7 +574,7 @@ public class SSTableToCQL {
                     if (i++ > 0) {
                         buf.append(',');
                     }
-                    buf.append(columnName(c));
+                    writeColumnName(buf, c);
                 }
             }
             buf.append(") values (");
@@ -912,12 +912,17 @@ public class SSTableToCQL {
             this.ttl = ttl;
         }
 
-        protected void writeColumnFamily(StringBuilder buf) {
-            buf.append(' ');
+        private void writeColumnName(StringBuilder buf, ColumnDefinition c) {
+            buf.append('\"');
+            buf.append(columnName(c));
+            buf.append('\"');
+        }
+        private void writeColumnFamily(StringBuilder buf) {
+            buf.append(" \"");
             buf.append(cfMetaData.ksName);
-            buf.append('.');
+            buf.append("\".\"");
             buf.append(cfMetaData.cfName);
-            buf.append(' ');
+            buf.append("\" ");
         }
     }
 

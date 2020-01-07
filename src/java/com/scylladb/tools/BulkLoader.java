@@ -170,6 +170,7 @@ import com.datastax.driver.core.UserType;
 import com.datastax.driver.core.WriteType;
 import com.datastax.driver.core.exceptions.CodecNotFoundException;
 import com.datastax.driver.core.exceptions.DriverException;
+import com.datastax.driver.core.exceptions.InvalidQueryException;
 import com.datastax.driver.core.exceptions.InvalidTypeException;
 import com.datastax.driver.core.policies.DCAwareRoundRobinPolicy;
 import com.datastax.driver.core.policies.RetryPolicy;
@@ -367,15 +368,17 @@ public class BulkLoader {
             }
 
             cluster = builder.build();
-            session = cluster.connect(keyspace);
+
+            String escaped = "\"" + keyspace + "\"";
+            session = cluster.connect(escaped);
             metadata = cluster.getMetadata();
-            keyspaceMetadata = metadata.getKeyspace(keyspace);
+            keyspaceMetadata = metadata.getKeyspace(escaped);
             org.apache.cassandra.schema.KeyspaceMetadata ksMetaData = org.apache.cassandra.schema.KeyspaceMetadata
                     .create(keyspaceMetadata.getName(), KeyspaceParams.create(keyspaceMetadata.isDurableWrites(),
                             keyspaceMetadata.getReplication()));
             Schema.instance.load(ksMetaData);
 
-            loadUserTypes(keyspaceMetadata.getUserTypes(), keyspace);
+            loadUserTypes(keyspaceMetadata.getUserTypes(), keyspaceMetadata.getName());
 
             clusterPartitioner = FBUtilities.newPartitioner(metadata.getPartitioner());
             partitioner = options.partitioner != null ? FBUtilities.newPartitioner(options.partitioner)
@@ -685,8 +688,8 @@ public class BulkLoader {
             Pair<String, String> key = Pair.create(keyspace, cfName);
             CFMetaData cfm = cfMetaDatas.get(key);
             if (cfm == null) {
-                KeyspaceMetadata ks = metadata.getKeyspace(keyspace);
-                TableMetadata cf = ks.getTable(cfName);
+                KeyspaceMetadata ks = metadata.getKeyspace("\"" + keyspace + "\"");
+                TableMetadata cf = ks.getTable("\"" + cfName + "\"");
                 if (cf == null) {
                     throw new IllegalArgumentException("Could not find table named " + keyspace + "." + cfName);
                 }
@@ -1332,8 +1335,9 @@ public class BulkLoader {
                 dir = dir.getParentFile().getParentFile();
             }
 
-            final String keyspace = dir.getParentFile().getName();
-            final CQLClient client = new CQLClient(options, keyspace);
+            String ksdir = dir.getParentFile().getName();
+            final CQLClient client = new CQLClient(options, ksdir);
+            final String keyspace = client.getKeyspace();
 
             // Hack. Must do because Range mangling code in cassandra is
             // broken, and does not preserve input range objects internal
