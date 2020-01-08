@@ -2,6 +2,9 @@
 SCYLLA_HOME=/var/lib/scylla
 SCYLLA_CONF=/etc/scylla
 
+# the default location for commitlogs, sstables, and saved caches
+cassandra_storagedir="$SCYLLA_HOME/data"
+
 cp_conf_dir () {
     cp -a "$1"/*.yaml "$2"  2>/dev/null || true
     cp -a "$1"/*.xml "$2"  2>/dev/null || true
