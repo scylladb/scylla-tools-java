@@ -1,0 +1,4 @@
+[submodule "scylla-jmx"]
+	path = scylla-jmx
+	url = git@github.com:scylladb/scylla-jmx.git
+	branch = master

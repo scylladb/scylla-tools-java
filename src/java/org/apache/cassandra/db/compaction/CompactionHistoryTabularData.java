@@ -17,6 +17,8 @@
  */
 package org.apache.cassandra.db.compaction;
 
+import javax.json.JsonArray;
+import javax.json.JsonObject;
 import javax.management.openmbean.*;
 import java.util.Map;
 import java.util.UUID;
@@ -79,6 +81,37 @@ public class CompactionHistoryTabularData
             result.put(new CompositeDataSupport(COMPOSITE_TYPE, ITEM_NAMES,
                        new Object[]{ id.toString(), ksName, cfName, compactedAt, bytesIn, bytesOut,
                                      "{" + FBUtilities.toString(rowMerged) + "}" }));
+        }
+        return result;
+    }
+
+    public static TabularData from(JsonArray resultSet) throws OpenDataException {
+        TabularDataSupport result = new TabularDataSupport(TABULAR_TYPE);
+        for (int i = 0; i < resultSet.size(); i++) {
+            JsonObject row = resultSet.getJsonObject(i);
+            String id = row.getString("id");
+            String ksName = row.getString("ks");
+            String cfName = row.getString("cf");
+            long compactedAt = row.getJsonNumber("compacted_at").longValue();
+            long bytesIn = row.getJsonNumber("bytes_in").longValue();
+            long bytesOut = row.getJsonNumber("bytes_out").longValue();
+
+            JsonArray merged = row.getJsonArray("rows_merged");
+            StringBuilder sb = new StringBuilder();
+            if (merged != null) {
+                sb.append('{');
+                for (int m = 0; m < merged.size(); m++) {
+                    JsonObject entry = merged.getJsonObject(m);
+                    if (m > 0) {
+                        sb.append(',');
+                    }
+                    sb.append(entry.getString("key")).append(':').append(entry.getString("value"));
+
+                }
+                sb.append('}');
+            }
+            result.put(new CompositeDataSupport(COMPOSITE_TYPE, ITEM_NAMES,
+                    new Object[] { id, ksName, cfName, compactedAt, bytesIn, bytesOut, sb.toString() }));
         }
         return result;
     }

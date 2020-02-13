@@ -40,6 +40,8 @@
     <property name="build.src.gen-java" value="${basedir}/src/gen-java"/>
     <property name="build.lib" value="${basedir}/lib"/>
     <property name="build.dir" value="${basedir}/build"/>
+    <property name="build.scylla-jmx-parent" value="${basedir}/scylla-jmx/scylla-jmx-parent/"/>
+    <property name="build.scylla-apiclient" value="${basedir}/scylla-jmx/scylla-apiclient/target"/>
     <property name="build.dir.lib" value="${basedir}/build/lib"/>
     <property name="build.test.dir" value="${build.dir}/test"/>
     <property name="build.classes" value="${build.dir}/classes"/>
@@ -163,6 +165,11 @@
         </fileset>
         <fileset dir="${build.dir.lib}">
             <include name="**/*.jar" />
+            <exclude name="**/*-sources.jar"/>
+            <exclude name="**/ant-*.jar"/>
+        </fileset>
+        <fileset dir="${build.scylla-apiclient}">
+            <include name="**/scylla-apiclient*.jar" />
             <exclude name="**/*-sources.jar"/>
             <exclude name="**/ant-*.jar"/>
         </fileset>
@@ -453,6 +460,18 @@
           <dependency groupId="com.github.ben-manes.caffeine" artifactId="caffeine" version="2.2.6" />
           <dependency groupId="org.jctools" artifactId="jctools-core" version="1.2.1"/>
           <dependency groupId="org.ow2.asm" artifactId="asm" version="5.0.4" />
+
+          <dependency groupId="org.glassfish.jersey.core" artifactId="jersey-common" version="2.22.1" />
+          <dependency groupId="javax.ws.rs" artifactId="javax.ws.rs-api" version="2.0.1" />
+          <dependency groupId="javax.ws.rs" artifactId="jsr311-api" version="1.1.1" />
+          <dependency groupId="org.glassfish.jersey.core" artifactId="jersey-client" version="2.22.1" />
+          <dependency groupId="org.glassfish" artifactId="javax.json" version="1.0.4" />
+          <dependency groupId="javax.activation" artifactId="activation" version="1.1" />
+          <dependency groupId="com.google.collections" artifactId="google-collections" version="1.0" />
+          <dependency groupId="javax.activation" artifactId="activation" version="1.1" />
+          <dependency groupId="javax.annotation" artifactId="javax.annotation-api" version="1.2" />
+          <dependency groupId="org.glassfish.jersey.bundles.repackaged" artifactId="jersey-guava" version="2.22.1" />
+
         </dependencyManagement>
         <developer id="adelapena" name="Andres de la Peña"/>
         <developer id="alakshman" name="Avinash Lakshman"/>
@@ -641,6 +660,18 @@
         <dependency groupId="com.github.ben-manes.caffeine" artifactId="caffeine" />
         <dependency groupId="org.jctools" artifactId="jctools-core"/>
         <dependency groupId="org.ow2.asm" artifactId="asm" />
+
+        <dependency groupId="org.glassfish.jersey.core" artifactId="jersey-common" version="2.22.1" />
+        <dependency groupId="javax.ws.rs" artifactId="javax.ws.rs-api" version="2.0.1" />
+        <dependency groupId="javax.ws.rs" artifactId="jsr311-api" version="1.1.1" />
+        <dependency groupId="org.glassfish.jersey.core" artifactId="jersey-client" version="2.22.1" />
+        <dependency groupId="org.glassfish" artifactId="javax.json" version="1.0.4" />
+        <dependency groupId="javax.activation" artifactId="activation" version="1.1" />
+        <dependency groupId="com.google.collections" artifactId="google-collections" version="1.0" />
+        <dependency groupId="javax.activation" artifactId="activation" version="1.1" />
+        <dependency groupId="javax.annotation" artifactId="javax.annotation-api" version="1.2" />
+        <dependency groupId="org.glassfish.jersey.bundles.repackaged" artifactId="jersey-guava" version="2.22.1" />
+
       </artifact:pom>
       <artifact:pom id="thrift-pom"
                     artifactId="cassandra-thrift"
@@ -816,7 +847,7 @@
         depends="maven-ant-tasks-retrieve-build,build-project" description="Compile Cassandra classes"/>
     <target name="codecoverage" depends="jacoco-run,jacoco-report" description="Create code coverage report"/>
 
-    <target depends="init,gen-cql3-grammar,generate-cql-html,generate-jflex-java"
+    <target depends="init,gen-cql3-grammar,generate-cql-html,generate-jflex-java,mvn-scylla-apiclient-jar"
             name="build-project">
         <echo message="${ant.project.name}: ${ant.file}"/>
         <!-- Order matters! -->
@@ -1054,6 +1085,17 @@
       </jar>
     </target>
 
+    <target name="mvn-scylla-apiclient-jar">
+        <artifact:mvn mavenVersion="${maven.version}" pom="${build.scylla-jmx-parent}/pom.xml">
+            <arg value="-pl"/>
+            <arg value=":scylla-apiclient"/>
+            <arg value="package"/>
+        </artifact:mvn>
+        <copy todir="${build.lib}">
+            <fileset dir="${build.scylla-apiclient}" includes="*.jar"/>
+        </copy>
+    </target>
+
     <!-- creates release tarballs -->
     <target name="artifacts" depends="jar,javadoc,gen-doc"
             description="Create Cassandra release artifacts">
@@ -1069,6 +1111,7 @@
           <include name="${final.scylla-tools.name}.jar" />
           <include name="${ant.project.name}-thrift-${version}.jar" />
         </fileset>
+        <fileset dir="${build.scylla-apiclient}" includes="*.jar"/>
       </copy>
       <copy todir="${dist.dir}/javadoc">
         <fileset dir="${javadoc.dir}"/>
@@ -1216,6 +1259,7 @@
               <include name="commons*.jar"/>
           </zipgroupfileset>
           <zipgroupfileset dir="${build.lib}" includes="*.jar"/>
+          <zipgroupfileset dir="${build.scylla-apiclient}" includes="*.jar"/>
       </jar>
       <jar jarfile="${build.test.dir}/benchmarks.jar">
           <manifest>
