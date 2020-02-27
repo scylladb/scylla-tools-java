@@ -31,6 +31,7 @@ Options:
   --prefix /prefix         directory prefix (default /usr)
   --etcdir /etc            specify etc directory path (default /etc)
   --nonroot                install Scylla without required root priviledge
+  --packaging               use install.sh for packaging
   --help                   this helpful message
 EOF
     exit 1
@@ -39,6 +40,7 @@ EOF
 root=/
 etcdir=/etc
 nonroot=false
+packaging=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -58,6 +60,10 @@ while [ $# -gt 0 ]; do
             nonroot=true
             shift 1
             ;;
+        "--packaging")
+            packaging=true
+            shift 1
+            ;;
         "--help")
             shift 1
 	    print_usage
@@ -67,6 +73,44 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+if ! $packaging; then
+    has_java=false
+    has_py2=false
+    has_pyyaml=false
+    if [ -x /usr/bin/java ]; then
+        javaver=$(/usr/bin/java -version 2>&1|head -n1|cut -f 3 -d " ")
+        if [[ "$javaver" =~ ^\"1.8.0 ]]; then
+            has_java=true
+        fi
+    fi
+    for p in /usr/bin/python /usr/bin/python2; do
+        if [ -x "$p" ]; then
+            $p -c 'import sys; sys.exit(not (0x020700b0 < sys.hexversion < 0x03000000))' 2>/dev/null &&:
+            if [ $? -eq 0 ]; then
+                has_py2=true
+                $p -c 'import yaml' 2>/dev/null &&:
+                if [ $? -eq 0 ]; then
+                    has_pyyaml=true
+                fi
+                break
+            fi
+        fi
+    done
+    if ! $has_java || ! $has_py2 || ! $has_pyyaml; then
+        echo "Please install following package before running install.sh:"
+        if ! $has_java; then
+            echo "  openjdk-8"
+        fi
+        if ! $has_py2; then
+            echo "  python2"
+        fi
+        if ! $has_pyyaml; then
+            echo "  python2-pyyaml"
+        fi
+        exit 1
+    fi
+fi
 
 if [ -z "$prefix" ]; then
     if $nonroot; then
