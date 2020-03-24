@@ -388,8 +388,12 @@ public class SSTableToCQL {
                     // nothing. But if we got here because "compose" actually returned null and we're _not_ at the 
                     // end of clustering values, we need to actually restrict on null. And hope it is legal for the type. 
                     // Fixes #57
+                    // 
+                    // #88. Actually using null breaks bound/prepared statements. Set it to the 
+                    // raw data instead. Now the actual sender will need to deal with this 
+                    // invalid data. Woho. 
                     if (i < spfx.size() || i < epfx.size()) {
-                        where.put(column, Pair.create(Comp.Equal, sval));
+                        where.put(column, Pair.create(Comp.Equal, i < spfx.size() ? spfx.get(i) : epfx.get(i)));
                     }
                 } else if (sval != null && (sval == eval || sval.equals(eval))) {
                     assert start.isInclusive();

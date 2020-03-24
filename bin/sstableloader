@@ -1,1 +1,2 @@
-scylla-sstableloader
+#!/bin/sh
+`dirname $0`/scylla-sstableloader "$@"

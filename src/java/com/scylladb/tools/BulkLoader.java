@@ -864,6 +864,10 @@ public class BulkLoader {
                                                 // but we should be able to null
                                                 // a column
                                                 s.setToNull(name);
+                                            } else if (value instanceof ByteBuffer) {
+                                                // #88 If we get a byte buffer value here, 
+                                                // we can just pass it through.
+                                                s.setBytesUnsafe(name, (ByteBuffer)value);
                                             } else {
                                                 // CMH. driver special treats
                                                 // token values, but

@@ -106,7 +106,7 @@ install -d -m755 "$rprefix"/share/cassandra/doc/cql3
 install -m644 conf/cassandra-env.sh "$retc"/scylla/cassandra
 install -m644 conf/logback.xml "$retc"/scylla/cassandra
 install -m644 conf/logback-tools.xml "$retc"/scylla/cassandra
-install -m644 conf/jvm.options "$retc"/scylla/cassandra
+install -m644 conf/jvm*.options "$retc"/scylla/cassandra
 install -m644 lib/*.jar "$rprefix"/share/cassandra/lib
 install -m644 lib/*.zip "$rprefix"/share/cassandra/lib
 install -m644 lib/licenses/* "$rprefix"/share/cassandra/lib/licenses
