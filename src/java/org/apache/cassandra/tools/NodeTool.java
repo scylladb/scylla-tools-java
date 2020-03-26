@@ -66,7 +66,7 @@ public class NodeTool
                 Cleanup.class,
                 ClearSnapshot.class,
                 Compact.class,
-                // Remove for GA: Scrub.class,
+                Scrub.class,
                 // Remove until proven otherwise: Verify.class,
                 Flush.class,
                 UpgradeSSTable.class,
