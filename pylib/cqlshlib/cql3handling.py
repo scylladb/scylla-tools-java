@@ -143,8 +143,6 @@ JUNK ::= /([ \t\r\f\v]+|(--|[/][/])[^\n\r]*([\n\r]|$)|[/][*].*?[*][/])/ ;
 
 <stringLiteral> ::= <quotedStringLiteral>
                   | <pgStringLiteral> ;
-<quotedStringLiteral> ::= /'([^']|')*'/ ;
-<pgStringLiteral> ::= /(\$\$).*(\$\$)/ ;
 <quotedStringLiteral> ::= /'([^']|'')*'/ ;
 <pgStringLiteral> ::= /\$\$(?:(?!\$\$).)*\$\$/;
 <quotedName> ::=    /"([^"]|"")*"/ ;
