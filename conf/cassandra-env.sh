@@ -85,6 +85,7 @@ calculate_heap_sizes()
         HEAP_NEWSIZE="${desired_yg_in_mb}M"
     fi
 }
+warn_gc_logs=false
 
 #GC log path has to be defined here because it needs to access CASSANDRA_HOME
 if [ $JAVA_VERSION -ge 11 ] ; then
@@ -93,19 +94,37 @@ if [ $JAVA_VERSION -ge 11 ] ; then
     echo "$JVM_OPTS" | grep -q "^-[X]log:gc"
     if [ "$?" = "1" ] ; then # [X] to prevent ccm from replacing this line
         # only add -Xlog:gc if it's not mentioned in jvm-server.options file
-        mkdir -p ${CASSANDRA_HOME}/logs
-        JVM_OPTS="$JVM_OPTS -Xlog:gc=info,heap*=trace,age*=debug,safepoint=info,promotion*=trace:file=${CASSANDRA_HOME}/logs/gc.log:time,uptime,pid,tid,level:filecount=10,filesize=10485760"
+        if [ -d ${CASSANDRA_HOME}/logs -o -w ${CASSANDRA_HOME} ] ; then
+            mkdir -p ${CASSANDRA_HOME}/logs
+            JVM_OPTS="$JVM_OPTS -Xlog:gc=info,heap*=trace,age*=debug,safepoint=info,promotion*=trace:file=${CASSANDRA_HOME}/logs/gc.log:time,uptime,pid,tid,level:filecount=10,filesize=10485760"
+        else
+            warn_gc_logs=true
+        fi
     fi
 else
     # Java 8
     echo "$JVM_OPTS" | grep -q "^-[X]loggc"
     if [ "$?" = "1" ] ; then # [X] to prevent ccm from replacing this line
         # only add -Xlog:gc if it's not mentioned in jvm-server.options file
-        mkdir -p ${CASSANDRA_HOME}/logs
-        JVM_OPTS="$JVM_OPTS -Xloggc:${CASSANDRA_HOME}/logs/gc.log"
+        if [ -d ${CASSANDRA_HOME}/logs -o -w ${CASSANDRA_HOME} ] ; then
+            mkdir -p ${CASSANDRA_HOME}/logs
+            JVM_OPTS="$JVM_OPTS -Xloggc:${CASSANDRA_HOME}/logs/gc.log"
+        else
+            warn_gc_logs=true
+        fi
     fi
 fi
 
+if $warn_gc_logs ; then
+    #put the warning to stderr so it will not interfere with any parsers of the command.
+    echo "WARNING: GC logs will not be collected" >&2
+    echo " Reason: ${CASSANDRA_HOME}/logs couldn't be found nor created." >&2
+    echo " This is probabely because you don't have sufficient permissions to crete directories in ${CASSANDRA_HOME}" >&2
+    echo " You can either run again with sufficient permissions or create the ${CASSANDRA_HOME}/logs yourself and " >&2
+    echo " grant write permissions to the current users to it" >&2
+fi
+
+CASSANDRA_HOME=$CASSANDRA_HOME_OLD
 # Check what parameters were defined on jvm-server.options file to avoid conflicts
 echo $JVM_OPTS | grep -q Xmn
 DEFINED_XMN=$?
