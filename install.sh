@@ -129,6 +129,7 @@ fi
 
 # scylla-tools
 install -d -m755 "$rprefix"/share/cassandra/pylib
+install -d -m766 "$rprefix"/share/cassandra/logs
 install -d -m755 "$retc"/bash_completion.d
 install -m644 dist/common/nodetool-completion "$retc"/bash_completion.d
 cp -r pylib/cqlshlib "$rprefix"/share/cassandra/pylib
