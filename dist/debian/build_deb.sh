@@ -1,6 +1,6 @@
 #!/bin/bash -e
 
-PRODUCT=$(cat SCYLLA-PRODUCT-FILE)
+PRODUCT=$(cat scylla-tools/SCYLLA-PRODUCT-FILE)
 
 . /etc/os-release
 print_usage() {
@@ -39,7 +39,7 @@ pkg_install() {
     fi
 }
 
-if [ ! -e SCYLLA-RELOCATABLE-FILE ]; then
+if [ ! -e scylla-tools/SCYLLA-RELOCATABLE-FILE ]; then
     echo "do not directly execute build_rpm.sh, use reloc/build_rpm.sh instead."
     exit 1
 fi
@@ -93,8 +93,10 @@ if [ -z "$TARGET" ]; then
 fi
 RELOC_PKG_FULLPATH=$(readlink -f $RELOC_PKG)
 RELOC_PKG_BASENAME=$(basename $RELOC_PKG)
-SCYLLA_VERSION=$(cat SCYLLA-VERSION-FILE)
-SCYLLA_RELEASE=$(cat SCYLLA-RELEASE-FILE)
+SCYLLA_VERSION=$(cat scylla-tools/SCYLLA-VERSION-FILE)
+SCYLLA_RELEASE=$(cat scylla-tools/SCYLLA-RELEASE-FILE)
 
 ln -fv $RELOC_PKG_FULLPATH ../$PRODUCT-tools_$SCYLLA_VERSION-$SCYLLA_RELEASE.orig.tar.gz
+
+cp -a scylla-tools/debian debian
 debuild -rfakeroot -us -uc

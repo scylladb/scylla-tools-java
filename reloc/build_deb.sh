@@ -28,4 +28,4 @@ fi
 mkdir -p build/debian/scylla-package
 tar -C build/debian/scylla-package -xpf $RELOC_PKG
 cd build/debian/scylla-package
-exec bash -x -e ./dist/debian/build_deb.sh $OPTS
+exec bash -x -e ./scylla-tools/dist/debian/build_deb.sh $OPTS
