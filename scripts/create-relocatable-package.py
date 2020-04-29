@@ -27,6 +27,14 @@ import os
 import tarfile
 import pathlib
 
+RELOC_PREFIX='scylla-tools-package'
+def reloc_add(self, name, arcname=None, recursive=True, *, filter=None):
+    if arcname:
+        return self.add(name, arcname="{}/{}".format(RELOC_PREFIX, arcname))
+    else:
+        return self.add(name, arcname="{}/{}".format(RELOC_PREFIX, name))
+
+tarfile.TarFile.reloc_add = reloc_add
 
 ap = argparse.ArgumentParser(description='Create a relocatable scylla package.')
 ap.add_argument('--version', required=True,
@@ -41,23 +49,23 @@ output = args.dest
 
 ar = tarfile.open(output, mode='w|gz')
 pathlib.Path('build/SCYLLA-RELOCATABLE-FILE').touch()
-ar.add('build/SCYLLA-RELOCATABLE-FILE', arcname='SCYLLA-RELOCATABLE-FILE')
-ar.add('build/SCYLLA-RELEASE-FILE', arcname='SCYLLA-RELEASE-FILE')
-ar.add('build/SCYLLA-VERSION-FILE', arcname='SCYLLA-VERSION-FILE')
-ar.add('build/SCYLLA-PRODUCT-FILE', arcname='SCYLLA-PRODUCT-FILE')
-ar.add('dist')
-ar.add('conf')
-ar.add('bin')
-ar.add('tools')
-ar.add('lib')
-ar.add('doc')
-ar.add('pylib')
-ar.add('install.sh')
-ar.add('build/apache-cassandra-{}.jar'.format(version), arcname='lib/apache-cassandra-{}.jar'.format(version))
-ar.add('build/apache-cassandra-thrift-{}.jar'.format(version), arcname='lib/apache-cassandra-thrift-{}.jar'.format(version))
-ar.add('build/scylla-tools-{}.jar'.format(version), arcname='lib/scylla-tools-{}.jar'.format(version))
-ar.add('build/tools/lib/stress.jar', arcname='lib/stress.jar')
-ar.add('README.asc')
-ar.add('CHANGES.txt')
-ar.add('NEWS.txt')
-ar.add('CASSANDRA-14092.txt')
+ar.reloc_add('build/SCYLLA-RELOCATABLE-FILE', arcname='SCYLLA-RELOCATABLE-FILE')
+ar.reloc_add('build/SCYLLA-RELEASE-FILE', arcname='SCYLLA-RELEASE-FILE')
+ar.reloc_add('build/SCYLLA-VERSION-FILE', arcname='SCYLLA-VERSION-FILE')
+ar.reloc_add('build/SCYLLA-PRODUCT-FILE', arcname='SCYLLA-PRODUCT-FILE')
+ar.reloc_add('dist')
+ar.reloc_add('conf')
+ar.reloc_add('bin')
+ar.reloc_add('tools')
+ar.reloc_add('lib')
+ar.reloc_add('doc')
+ar.reloc_add('pylib')
+ar.reloc_add('install.sh')
+ar.reloc_add('build/apache-cassandra-{}.jar'.format(version), arcname='lib/apache-cassandra-{}.jar'.format(version))
+ar.reloc_add('build/apache-cassandra-thrift-{}.jar'.format(version), arcname='lib/apache-cassandra-thrift-{}.jar'.format(version))
+ar.reloc_add('build/scylla-tools-{}.jar'.format(version), arcname='lib/scylla-tools-{}.jar'.format(version))
+ar.reloc_add('build/tools/lib/stress.jar', arcname='lib/stress.jar')
+ar.reloc_add('README.asc')
+ar.reloc_add('CHANGES.txt')
+ar.reloc_add('NEWS.txt')
+ar.reloc_add('CASSANDRA-14092.txt')

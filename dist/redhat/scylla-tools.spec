@@ -34,7 +34,7 @@ Requires:       /usr/lib64/python2.7/site-packages/_yaml.so
 Core files for scylla tools.
 
 %prep
-%setup -c
+%setup -n scylla-tools-package
 
 
 %build
