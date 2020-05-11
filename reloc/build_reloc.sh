@@ -55,4 +55,5 @@ fi
 VERSION=$(./SCYLLA-VERSION-GEN)
 printf "version=%s" $VERSION > build.properties
 ant jar
+dist/debian/debian_files_gen.py
 scripts/create-relocatable-package.py --version $VERSION build/scylla-tools-package.tar.gz

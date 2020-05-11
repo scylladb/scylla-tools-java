@@ -1,5 +1,7 @@
 #!/usr/bin/make -f
 
+include /usr/share/dpkg/pkg-info.mk
+
 override_dh_auto_configure:
 
 override_dh_auto_build:
@@ -16,8 +18,8 @@ override_dh_shlibdeps:
 
 override_dh_fixperms:
 	dh_fixperms
-	chmod 755 $(CURDIR)/debian/{{product}}-tools-core/opt/scylladb/share/cassandra/bin/cassandra_attributes.py
-	chmod 755 $(CURDIR)/debian/{{product}}-tools-core/opt/scylladb/share/cassandra/bin/filter_cassandra_attributes.py
+	chmod 755 $(CURDIR)/debian/$(DEB_SOURCE)-core/opt/scylladb/share/cassandra/bin/cassandra_attributes.py
+	chmod 755 $(CURDIR)/debian/$(DEB_SOURCE)-core/opt/scylladb/share/cassandra/bin/filter_cassandra_attributes.py
 
 override_dh_strip_nondeterminism:
 
