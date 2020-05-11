@@ -59,13 +59,6 @@ fi
 if [ ! -f /usr/bin/yum-builddep ]; then
     pkg_install yum-utils
 fi
-if [ ! -f /usr/bin/pystache ]; then
-    if is_redhat_variant; then
-        sudo yum install -y python2-pystache || sudo yum install -y pystache
-    elif is_debian_variant; then
-        sudo apt-get install -y python-pystache
-    fi
-fi
 
 SCYLLA_VERSION=$(cat SCYLLA-VERSION-FILE)
 SCYLLA_RELEASE=$(cat SCYLLA-RELEASE-FILE)
@@ -75,7 +68,13 @@ RPMBUILD=$(readlink -f ../)
 mkdir -p $RPMBUILD/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
 
 ln -fv $RELOC_PKG $RPMBUILD/SOURCES/
-pystache dist/redhat/scylla-tools.spec.mustache "{ \"version\": \"$SCYLLA_VERSION\", \"release\": \"$SCYLLA_RELEASE\", \"product\": \"$PRODUCT\", \"$PRODUCT\": true }" > $RPMBUILD/SPECS/scylla-tools.spec
 
+parameters=(
+    -D"version $SCYLLA_VERSION"
+    -D"release $SCYLLA_RELEASE"
+    -D"product $PRODUCT"
+)
+
+cp dist/redhat/scylla-tools.spec $RPMBUILD/SPECS
 # this rpm can be install on both fedora / centos7, so drop distribution name from the file name
-rpmbuild -ba --define '_binary_payload w2.xzdio' --define "_topdir $RPMBUILD" --undefine "dist" $RPM_JOBS_OPTS $RPMBUILD/SPECS/scylla-tools.spec
+rpmbuild -ba "${parameters[@]}" --define '_binary_payload w2.xzdio' --define "_topdir $RPMBUILD" --undefine "dist" $RPM_JOBS_OPTS $RPMBUILD/SPECS/scylla-tools.spec
