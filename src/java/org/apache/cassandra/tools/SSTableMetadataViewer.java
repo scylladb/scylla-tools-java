@@ -114,8 +114,15 @@ public class SSTableMetadataViewer
                     out.printf("TTL min: %s%n", stats.minTTL);
                     out.printf("TTL max: %s%n", stats.maxTTL);
 
-                    if (validation != null && header != null)
-                        printMinMaxToken(descriptor, FBUtilities.newPartitioner(descriptor), header.getKeyType(), out);
+                    if (validation != null) {
+                        IPartitioner partitioner;
+                        if (header == null) {
+                            partitioner = FBUtilities.newPartitioner(validation.partitioner);
+                        } else {
+                            partitioner = FBUtilities.newPartitioner(descriptor);
+                        }
+                        printMinMaxToken(descriptor, partitioner, header, out);
+                    }
 
                     if (header != null && header.getClusteringTypes().size() == stats.minClusteringValues.size())
                     {
@@ -207,7 +214,7 @@ public class SSTableMetadataViewer
         }
     }
 
-    private static void printMinMaxToken(Descriptor descriptor, IPartitioner partitioner, AbstractType<?> keyType, PrintStream out) throws IOException
+    private static void printMinMaxToken(Descriptor descriptor, IPartitioner partitioner, SerializationHeader.Component header, PrintStream out) throws IOException
     {
         File summariesFile = new File(descriptor.filenameFor(Component.SUMMARY));
         if (!summariesFile.exists())
@@ -216,8 +223,15 @@ public class SSTableMetadataViewer
         try (DataInputStream iStream = new DataInputStream(new FileInputStream(summariesFile)))
         {
             Pair<DecoratedKey, DecoratedKey> firstLast = new IndexSummary.IndexSummarySerializer().deserializeFirstLastKey(iStream, partitioner, descriptor.version.hasSamplingLevel());
-            out.printf("First token: %s (key=%s)%n", firstLast.left.getToken(), keyType.getString(firstLast.left.getKey()));
-            out.printf("Last token: %s (key=%s)%n", firstLast.right.getToken(), keyType.getString(firstLast.right.getKey()));
+
+            if (header != null) {
+                AbstractType<?> keyType = header.getKeyType();
+                out.printf("First token: %s (key=%s)%n", firstLast.left.getToken(), keyType.getString(firstLast.left.getKey()));
+                out.printf("Last token: %s (key=%s)%n", firstLast.right.getToken(), keyType.getString(firstLast.right.getKey()));
+            } else {
+                out.printf("First token: %s %n", firstLast.left.getToken());
+                out.printf("Last token: %s %n", firstLast.right.getToken());
+            }
         }
     }
 
