@@ -50,15 +50,6 @@ fi
 if [ ! -f /usr/bin/rpmbuild ]; then
     pkg_install rpm-build
 fi
-if [ ! -f /usr/bin/git ]; then
-    pkg_install git
-fi
-if [ ! -f /usr/bin/wget ]; then
-    pkg_install wget
-fi
-if [ ! -f /usr/bin/yum-builddep ]; then
-    pkg_install yum-utils
-fi
 
 SCYLLA_VERSION=$(cat SCYLLA-VERSION-FILE)
 SCYLLA_RELEASE=$(cat SCYLLA-RELEASE-FILE)
