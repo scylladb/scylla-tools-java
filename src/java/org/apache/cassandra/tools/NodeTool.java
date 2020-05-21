@@ -153,7 +153,9 @@ public class NodeTool
                 // Remove until proven otherwise: RelocateSSTables.class,
                 ViewBuildStatus.class,
                 
-                SSTableInfo.class
+                SSTableInfo.class,
+
+                CheckAndRepairCdcStreams.class
         );
 
         Cli.CliBuilder<Runnable> builder = Cli.builder("nodetool");

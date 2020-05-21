@@ -1569,6 +1569,11 @@ public class NodeProbe implements AutoCloseable
             throw new RuntimeException(e);
         }
     }
+
+    public void checkAndRepairCdcStreams()
+    {
+        ssProxy.checkAndRepairCdcStreams();
+    }
 }
 
 class ColumnFamilyStoreMBeanIterator implements Iterator<Map.Entry<String, ColumnFamilyStoreMBean>>
