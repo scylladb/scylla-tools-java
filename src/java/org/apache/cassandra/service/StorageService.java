@@ -3811,6 +3811,10 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         }
     }
 
+    public void checkAndRepairCdcStreams()
+    {
+    }
+
     public void setLoggingLevel(String classQualifier, String rawLevel) throws Exception
     {
         LoggingSupportFactory.getLoggingSupport().setLoggingLevel(classQualifier, rawLevel);

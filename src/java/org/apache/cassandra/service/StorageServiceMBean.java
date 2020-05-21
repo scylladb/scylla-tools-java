@@ -193,6 +193,7 @@ public interface StorageServiceMBean extends NotificationEmitter
     public List<InetAddress> getNaturalEndpoints(String keyspaceName, String cf, String key);
     public List<InetAddress> getNaturalEndpoints(String keyspaceName, ByteBuffer key);
 
+    public void checkAndRepairCdcStreams();
     /**
      * @deprecated use {@link #takeSnapshot(String tag, Map options, String... entities)} instead.
      */
