@@ -49,10 +49,6 @@ if [ "$(arch)" != "x86_64" ]; then
     exit 1
 fi
 
-if [ -e debian ] || [ -e build/release ]; then
-    sudo rm -rf debian build conf/hotspot_compiler
-    mkdir build
-fi
 if is_debian_variant; then
     sudo apt-get -y update
 fi
@@ -75,13 +71,6 @@ if [ ! -f /usr/bin/dh_testdir ]; then
 fi
 if [ ! -f /usr/bin/fakeroot ]; then
     pkg_install fakeroot
-fi
-if [ ! -f /usr/bin/pystache ]; then
-    if is_redhat_variant; then
-        sudo yum install -y /usr/bin/pystache
-    elif is_debian_variant; then
-        sudo apt-get install -y python-pystache
-    fi
 fi
 
 if [ "$ID" = "ubuntu" ] && [ ! -f /usr/share/keyrings/debian-archive-keyring.gpg ]; then
@@ -108,19 +97,4 @@ SCYLLA_VERSION=$(cat SCYLLA-VERSION-FILE | sed 's/\.rc/~rc/')
 SCYLLA_RELEASE=$(cat SCYLLA-RELEASE-FILE)
 
 ln -fv $RELOC_PKG_FULLPATH ../$PRODUCT-tools_$SCYLLA_VERSION-$SCYLLA_RELEASE.orig.tar.gz
-
-cp -a dist/debian/debian debian
-if [ "$PRODUCT" != "scylla" ]; then
-    for i in debian/scylla-*;do
-        mv $i ${i/scylla-/$PRODUCT-}
-    done
-fi
-
-REVISION="1"
-MUSTACHE_DIST="\"debian\": true, \"$TARGET\": true, \"product\": \"$PRODUCT\", \"$PRODUCT\": true"
-pystache dist/debian/changelog.mustache "{ $MUSTACHE_DIST, \"version\": \"$SCYLLA_VERSION\", \"release\": \"$SCYLLA_RELEASE\", \"revision\": \"$REVISION\", \"codename\": \"$TARGET\" }" > debian/changelog
-pystache dist/debian/control.mustache "{ $MUSTACHE_DIST }" > debian/control
-pystache dist/debian/rules.mustache "{ $MUSTACHE_DIST }" > debian/rules
-chmod a+rx debian/rules
-
 debuild -rfakeroot -us -uc
