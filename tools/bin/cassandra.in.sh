@@ -46,41 +46,22 @@ cassandra_storagedir="$CASSANDRA_HOME/data"
 
 # Scylla adaption. Some one will still have to find us SCYLLA_HOME
 # or place us there.
+# By default we assume that `scylla-tools-java` live next to `scylla`.
 if [ "x$SCYLLA_HOME" = "x" ]; then
-    SCYLLA_HOME="`dirname $0`/../.."
+    SCYLLA_HOME="`dirname $0`/../../../scylla"
 fi
 if [ "x$SCYLLA_CONF" = "x" ]; then
     SCYLLA_CONF="$SCYLLA_HOME/conf"
 fi
 
-cp_conf_dir () {
-    cp -a "$1"/*.yaml "$2"  2>/dev/null || true
-    cp -a "$1"/*.xml "$2"  2>/dev/null || true
-    cp -a "$1"/*.options "$2"  2>/dev/null || true
-    cp -a "$1"/*.properties "$2"  2>/dev/null || true
-    cp -a "$1"/cassandra-env.sh "$2"  2>/dev/null || true
-}
-
+CONFIG_FILE_REALPATH=`realpath $CASSANDRA_CONF/cassandra.yaml`
+# If scylla.yaml is found - use it as the config file.
 if [ -f "$SCYLLA_CONF/scylla.yaml" ]; then
-    if [ -f "$SCYLLA_CONF/cassandra.yaml" ]; then
-    CASSANDRA_CONF=$SCYLLA_CONF
-    else
-    # Create a temp config dir for just this execution
-    TMPCONF=`mktemp -d`
-    trap "rm -rf $TMPCONF" EXIT
-    cp_conf_dir "$CASSANDRA_CONF" "$TMPCONF"
-    cp_conf_dir "$SCYLLA_CONF" "$TMPCONF"
-    # Filter out scylla specific options that make
-    # cassandra options parser go boom.
-    # Also add attributes not present in scylla.yaml
-    # but required by cassandra.
-    `dirname $0`/filter_cassandra_attributes.py \
-            "$CASSANDRA_CONF/cassandra.yaml" \
-            "$TMPCONF/scylla.yaml" \
-            > "$TMPCONF/cassandra.yaml"
-    CASSANDRA_CONF=$TMPCONF
-    fi
+    CONFIG_FILE_REALPATH=`realpath $SCYLLA_CONF/scylla.yaml`
 fi
+
+echo "Using $CONFIG_FILE_REALPATH as the config file"
+CONFIGURATION_FILE_OPT="-Dcassandra.config=file://$CONFIG_FILE_REALPATH"
 
 # The java classpath (required)
 CLASSPATH="$CASSANDRA_CONF:$cassandra_bin"

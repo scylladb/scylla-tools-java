@@ -38,6 +38,7 @@ if [ -z "$CLASSPATH" ]; then
 fi
 
 "$JAVA" -server -ea -cp "$CLASSPATH" $JVM_OPTS \
+        $CONFIGURATION_FILE_OPT \
         -Dcassandra.storagedir="$cassandra_storagedir" \
         -Dlogback.configurationFile=logback-tools.xml \
          org.apache.cassandra.stress.Stress $@

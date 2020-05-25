@@ -72,10 +72,6 @@ rm -rf $RPM_BUILD_ROOT
 %{_sysconfdir}/scylla/cassandra/logback.xml
 %{_sysconfdir}/scylla/cassandra/logback-tools.xml
 %{_sysconfdir}/scylla/cassandra/jvm*.options
-/opt/scylladb/share/cassandra/bin/filter_cassandra_attributes.py
-/opt/scylladb/share/cassandra/bin/cassandra_attributes.py
-%{_bindir}/filter_cassandra_attributes.py
-%{_bindir}/cassandra_attributes.py
 %{_bindir}/scylla-sstableloader
 /opt/scylladb/share/cassandra/bin/cassandra.in.sh
 /opt/scylladb/share/cassandra/lib/*.jar

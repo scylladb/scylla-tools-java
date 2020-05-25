@@ -2,10 +2,6 @@ etc/scylla/cassandra/cassandra-env.sh
 etc/scylla/cassandra/logback.xml
 etc/scylla/cassandra/logback-tools.xml
 etc/scylla/cassandra/jvm*.options
-opt/scylladb/share/cassandra/bin/filter_cassandra_attributes.py
-opt/scylladb/share/cassandra/bin/cassandra_attributes.py
-usr/bin/filter_cassandra_attributes.py
-usr/bin/cassandra_attributes.py
 usr/bin/scylla-sstableloader
 opt/scylladb/share/cassandra/bin/cassandra.in.sh
 opt/scylladb/share/cassandra/lib/*.jar

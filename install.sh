@@ -113,14 +113,7 @@ install -m644 lib/licenses/* "$rprefix"/share/cassandra/lib/licenses
 install -m644 doc/cql3/CQL.css doc/cql3/CQL.html "$rprefix"/share/cassandra/doc/cql3
 ln -srf "$rprefix"/share/cassandra/lib/apache-cassandra-$scylla_version-$scylla_release.jar "$rprefix"/share/cassandra/lib/apache-cassandra.jar
 install -m644 dist/common/cassandra.in.sh "$rprefix"/share/cassandra/bin
-for i in tools/bin/{filter_cassandra_attributes.py,cassandra_attributes.py} bin/scylla-sstableloader; do
-    bn=$(basename $i)
-    install -m755 $i "$rprefix"/share/cassandra/bin
-    if ! $nonroot; then
-        echo "$thunk" > "$rusr"/bin/$bn
-        chmod 755 "$rusr"/bin/$bn
-    fi
-done
+
 if $nonroot; then
     sed -i -e "s#/var/lib/scylla#$rprefix#g" "$rprefix"/share/cassandra/bin/cassandra.in.sh
     sed -i -e "s#/etc/scylla#$retc/scylla#g" "$rprefix"/share/cassandra/bin/cassandra.in.sh
@@ -132,7 +125,7 @@ install -d -m755 "$rprefix"/share/cassandra/pylib
 install -d -m755 "$retc"/bash_completion.d
 install -m644 dist/common/nodetool-completion "$retc"/bash_completion.d
 cp -r pylib/cqlshlib "$rprefix"/share/cassandra/pylib
-for i in bin/{nodetool,sstableloader,cqlsh,cqlsh.py} tools/bin/{cassandra-stress,cassandra-stressd,sstabledump,sstablelevelreset,sstablemetadata,sstablerepairedset}; do
+for i in bin/{nodetool,sstableloader,cqlsh,cqlsh.py,scylla-sstableloader} tools/bin/{cassandra-stress,cassandra-stressd,sstabledump,sstablelevelreset,sstablemetadata,sstablerepairedset}; do
     bn=$(basename $i)
     install -m755 $i "$rprefix"/share/cassandra/bin
     if ! $nonroot; then
