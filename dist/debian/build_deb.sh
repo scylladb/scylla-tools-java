@@ -91,12 +91,13 @@ if [ -z "$TARGET" ]; then
         exit 1
     fi
 fi
-RELOC_PKG_FULLPATH=$(readlink -f $RELOC_PKG)
-RELOC_PKG_BASENAME=$(basename $RELOC_PKG)
-SCYLLA_VERSION=$(cat scylla-tools/SCYLLA-VERSION-FILE)
-SCYLLA_RELEASE=$(cat scylla-tools/SCYLLA-RELEASE-FILE)
 
-ln -fv $RELOC_PKG_FULLPATH ../$PRODUCT-tools_$SCYLLA_VERSION-$SCYLLA_RELEASE.orig.tar.gz
+RELOC_PKG=$(readlink -f $RELOC_PKG)
 
-cp -a scylla-tools/debian debian
+mv scylla-tools/debian debian
+PKG_NAME=$(dpkg-parsechangelog --show-field Source)
+# XXX: Drop revision number from version string.
+#      Since it always '1', this should be okay for now.
+PKG_VERSION=$(dpkg-parsechangelog --show-field Version |sed -e 's/-1$//')
+ln -fv $RELOC_PKG ../"$PKG_NAME"_"$PKG_VERSION".orig.tar.gz
 debuild -rfakeroot -us -uc
