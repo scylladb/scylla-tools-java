@@ -17,6 +17,8 @@
  */
 package org.apache.cassandra.tools;
 
+import static java.lang.Math.floor;
+
 import java.io.IOException;
 import java.io.PrintStream;
 import java.lang.management.ManagementFactory;
@@ -30,6 +32,7 @@ import java.rmi.server.RMIClientSocketFactory;
 import java.rmi.server.RMISocketFactory;
 import java.util.AbstractMap;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -129,6 +132,56 @@ public class NodeProbe implements AutoCloseable
     private BatchlogManagerMBean bmProxy;
     private boolean failed;
 
+    private static class BufferSamples  {
+        private final long[] samples;
+
+        public BufferSamples(long[] samples) {
+            this.samples = samples;
+            Arrays.sort(this.samples);
+        }
+
+        public long[] getValues() {
+            return samples;
+        }
+
+        public double getMin() {
+            if (samples.length == 0) {
+                return 0.0;
+            }
+            return samples[0];
+        }
+
+        public double getMax() {
+            if (samples.length == 0) {
+                return 0.0;
+            }
+            return samples[samples.length - 1];
+        }
+
+        public double getValue(double quantile) {
+            if (quantile < 0.0 || quantile > 1.0) {
+                throw new IllegalArgumentException(quantile + " is not in [0..1]");
+            }
+
+            if (samples.length == 0) {
+                return 0.0;
+            }
+
+            final double pos = quantile * (samples.length + 1);
+
+            if (pos < 1) {
+                return samples[0];
+            }
+
+            if (pos >= samples.length) {
+                return samples[samples.length - 1];
+            }
+
+            final double lower = samples[(int) pos - 1];
+            final double upper = samples[(int) pos];
+            return lower + (pos - floor(pos)) * (upper - lower);
+        }
+    }
     /**
      * Creates a NodeProbe using the specified JMX host, port, username, and password.
      *
@@ -1464,24 +1517,28 @@ public class NodeProbe implements AutoCloseable
 
     public double[] metricPercentilesAsArray(CassandraMetricsRegistry.JmxHistogramMBean metric)
     {
-        return new double[]{ metric.get50thPercentile(),
-                metric.get75thPercentile(),
-                metric.get95thPercentile(),
-                metric.get98thPercentile(),
-                metric.get99thPercentile(),
-                metric.getMin(),
-                metric.getMax()};
+        BufferSamples bs = new BufferSamples(metric.values());
+
+        return new double[]{ bs.getValue(0.5),
+                bs.getValue(0.75),
+                bs.getValue(0.95),
+                bs.getValue(0.98),
+                bs.getValue(0.99),
+                bs.getMin(),
+                bs.getMax()};
     }
 
     public double[] metricPercentilesAsArray(CassandraMetricsRegistry.JmxTimerMBean metric)
     {
-        return new double[]{ metric.get50thPercentile(),
-                metric.get75thPercentile(),
-                metric.get95thPercentile(),
-                metric.get98thPercentile(),
-                metric.get99thPercentile(),
-                metric.getMin(),
-                metric.getMax()};
+        BufferSamples bs = new BufferSamples(metric.values());
+
+        return new double[]{ bs.getValue(0.5),
+                bs.getValue(0.75),
+                bs.getValue(0.95),
+                bs.getValue(0.98),
+                bs.getValue(0.99),
+                bs.getMin(),
+                bs.getMax()};
     }
 
     public TabularData getCompactionHistory()
