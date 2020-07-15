@@ -298,7 +298,7 @@ public abstract class CqlOperation<V> extends PredefinedOperation
         public <V> V execute(String query, ByteBuffer key, List<Object> queryParams, ResultHandler<V> handler)
         {
             String formattedQuery = formatCqlQuery(query, queryParams);
-            return handler.javaDriverHandler().apply(client.execute(formattedQuery, ThriftConversion.fromThrift(settings.command.consistencyLevel)));
+            return handler.javaDriverHandler().apply(client.execute(formattedQuery, settings.command.consistencyLevel, settings.command.serialConsistencyLevel));
         }
 
         @Override
@@ -308,7 +308,8 @@ public abstract class CqlOperation<V> extends PredefinedOperation
                     client.executePrepared(
                             (PreparedStatement) preparedStatementId,
                             queryParams,
-                            ThriftConversion.fromThrift(settings.command.consistencyLevel)));
+                            settings.command.consistencyLevel,
+                            settings.command.serialConsistencyLevel));
         }
 
         @Override
@@ -330,7 +331,7 @@ public abstract class CqlOperation<V> extends PredefinedOperation
         public <V> V execute(String query, ByteBuffer key, List<Object> queryParams, ResultHandler<V> handler)
         {
             String formattedQuery = formatCqlQuery(query, queryParams);
-            return handler.thriftHandler().apply(client.execute(formattedQuery, ThriftConversion.fromThrift(settings.command.consistencyLevel)));
+            return handler.thriftHandler().apply(client.execute(formattedQuery, settings.command.consistencyLevel));
         }
 
         @Override
@@ -340,7 +341,7 @@ public abstract class CqlOperation<V> extends PredefinedOperation
                     client.executePrepared(
                             (byte[]) preparedStatementId,
                             toByteBufferParams(queryParams),
-                            ThriftConversion.fromThrift(settings.command.consistencyLevel)));
+                            settings.command.consistencyLevel));
         }
 
         @Override
@@ -364,7 +365,7 @@ public abstract class CqlOperation<V> extends PredefinedOperation
         {
             String formattedQuery = formatCqlQuery(query, queryParams);
             return handler.simpleNativeHandler().apply(
-                    client.execute_cql3_query(formattedQuery, key, Compression.NONE, settings.command.consistencyLevel)
+                    client.execute_cql3_query(formattedQuery, key, Compression.NONE, ThriftConversion.toThrift(settings.command.consistencyLevel))
             );
         }
 
@@ -373,7 +374,7 @@ public abstract class CqlOperation<V> extends PredefinedOperation
         {
             Integer id = (Integer) preparedStatementId;
             return handler.simpleNativeHandler().apply(
-                    client.execute_prepared_cql3_query(id, key, toByteBufferParams(queryParams), settings.command.consistencyLevel)
+                    client.execute_prepared_cql3_query(id, key, toByteBufferParams(queryParams), ThriftConversion.toThrift(settings.command.consistencyLevel))
             );
         }
 

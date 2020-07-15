@@ -29,39 +29,32 @@ import com.datastax.driver.core.ColumnDefinitions;
 import com.datastax.driver.core.DataType;
 import com.datastax.driver.core.LocalDate;
 import com.datastax.driver.core.PreparedStatement;
-import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.stress.generate.Row;
 import org.apache.cassandra.stress.operations.PartitionOperation;
 import org.apache.cassandra.stress.report.Timer;
 import org.apache.cassandra.stress.settings.StressSettings;
-import org.apache.cassandra.stress.util.JavaDriverClient;
 
 public abstract class SchemaStatement extends PartitionOperation
 {
     final PreparedStatement statement;
     final Integer thriftId;
-    final ConsistencyLevel cl;
     final int[] argumentIndex;
     final Object[] bindBuffer;
     final ColumnDefinitions definitions;
     final boolean printStatementsOnError;
     
     public SchemaStatement(Timer timer, StressSettings settings, DataSpec spec,
-                           PreparedStatement statement, List<String> bindNames, Integer thriftId, ConsistencyLevel cl)
+                           PreparedStatement statement, List<String> bindNames, Integer thriftId)
     {
         super(timer, settings, spec);
         this.statement = statement;
         this.thriftId = thriftId;
-        this.cl = cl;
         argumentIndex = new int[bindNames.size()];
         bindBuffer = new Object[argumentIndex.length];
         definitions = statement != null ? statement.getVariables() : null;
         int i = 0;
         for (String name : bindNames)
             argumentIndex[i++] = spec.partitionGenerator.indexOf(name);
-
-        if (statement != null)
-            statement.setConsistencyLevel(JavaDriverClient.from(cl));
         this.printStatementsOnError = settings.log.printStatementsOnError;
     }
 

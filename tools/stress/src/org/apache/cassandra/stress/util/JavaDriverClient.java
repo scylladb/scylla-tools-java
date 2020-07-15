@@ -188,9 +188,31 @@ public class JavaDriverClient
         return getSession().execute(stmt);
     }
 
+    public ResultSet execute(String query, org.apache.cassandra.db.ConsistencyLevel consistency,
+                             org.apache.cassandra.db.ConsistencyLevel serialConsistency)
+    {
+        SimpleStatement stmt = new SimpleStatement(query);
+        if (consistency != null)
+            stmt.setConsistencyLevel(from(consistency));
+        if (serialConsistency != null)
+            stmt.setSerialConsistencyLevel(from(serialConsistency));
+        return getSession().execute(stmt);
+    }
+
     public ResultSet executePrepared(PreparedStatement stmt, List<Object> queryParams, org.apache.cassandra.db.ConsistencyLevel consistency)
     {
-        stmt.setConsistencyLevel(from(consistency));
+        if (stmt.getConsistencyLevel() == null)
+            stmt.setConsistencyLevel(from(consistency));
+        BoundStatement bstmt = stmt.bind((Object[]) queryParams.toArray(new Object[queryParams.size()]));
+        return getSession().execute(bstmt);
+    }
+
+    public ResultSet executePrepared(PreparedStatement stmt, List<Object> queryParams, org.apache.cassandra.db.ConsistencyLevel consistency, org.apache.cassandra.db.ConsistencyLevel serialConsistency )
+    {
+        if (stmt.getConsistencyLevel() == null)
+            stmt.setConsistencyLevel(from(consistency));
+        if (stmt.getSerialConsistencyLevel() == null)
+            stmt.setSerialConsistencyLevel(from(serialConsistency));
         BoundStatement bstmt = stmt.bind((Object[]) queryParams.toArray(new Object[queryParams.size()]));
         return getSession().execute(bstmt);
     }
@@ -224,6 +246,10 @@ public class JavaDriverClient
                 return com.datastax.driver.core.ConsistencyLevel.EACH_QUORUM;
             case LOCAL_ONE:
                 return com.datastax.driver.core.ConsistencyLevel.LOCAL_ONE;
+            case LOCAL_SERIAL:
+                return com.datastax.driver.core.ConsistencyLevel.LOCAL_SERIAL;
+            case SERIAL:
+                return com.datastax.driver.core.ConsistencyLevel.SERIAL;
         }
         throw new AssertionError();
     }

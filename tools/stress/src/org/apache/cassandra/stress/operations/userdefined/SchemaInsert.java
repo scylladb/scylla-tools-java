@@ -39,6 +39,7 @@ import org.apache.cassandra.stress.report.Timer;
 import org.apache.cassandra.stress.settings.StressSettings;
 import org.apache.cassandra.stress.util.JavaDriverClient;
 import org.apache.cassandra.stress.util.ThriftClient;
+import org.apache.cassandra.thrift.ThriftConversion;
 
 public class SchemaInsert extends SchemaStatement
 {
@@ -47,9 +48,9 @@ public class SchemaInsert extends SchemaStatement
     private final String insertStatement;
     private final BatchStatement.Type batchType;
 
-    public SchemaInsert(Timer timer, StressSettings settings, PartitionGenerator generator, SeedManager seedManager, Distribution batchSize, RatioDistribution useRatio, RatioDistribution rowPopulation, Integer thriftId, PreparedStatement statement, ConsistencyLevel cl, BatchStatement.Type batchType)
+    public SchemaInsert(Timer timer, StressSettings settings, PartitionGenerator generator, SeedManager seedManager, Distribution batchSize, RatioDistribution useRatio, RatioDistribution rowPopulation, Integer thriftId, PreparedStatement statement, BatchStatement.Type batchType)
     {
-        super(timer, settings, new DataSpec(generator, seedManager, batchSize, useRatio, rowPopulation), statement, statement.getVariables().asList().stream().map(d -> d.getName()).collect(Collectors.toList()), thriftId, cl);
+        super(timer, settings, new DataSpec(generator, seedManager, batchSize, useRatio, rowPopulation), statement, statement.getVariables().asList().stream().map(d -> d.getName()).collect(Collectors.toList()), thriftId);
         this.batchType = batchType;
         this.insertStatement = null;
         this.tableSchema = null;
@@ -60,7 +61,7 @@ public class SchemaInsert extends SchemaStatement
      */
     public SchemaInsert(Timer timer, StressSettings settings, PartitionGenerator generator, SeedManager seedManager, RatioDistribution useRatio, RatioDistribution rowPopulation, Integer thriftId, String statement, String tableSchema)
     {
-        super(timer, settings, new DataSpec(generator, seedManager, new DistributionFixed(1), useRatio, rowPopulation), null, generator.getColumnNames(), thriftId, ConsistencyLevel.ONE);
+        super(timer, settings, new DataSpec(generator, seedManager, new DistributionFixed(1), useRatio, rowPopulation), null, generator.getColumnNames(), thriftId);
         this.batchType = BatchStatement.Type.UNLOGGED;
         this.insertStatement = statement;
         this.tableSchema = tableSchema;
@@ -98,7 +99,8 @@ public class SchemaInsert extends SchemaStatement
                 else
                 {
                     BatchStatement batch = new BatchStatement(batchType);
-                    batch.setConsistencyLevel(JavaDriverClient.from(cl));
+                    batch.setConsistencyLevel(statement.getConsistencyLevel());
+                    batch.setSerialConsistencyLevel(statement.getSerialConsistencyLevel());
                     batch.addAll(substmts);
                     stmt = batch;
                 }
@@ -124,7 +126,7 @@ public class SchemaInsert extends SchemaStatement
             {
                 while (iterator.hasNext())
                 {
-                    client.execute_prepared_cql3_query(thriftId, iterator.getToken(), thriftRowArgs(iterator.next()), settings.command.consistencyLevel);
+                    client.execute_prepared_cql3_query(thriftId, iterator.getToken(), thriftRowArgs(iterator.next()), ThriftConversion.toThrift(settings.command.consistencyLevel));
                     rowCount += 1;
                 }
             }
