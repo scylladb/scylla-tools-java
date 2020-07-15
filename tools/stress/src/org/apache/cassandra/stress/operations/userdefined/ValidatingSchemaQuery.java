@@ -54,7 +54,7 @@ public class ValidatingSchemaQuery extends PartitionOperation
     final int[] argumentIndex;
     final Object[] bindBuffer;
 
-    private ValidatingSchemaQuery(Timer timer, StressSettings settings, PartitionGenerator generator, SeedManager seedManager, ValidatingStatement[] statements, ConsistencyLevel cl, int clusteringComponents)
+    private ValidatingSchemaQuery(Timer timer, StressSettings settings, PartitionGenerator generator, SeedManager seedManager, ValidatingStatement[] statements, ConsistencyLevel cl, ConsistencyLevel serialCl, int clusteringComponents)
     {
         super(timer, settings, new DataSpec(generator, seedManager, new DistributionFixed(1), settings.insert.rowPopulationRatio.get(), 1));
         this.statements = statements;
@@ -65,8 +65,16 @@ public class ValidatingSchemaQuery extends PartitionOperation
         for (ColumnDefinitions.Definition definition : statements[0].statement.getVariables())
             argumentIndex[i++] = spec.partitionGenerator.indexOf(definition.getName());
 
+        com.datastax.driver.core.ConsistencyLevel consistencyLevel = JavaDriverClient.from(cl);
+        com.datastax.driver.core.ConsistencyLevel serialConsistencyLevel = JavaDriverClient.from(serialCl);
+
         for (ValidatingStatement statement : statements)
-            statement.statement.setConsistencyLevel(JavaDriverClient.from(cl));
+        {
+            if (statement.statement.getConsistencyLevel() == null)
+                statement.statement.setConsistencyLevel(consistencyLevel);
+            if (statement.statement.getSerialConsistencyLevel() == null)
+                statement.statement.setSerialConsistencyLevel(serialConsistencyLevel);
+        }
         this.clusteringComponents = clusteringComponents;
     }
 
@@ -241,9 +249,9 @@ public class ValidatingSchemaQuery extends PartitionOperation
             this.clusteringComponents = clusteringComponents;
         }
 
-        public ValidatingSchemaQuery create(Timer timer, StressSettings settings, PartitionGenerator generator, SeedManager seedManager, ConsistencyLevel cl)
+        public ValidatingSchemaQuery create(Timer timer, StressSettings settings, PartitionGenerator generator, SeedManager seedManager, ConsistencyLevel cl, ConsistencyLevel serialCl)
         {
-            return new ValidatingSchemaQuery(timer, settings, generator, seedManager, statements, cl, clusteringComponents);
+            return new ValidatingSchemaQuery(timer, settings, generator, seedManager, statements, cl, serialCl, clusteringComponents);
         }
     }
 
