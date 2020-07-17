@@ -70,7 +70,7 @@ ar.reloc_add('build/apache-cassandra-{}.jar'.format(version), arcname='lib/apach
 ar.reloc_add('build/apache-cassandra-thrift-{}.jar'.format(version), arcname='lib/apache-cassandra-thrift-{}.jar'.format(version))
 ar.reloc_add('build/scylla-tools-{}.jar'.format(version), arcname='lib/scylla-tools-{}.jar'.format(version))
 ar.reloc_add('build/tools/lib/stress.jar', arcname='lib/stress.jar')
-ar.reloc_add('README.asc')
+ar.reloc_add('README.md')
 ar.reloc_add('CHANGES.txt')
 ar.reloc_add('NEWS.txt')
 ar.reloc_add('CASSANDRA-14092.txt')
