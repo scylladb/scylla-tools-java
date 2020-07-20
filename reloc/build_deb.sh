@@ -31,7 +31,7 @@ done
 if [[ ! $OPTS =~ --reloc-pkg ]]; then
     OPTS="$OPTS --reloc-pkg $RELOC_PKG"
 fi
-rm -rf "$BUILDDIR "
+rm -rf "$BUILDDIR"
 mkdir -p "$BUILDDIR"/scylla-package
 tar -C "$BUILDDIR"/scylla-package -xpf $RELOC_PKG
 cd "$BUILDDIR"/scylla-package
