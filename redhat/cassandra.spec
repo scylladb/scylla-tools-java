@@ -174,7 +174,8 @@ This package contains extra tools for working with Cassandra clusters.
 %attr(755,root,root) %{_bindir}/sstableofflinerelevel
 %attr(755,root,root) %{_bindir}/sstablerepairedset
 %attr(755,root,root) %{_bindir}/sstablesplit
-
+%attr(755,root,root) %{_bindir}/local_file_key_generator
+%attr(755,root,root) %{_bindir}/configuration_encryptor
 
 %changelog
 * Mon Dec 05 2016 Michael Shuler <mshuler@apache.org>

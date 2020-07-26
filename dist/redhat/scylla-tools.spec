@@ -55,6 +55,9 @@ rm -rf $RPM_BUILD_ROOT
 /opt/scylladb/share/cassandra/bin/sstablelevelreset
 /opt/scylladb/share/cassandra/bin/sstablemetadata
 /opt/scylladb/share/cassandra/bin/sstablerepairedset
+/opt/scylladb/share/cassandra/bin/local_file_key_generator
+/opt/scylladb/share/cassandra/bin/configuration_encryptor
+/opt/scylladb/share/cassandra/pylib/*
 %{_bindir}/nodetool
 %{_bindir}/sstableloader
 %{_bindir}/cqlsh
@@ -65,7 +68,8 @@ rm -rf $RPM_BUILD_ROOT
 %{_bindir}/sstablelevelreset
 %{_bindir}/sstablemetadata
 %{_bindir}/sstablerepairedset
-/opt/scylladb/share/cassandra/pylib/*
+%{_bindir}/local_file_key_generator
+%{_bindir}/configuration_encryptor
 
 %files core
 %{_sysconfdir}/scylla/cassandra/cassandra-env.sh
