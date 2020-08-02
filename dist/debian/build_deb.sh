@@ -44,11 +44,6 @@ if [ ! -e scylla-tools/SCYLLA-RELOCATABLE-FILE ]; then
     exit 1
 fi
 
-if [ "$(arch)" != "x86_64" ]; then
-    echo "Unsupported architecture: $(arch)"
-    exit 1
-fi
-
 if is_debian_variant; then
     sudo apt-get -y update
 fi
