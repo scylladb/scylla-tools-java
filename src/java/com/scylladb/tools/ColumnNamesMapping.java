@@ -102,7 +102,9 @@ class ColumnNamesMapping {
                     break;
             }
         }
-        return CFMetaData.create(cfm.ksName, cfm.cfName, cfm.cfId, cfm.isDense(),
+        CFMetaData res = CFMetaData.create(cfm.ksName, cfm.cfName, cfm.cfId, cfm.isDense(),
                 cfm.isCompound(), cfm.isSuper(), cfm.isCounter(), cfm.isView(), columns, cfm.partitioner);
+        res.droppedColumns(cfm.getDroppedColumns());
+        return res;
     }
 }
