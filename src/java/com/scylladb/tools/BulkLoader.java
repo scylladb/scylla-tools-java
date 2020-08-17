@@ -1467,14 +1467,27 @@ public class BulkLoader {
     }
 
     public static Pair<Descriptor, Set<Component>> openFile(String keyspace, File dir, String name) {
-        Pair<Descriptor, Component> p = SSTable.tryComponentFromFilename(dir, name);
-        Descriptor desc = p == null ? null : p.left;
+        Pair<Descriptor, Component> p = null;
+
+        try {
+            p = Component.fromFilename(dir, name);
+        } catch (IllegalArgumentException|UnsupportedOperationException e) {
+            // thrown when sstable format cannot be determined or broken version
+            // file is not an sstable or uses a version/format we cannot parse
+            logger.warn("Skipping file {} - unsupported SSTable format or version", name);
+        } catch (Throwable t) {
+            // not an sstable we hope. 
+        }
+
         if (p == null || !p.right.equals(Component.DATA)) {
+            // only return based on data component
             return null;
         }
 
+        Descriptor desc = p.left;
+
         if (!new File(desc.filenameFor(Component.PRIMARY_INDEX)).exists()) {
-            logger.info("Skipping file {} because index is missing", name);
+            logger.info("Skipping file {} - missing index", name);
             return null;
         }
 
