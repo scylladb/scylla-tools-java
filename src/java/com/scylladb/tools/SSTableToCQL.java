@@ -399,10 +399,6 @@ public class SSTableToCQL {
                     assert start.isInclusive();
                     where.put(column, Pair.create(Comp.Equal, sval));                                                              
                 } else {
-                    if (column.isPrimaryKeyColumn()) {
-                        // cannot generate <> for pk columns
-                        throw new IllegalStateException("Cannot generate <> comparison for primary key colum " + column);
-                    }
                     if (sval != null) {
                         where.put(column, 
                                 Pair.create( 
