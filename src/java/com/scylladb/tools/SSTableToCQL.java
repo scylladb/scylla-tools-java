@@ -396,7 +396,7 @@ public class SSTableToCQL {
                         where.put(column, Pair.create(Comp.Equal, i < spfx.size() ? spfx.get(i) : epfx.get(i)));
                     }
                 } else if (sval != null && (sval == eval || sval.equals(eval))) {
-                    assert start.isInclusive();
+                    assert start.isInclusive() || end.isInclusive();
                     where.put(column, Pair.create(Comp.Equal, sval));                                                              
                 } else {
                     if (sval != null) {
@@ -818,6 +818,13 @@ public class SSTableToCQL {
 
         private void process(RangeTombstoneMarker tombstone) {
             ClusteringBound end = tombstone.closeBound(false);
+
+            if (end != null && tombstone.isBoundary()) {
+                ClusteringBound start = tombstone.openBound(false);
+                assert start != null;
+                deleteCqlRow(start, end, tombstone.openDeletionTime(false).markedForDeleteAt());
+                return;
+            }
 
             if (end != null && tombstoneMarkers.isEmpty()) {
                 throw new IllegalStateException("Unexpected tombstone: " + tombstone);
