@@ -532,10 +532,13 @@ public class SSTableToCQL {
                 where.put(c, Pair.create(Comp.Equal, c.type.compose(bufs[k++])));
             }
 
-            for (Map.Entry<ColumnDefinition, Pair<Comp, Object>> e : where.entries()) {
-                Pair<Comp, Object> p = e.getValue();
+            for (Map.Entry<ColumnDefinition, Collection<Pair<Comp, Object>>> e : where.asMap().entrySet()) {
                 ColumnDefinition d = e.getKey();
-                params.put(varName(d), p.right);
+                int instanceNumber = 0;
+                for (Pair<Comp, Object> p : e.getValue()) {
+                    params.put(varName(d, instanceNumber), p.right);
+                    instanceNumber++;
+                }
             }
 
             if (op == Op.INSERT) {
@@ -548,15 +551,19 @@ public class SSTableToCQL {
                 writeUsingTTL(buf, params);
             } else {
                 i = 0;
-                for (Map.Entry<ColumnDefinition, Pair<Comp, Object>> e : where.entries()) {
-                    if (i++ > 0) {
-                        buf.append(" AND ");
+                for (Map.Entry<ColumnDefinition, Collection<Pair<Comp, Object>>> e : where.asMap().entrySet()) {
+                    int instanceNumber = 0;
+                    for (Pair<Comp, Object> p : e.getValue()) {
+                        if (i++ > 0) {
+                            buf.append(" AND ");
+                        }
+                        writeColumnName(buf, e.getKey());
+                        buf.append(' ');
+                        buf.append(p.left.toString());
+                        buf.append(" :");
+                        buf.append(varName(e.getKey(), instanceNumber));
+                        instanceNumber++;
                     }
-                    writeColumnName(buf, e.getKey());
-                    buf.append(' ');
-                    buf.append(e.getValue().left.toString());
-                    buf.append(" :");
-                    buf.append(varName(e.getKey()));
                 }
             }
             buf.append(';');
@@ -591,15 +598,20 @@ public class SSTableToCQL {
             buf.append(')');
         }
 
-        private final Map<ColumnDefinition, String> variableNames = new HashMap<>();
+        private final Map<Pair<ColumnDefinition, Integer>, String> variableNames = new HashMap<>();
         
-        private String varName(ColumnDefinition c) {
-            String name = variableNames.get(c);
+        private String varName(ColumnDefinition c, int instanceNumber) {
+            Pair<ColumnDefinition, Integer> entryPair = Pair.create(c, instanceNumber);
+            String name = variableNames.get(entryPair);
             if (name == null) {
                 name = "v" + variableNames.size();
-                variableNames.put(c, name);
+                variableNames.put(entryPair, name);
             }
             return name;
+        }
+
+        private String varName(ColumnDefinition c) {
+            return varName(c, 0);
         }
 
         private void writeUsingTTL(StringBuilder buf, Map<String, Object> params) {
