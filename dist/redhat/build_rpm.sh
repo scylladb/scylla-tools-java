@@ -24,14 +24,6 @@ done
 is_redhat_variant() {
     [ -f /etc/redhat-release ]
 }
-pkg_install() {
-    if is_redhat_variant; then
-        sudo yum install -y $1
-    else
-        echo "Requires to install following command: $1"
-        exit 1
-    fi
-}
 
 if [ ! -e SCYLLA-RELOCATABLE-FILE ]; then
     echo "do not directly execute build_rpm.sh, use reloc/build_rpm.sh instead."
@@ -45,10 +37,6 @@ fi
 if [ ! -f "$RELOC_PKG" ]; then
     echo "$RELOC_PKG is not found."
     exit 1
-fi
-
-if [ ! -f /usr/bin/rpmbuild ]; then
-    pkg_install rpm-build
 fi
 
 SCYLLA_VERSION=$(cat SCYLLA-VERSION-FILE)
