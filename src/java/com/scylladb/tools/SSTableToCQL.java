@@ -57,6 +57,7 @@ import org.apache.cassandra.db.marshal.TupleType;
 import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.db.rows.ColumnData;
 import org.apache.cassandra.db.rows.ComplexColumnData;
+import org.apache.cassandra.db.rows.RangeTombstoneBoundaryMarker;
 import org.apache.cassandra.db.rows.RangeTombstoneBoundMarker;
 import org.apache.cassandra.db.rows.RangeTombstoneMarker;
 import org.apache.cassandra.db.rows.Row;
@@ -815,7 +816,13 @@ public class SSTableToCQL {
                 Unfiltered f = rows.next();
                 switch (f.kind()) {
                 case RANGE_TOMBSTONE_MARKER:
-                    process((RangeTombstoneMarker) f);
+                    if (f instanceof RangeTombstoneBoundMarker) {
+                        process((RangeTombstoneBoundMarker) f);
+                    } else if (f instanceof RangeTombstoneBoundaryMarker) {
+                        process((RangeTombstoneBoundaryMarker) f);
+                    } else {
+                        throw new UnsupportedOperationException("Encountered unsupported range tombstone marker: " + f);
+                    }
                     break;
                 case ROW:
                     process((Row)f);
@@ -828,34 +835,27 @@ public class SSTableToCQL {
 
         private Deque<RangeTombstoneMarker> tombstoneMarkers = new ArrayDeque<>();
 
-        private void process(RangeTombstoneMarker tombstone) {
+        private void process(RangeTombstoneBoundMarker tombstone) {
+            ClusteringBound start = tombstone.openBound(false);
+            ClusteringBound end = tombstone.closeBound(false);
+            if (end != null) {
+                processRangeTombstoneEndBound(end, tombstone);
+            } else if (start != null) {
+                processRangeTombstoneStartBound(start, tombstone);
+            }
+        }
+
+        private void process(RangeTombstoneBoundaryMarker tombstone) {
+            ClusteringBound start = tombstone.openBound(false);
             ClusteringBound end = tombstone.closeBound(false);
 
-            if (end != null && tombstoneMarkers.isEmpty()) {
-                throw new IllegalStateException("Unexpected tombstone: " + tombstone);
-            }
+            assert start != null && end != null;
+            processRangeTombstoneEndBound(end, tombstone);
+            processRangeTombstoneStartBound(start, tombstone);
+        }
 
-            if (end != null && !tombstoneMarkers.isEmpty()) {
-                ClusteringBound last = tombstoneMarkers.getLast().closeBound(false);
-
-                // This can happen if we're adding a tombstone marker but had a
-                // row delete in between. In that case (overlapping tombstones),
-                // we should (I hope) assume that he was really the high
-                // watermark for the chain, and should also be followed by a new 
-                // tombstone range.
-                if (last != null && this.cfMetaData.comparator.compare(end, last) < 0) {
-                    return;
-                }
-
-                ClusteringBound start = tombstoneMarkers.getFirst().openBound(false);
-                assert start != null;
-                deleteCqlRow(start, end, tombstoneMarkers.getFirst().openDeletionTime(false).markedForDeleteAt());
-                tombstoneMarkers.clear();
-                return;
-            }
-
-            ClusteringBound start = tombstone.openBound(false);
-            if (start != null && !tombstoneMarkers.isEmpty()) {
+        private void processRangeTombstoneStartBound(ClusteringBound start, RangeTombstoneMarker tombstone) {
+            if (!tombstoneMarkers.isEmpty()) {
                 RangeTombstoneMarker last = tombstoneMarkers.getLast();
                 ClusteringBound stop = last.closeBound(false);
 
@@ -868,9 +868,29 @@ public class SSTableToCQL {
                     tombstoneMarkers.clear();
                 }
             }
-            if (start != null) {
-                tombstoneMarkers.add(tombstone);
+            tombstoneMarkers.add(tombstone);
+        }
+
+        private void processRangeTombstoneEndBound(ClusteringBound end, RangeTombstoneMarker tombstone) {
+            if (tombstoneMarkers.isEmpty()) {
+                throw new IllegalStateException("Unexpected tombstone: " + tombstone);
             }
+
+            ClusteringBound last = tombstoneMarkers.getLast().closeBound(false);
+
+            // This can happen if we're adding a tombstone marker but had a
+            // row delete in between. In that case (overlapping tombstones),
+            // we should (I hope) assume that he was really the high
+            // watermark for the chain, and should also be followed by a new
+            // tombstone range.
+            if (last != null && this.cfMetaData.comparator.compare(end, last) < 0) {
+                return;
+            }
+
+            ClusteringBound start = tombstoneMarkers.getFirst().openBound(false);
+            assert start != null;
+            deleteCqlRow(start, end, tombstoneMarkers.getFirst().openDeletionTime(false).markedForDeleteAt());
+            tombstoneMarkers.clear();
         }
 
         // update the CQL operation. If we change, we need
