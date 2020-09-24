@@ -88,7 +88,7 @@ public class NodeTool
                 // Remove for GA: GetCompactionThroughput.class,
                 // Remove until known: GetTimeout.class,
                 // Remove for GA: GetStreamThroughput.class,
-                // Remove until proven otherwise: GetTraceProbability.class,
+                GetTraceProbability.class,
                 // Remove until proven otherwise: GetInterDCStreamThroughput.class,
                 GetEndpoints.class,
                 GetSSTables.class,
