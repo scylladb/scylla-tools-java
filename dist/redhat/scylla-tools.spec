@@ -6,7 +6,7 @@ Group:          Applications/Databases
 
 License:        Apache
 URL:            http://www.scylladb.com/
-Source0:        scylla-tools-package.tar.gz
+Source0:        %{reloc_pkg}
 BuildArch:      noarch
 Requires:       %{product}-conf %{product}-tools-core
 Conflicts:      cassandra

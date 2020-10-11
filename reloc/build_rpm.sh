@@ -31,6 +31,7 @@ mkdir -p "$BUILDDIR"
 tar -C "$BUILDDIR" -xpf $RELOC_PKG scylla-tools/SCYLLA-RELEASE-FILE scylla-tools/SCYLLA-RELOCATABLE-FILE scylla-tools/SCYLLA-VERSION-FILE scylla-tools/SCYLLA-PRODUCT-FILE scylla-tools/dist/redhat
 cd "$BUILDDIR"/scylla-tools
 
+RELOC_PKG_BASENAME=$(basename "$RELOC_PKG")
 SCYLLA_VERSION=$(cat SCYLLA-VERSION-FILE)
 SCYLLA_RELEASE=$(cat SCYLLA-RELEASE-FILE)
 VERSION=$SCYLLA_VERSION-$SCYLLA_RELEASE
@@ -44,6 +45,7 @@ parameters=(
     -D"version $SCYLLA_VERSION"
     -D"release $SCYLLA_RELEASE"
     -D"product $PRODUCT"
+    -D"reloc_pkg $RELOC_PKG_BASENAME"
 )
 
 cp dist/redhat/scylla-tools.spec $RPMBUILD/SPECS
