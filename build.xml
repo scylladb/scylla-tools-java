@@ -929,6 +929,7 @@
             <src path="${build.src.java}"/>
             <src path="${build.src.java8}"/>
             <src path="${build.src.gen-java}"/>
+            <src path="${interface.thrift.gen-java}"/>
             <compilerarg value="-XDignore.symbol.file"/>
             <classpath>
                 <path refid="cassandra.classpath"/>
