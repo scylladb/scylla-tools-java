@@ -1209,7 +1209,7 @@ public class BulkLoader {
                     opts.setAllColumns = true;
                 }
                 if (cmd.hasOption(IGNORE_MISSING_COLUMNS)) {
-                    opts.ignoreColumns.addAll(Arrays.asList(cmd.getOptionValues(IGNORE_MISSING_COLUMNS)));
+                    opts.ignoreColumns.addAll(Arrays.asList(cmd.getOptionValue(IGNORE_MISSING_COLUMNS).split(",")));
                 }
                 if (cmd.hasOption(IGNORE_DROPPED_COUNTER_DATA)) {
                     opts.ignoreDroppedCounterData = true;
