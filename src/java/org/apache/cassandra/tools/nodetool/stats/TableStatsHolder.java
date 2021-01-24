@@ -161,7 +161,13 @@ public class TableStatsHolder implements StatsHolder
                 String tableName = table.getTableName();
                 StatsTable statsTable = new StatsTable();
                 statsTable.name = tableName;
-                statsTable.isIndex = tableName.contains(".");
+                // FIXME: https://issues.apache.org/jira/browse/CASSANDRA-4464
+                // added the notion that a table name with a dot is an index
+                // name. Not only is this not useful in Scylla, it is counter-
+                // productive (https://github.com/scylladb/scylla/issues/6521).
+                // Do we need some other way to address indexes?
+                //statsTable.isIndex = tableName.contains(".");
+                statsTable.isIndex = false;
                 statsTable.sstableCount = probe.getColumnFamilyMetric(keyspaceName, tableName, "LiveSSTableCount");
                 int[] leveledSStables = table.getSSTableCountPerLevel();
                 if (leveledSStables != null)
