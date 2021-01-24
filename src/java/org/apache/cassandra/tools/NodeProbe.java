@@ -1665,26 +1665,32 @@ class ColumnFamilyStoreMBeanIterator implements Iterator<Map.Entry<String, Colum
                 if(keyspaceNameCmp != 0)
                     return keyspaceNameCmp;
 
-                // get CF name and split it for index name
-                String e1CF[] = e1.getValue().getColumnFamilyName().split("\\.");
-                String e2CF[] = e2.getValue().getColumnFamilyName().split("\\.");
-                assert e1CF.length <= 2 && e2CF.length <= 2 : "unexpected split count for table name";
+                // FIXME: https://issues.apache.org/jira/browse/CASSANDRA-4464
+                // added the notion that a table name with a dot is an index
+                // name. Not only is this not useful in Scylla, it is counter-
+                // productive (https://github.com/scylladb/scylla/issues/6521).
+                // Do we need some other way to address indexes?
+                return e1.getValue().getColumnFamilyName().compareTo(e2.getValue().getColumnFamilyName());
+                //// get CF name and split it for index name
+                //String e1CF[] = e1.getValue().getColumnFamilyName().split("\\.");
+                //String e2CF[] = e2.getValue().getColumnFamilyName().split("\\.");
+                //assert e1CF.length <= 2 && e2CF.length <= 2 : "unexpected split count for table name";
+                //
+                ////if neither are indexes, just compare CF names
+                //if(e1CF.length == 1 && e2CF.length == 1)
+                //    return e1CF[0].compareTo(e2CF[0]);
 
-                //if neither are indexes, just compare CF names
-                if(e1CF.length == 1 && e2CF.length == 1)
-                    return e1CF[0].compareTo(e2CF[0]);
+                ////check if it's the same CF
+                //int cfNameCmp = e1CF[0].compareTo(e2CF[0]);
+                //if(cfNameCmp != 0)
+                //    return cfNameCmp;
 
-                //check if it's the same CF
-                int cfNameCmp = e1CF[0].compareTo(e2CF[0]);
-                if(cfNameCmp != 0)
-                    return cfNameCmp;
+                //// if both are indexes (for the same CF), compare them
+                //if(e1CF.length == 2 && e2CF.length == 2)
+                //    return e1CF[1].compareTo(e2CF[1]);
 
-                // if both are indexes (for the same CF), compare them
-                if(e1CF.length == 2 && e2CF.length == 2)
-                    return e1CF[1].compareTo(e2CF[1]);
-
-                //if length of e1CF is 1, it's not an index, so sort it higher
-                return e1CF.length == 1 ? 1 : -1;
+                ////if length of e1CF is 1, it's not an index, so sort it higher
+                //return e1CF.length == 1 ? 1 : -1;
             }
         });
         mbeans = cfMbeans.iterator();

@@ -310,7 +310,18 @@ public class TableStatsHolder implements StatsHolder
 
             for (String s : filterList)
             {
-                String[] keyValues = s.split("\\.", 2);
+                // Usually, keyspace name and table is are separated by a
+                // dot, but to allow names which themselves contain a dot
+                // (this is allowed in Alternator), also allow to separate
+                // the two parts with a slash instead:
+                String[] keyValues = s.split("/", 2);
+                if (keyValues.length == 1) {
+                    keyValues = s.split("\\.", 2);
+                } else if (keyValues.length == 2 && keyValues[1].isEmpty()) {
+                    // Allow the syntax "keyspace.name/" to represent a
+                    // keyspace with a dot in its name.
+                    keyValues = new String[] {keyValues[0]};
+                }
 
                 // build the map that stores the keyspaces and tables to use
                 if (!filter.containsKey(keyValues[0]))
