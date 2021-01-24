@@ -908,7 +908,13 @@ public class NodeProbe implements AutoCloseable
         ColumnFamilyStoreMBean cfsProxy = null;
         try
         {
-            String type = cf.contains(".") ? "IndexColumnFamilies" : "ColumnFamilies";
+            // FIXME: https://issues.apache.org/jira/browse/CASSANDRA-4464
+            // added the notion that a table name with a dot is an index
+            // name. Not only is this not useful in Scylla, it is counter-
+            // productive (https://github.com/scylladb/scylla/issues/6521).
+            // Do we need some other way to address indexes?
+            //String type = cf.contains(".") ? "IndexColumnFamilies" : "ColumnFamilies";
+            String type = "ColumnFamilies";
             Set<ObjectName> beans = mbeanServerConn.queryNames(
                     new ObjectName("org.apache.cassandra.db:type=*" + type +",keyspace=" + ks + ",columnfamily=" + cf), null);
 
@@ -1381,7 +1387,13 @@ public class NodeProbe implements AutoCloseable
             ObjectName oName = null;
             if (!Strings.isNullOrEmpty(ks) && !Strings.isNullOrEmpty(cf))
             {
-                String type = cf.contains(".") ? "IndexTable" : "Table";
+                // FIXME: https://issues.apache.org/jira/browse/CASSANDRA-4464
+                // added the notion that a table name with a dot is an index
+                // name. Not only is this not useful in Scylla, it is counter-
+                // productive (https://github.com/scylladb/scylla/issues/6521).
+                // Do we need some other way to address indexes?
+                //String type = cf.contains(".") ? "IndexTable" : "Table";
+                String type = "Table";
                 oName = new ObjectName(String.format("org.apache.cassandra.metrics:type=%s,keyspace=%s,scope=%s,name=%s", type, ks, cf, metricName));
             }
             else if (!Strings.isNullOrEmpty(ks))
