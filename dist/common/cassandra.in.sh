@@ -8,7 +8,6 @@ CASSANDRA_CONF="$SCYLLA_CONF/cassandra"
 # or place us there.
 
 CONFIG_FILE_REALPATH=`realpath $SCYLLA_CONF/scylla.yaml`
-echo "Using $CONFIG_FILE_REALPATH as the config file"
 CONFIGURATION_FILE_OPT="-Dcassandra.config=file://$CONFIG_FILE_REALPATH"
 
 CASSANDRA_HOME=/opt/scylladb/share/cassandra
