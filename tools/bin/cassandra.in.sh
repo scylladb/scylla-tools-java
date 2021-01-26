@@ -60,7 +60,6 @@ if [ -f "$SCYLLA_CONF/scylla.yaml" ]; then
     CONFIG_FILE_REALPATH=`realpath $SCYLLA_CONF/scylla.yaml`
 fi
 
-echo "Using $CONFIG_FILE_REALPATH as the config file"
 CONFIGURATION_FILE_OPT="-Dcassandra.config=file://$CONFIG_FILE_REALPATH"
 
 # The java classpath (required)
