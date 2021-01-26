@@ -45,6 +45,7 @@ import static com.datastax.driver.core.Cluster.builder;
 import static com.scylladb.tools.BulkLoader.Verbosity.Normal;
 import static com.scylladb.tools.SSTableToCQL.TIMESTAMP_VAR_NAME;
 import static com.scylladb.tools.SSTableToCQL.TTL_VAR_NAME;
+import static com.scylladb.tools.SSTableToCQL.cqlEscape;
 import static java.lang.Thread.currentThread;
 import static org.apache.cassandra.io.sstable.format.SSTableReader.openForBatch;
 import static org.apache.cassandra.schema.CQLTypeParser.parse;
@@ -369,7 +370,7 @@ public class BulkLoader {
 
             cluster = builder.build();
 
-            String escaped = "\"" + keyspace + "\"";
+            String escaped = cqlEscape(keyspace);
             session = cluster.connect(escaped);
             metadata = cluster.getMetadata();
             keyspaceMetadata = metadata.getKeyspace(escaped);
@@ -688,8 +689,8 @@ public class BulkLoader {
             Pair<String, String> key = Pair.create(keyspace, cfName);
             CFMetaData cfm = cfMetaDatas.get(key);
             if (cfm == null) {
-                KeyspaceMetadata ks = metadata.getKeyspace("\"" + keyspace + "\"");
-                TableMetadata cf = ks.getTable("\"" + cfName + "\"");
+                KeyspaceMetadata ks = metadata.getKeyspace(cqlEscape(keyspace));
+                TableMetadata cf = ks.getTable(cqlEscape(cfName));
                 if (cf == null) {
                     throw new IllegalArgumentException("Could not find table named " + keyspace + "." + cfName);
                 }
