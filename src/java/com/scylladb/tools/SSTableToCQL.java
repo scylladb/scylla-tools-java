@@ -57,8 +57,8 @@ import org.apache.cassandra.db.marshal.TupleType;
 import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.db.rows.ColumnData;
 import org.apache.cassandra.db.rows.ComplexColumnData;
-import org.apache.cassandra.db.rows.RangeTombstoneBoundaryMarker;
 import org.apache.cassandra.db.rows.RangeTombstoneBoundMarker;
+import org.apache.cassandra.db.rows.RangeTombstoneBoundaryMarker;
 import org.apache.cassandra.db.rows.RangeTombstoneMarker;
 import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.db.rows.Row.Deletion;
@@ -101,6 +101,10 @@ import com.google.common.collect.MultimapBuilder;
 public class SSTableToCQL {
     public static final String TIMESTAMP_VAR_NAME = "timestamp";
     public static final String TTL_VAR_NAME = "ttl";
+
+    public static String cqlEscape(String id) {
+        return "\"" + id + "\"";
+    }
 
     public static class Options {
         public boolean setAllColumns;
@@ -154,7 +158,7 @@ public class SSTableToCQL {
                 String name = columnName(c);
                 String varName = varName(c);
                 params.put(name, Collections.singleton(key));
-                return " = \"" + name + "\" - :" + varName;
+                return " = " + cqlEscape(name) + " - :" + varName;
             }
 
             @Override
@@ -258,7 +262,7 @@ public class SSTableToCQL {
                 String name = columnName(c);
                 String varName = varName(c);
                 params.put(varName, Collections.singleton(key));
-                return " = \"" + name + "\" + :" + varName;
+                return " = " + cqlEscape(name) + " + :" + varName;
             }
 
             @Override
@@ -945,16 +949,14 @@ public class SSTableToCQL {
         }
 
         private void writeColumnName(StringBuilder buf, ColumnDefinition c) {
-            buf.append('\"');
-            buf.append(columnName(c));
-            buf.append('\"');
+            buf.append(columnName(c)); // already escaped!
         }
         private void writeColumnFamily(StringBuilder buf) {
-            buf.append(" \"");
-            buf.append(cfMetaData.ksName);
-            buf.append("\".\"");
-            buf.append(cfMetaData.cfName);
-            buf.append("\" ");
+            buf.append(" ");
+            buf.append(cqlEscape(cfMetaData.ksName));
+            buf.append(".");
+            buf.append(cqlEscape(cfMetaData.cfName));
+            buf.append(" ");
         }
     }
 
