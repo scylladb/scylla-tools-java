@@ -23,6 +23,7 @@
 
 package com.scylladb.tools;
 
+import static java.util.Collections.emptyList;
 import static java.util.Collections.emptyMap;
 import static java.util.concurrent.TimeUnit.MICROSECONDS;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -33,10 +34,12 @@ import static org.apache.cassandra.db.ClusteringBound.inclusiveStartOf;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -334,8 +337,9 @@ public class SSTableToCQL {
         long timestamp;
         int ttl;
         Multimap<ColumnDefinition, ColumnOp> values = MultimapBuilder.treeKeys().arrayListValues(1).build();
-        Multimap<ColumnDefinition, Pair<Comp, Object>> where = MultimapBuilder.treeKeys().arrayListValues(2).build();
-                
+
+        ClusteringWhere where;
+
         enum Comp {
             Equal("="),
             GreaterEqual(">="),
@@ -368,6 +372,66 @@ public class SSTableToCQL {
             return stats;
         }
         
+        private static class ClusteringWhere {
+            private final List<ColumnDefinition> columnDefs;
+            private final List<Object> lowBounds;
+            private final List<Object> highBounds;
+            private Comp low, hi;
+
+            public ClusteringWhere(List<ColumnDefinition> clusteringColumns, ClusteringBound start, ClusteringBound end) {
+                this.columnDefs = clusteringColumns;
+                this.lowBounds = new ArrayList<>(columnDefs.size());
+                this.highBounds = new ArrayList<>(columnDefs.size());
+
+                ClusteringPrefix spfx = start.clustering();
+                ClusteringPrefix epfx = end.clustering();
+
+                for (int i = 0; i < columnDefs.size(); i++) {
+                    ColumnDefinition column = columnDefs.get(i);
+                    if (i < spfx.size()) {
+                        lowBounds.add(column.cellValueType().compose(spfx.get(i)));
+                    }
+                    if (i < epfx.size()) {
+                        highBounds.add(column.cellValueType().compose(epfx.get(i)));
+                    }
+                }
+                low = start.isInclusive() ? Comp.GreaterEqual : Comp.Greater;
+                hi = end.isInclusive() ? Comp.LessEqual : Comp.Less;
+
+                if (start.isInclusive() && end.isInclusive() && lowBounds.equals(highBounds)) {
+                    low = hi = Comp.Equal;
+                }
+            }
+
+            public Comp getLow() {
+                return low;
+            }
+
+            public Comp getHi() {
+                return hi;
+            }
+
+            public List<ColumnDefinition> getLowColumnDefs() {
+                return columnDefs.subList(0, lowBounds.size());
+            }
+
+            public List<ColumnDefinition> getHighColumnDefs() {
+                return columnDefs.subList(0, highBounds.size());
+            }
+
+            public List<Object> getHighBounds() {
+                return highBounds;
+            }
+
+            public List<Object> getLowBounds() {
+                return lowBounds;
+            }
+
+            public boolean isEmpty() {
+                return lowBounds.isEmpty() && highBounds.isEmpty();
+            }
+        }
+
         /**
          * Figure out the "WHERE" clauses (except for PK) for a column name
          *
@@ -377,45 +441,8 @@ public class SSTableToCQL {
          * @param ttl
          */
         private void setWhere(ClusteringBound start, ClusteringBound end) {
-            assert where.isEmpty();
-            
-            ClusteringPrefix spfx = start.clustering();
-            ClusteringPrefix epfx = end.clustering();
-            
-            List<ColumnDefinition> clusteringColumns = cfMetaData.clusteringColumns();
-            for (int i = 0; i < clusteringColumns.size(); i++) {
-                ColumnDefinition column = clusteringColumns.get(i);                
-                
-                Object sval = i < spfx.size() ? column.cellValueType().compose(spfx.get(i)) : null;
-                Object eval = spfx != epfx ? (i < epfx.size() ? column.cellValueType().compose(epfx.get(i)) : null) : sval;
-                
-                if (sval == null && eval == null) {
-                    // nothing. But if we got here because "compose" actually returned null and we're _not_ at the 
-                    // end of clustering values, we need to actually restrict on null. And hope it is legal for the type. 
-                    // Fixes #57
-                    // 
-                    // #88. Actually using null breaks bound/prepared statements. Set it to the 
-                    // raw data instead. Now the actual sender will need to deal with this 
-                    // invalid data. Woho. 
-                    if (i < spfx.size() || i < epfx.size()) {
-                        where.put(column, Pair.create(Comp.Equal, i < spfx.size() ? spfx.get(i) : epfx.get(i)));
-                    }
-                } else if (sval != null && (sval == eval || sval.equals(eval))) {
-                    assert start.isInclusive();
-                    where.put(column, Pair.create(Comp.Equal, sval));                                                              
-                } else {
-                    if (sval != null) {
-                        where.put(column, 
-                                Pair.create( 
-                                        start.isInclusive() ? Comp.GreaterEqual : Comp.Greater, sval));
-                    }
-                    if (eval != null) {
-                        where.put(column, 
-                            Pair.create( 
-                            end.isInclusive() ? Comp.LessEqual : Comp.Less, eval));
-                    }
-                }
-            } 
+            assert where == null;
+            where = new ClusteringWhere(cfMetaData.clusteringColumns(), start, end);
         }
 
         // Begin a new partition (cassandra "Row")
@@ -427,7 +454,7 @@ public class SSTableToCQL {
         }
 
         private void beginRow(Row row) {
-            where.clear();
+            where = null;
             this.row = row;
             ++stats.rowsProcessed;
         }
@@ -439,7 +466,7 @@ public class SSTableToCQL {
         private void clear() {
             op = Op.NONE;
             values.clear();
-            where.clear();
+            where = null;
             timestamp = invalidTimestamp;
             ttl = invalidTTL;
         }
@@ -518,12 +545,6 @@ public class SSTableToCQL {
                 writeUsingTimestamp(buf, params);
             }
 
-            if (op != Op.INSERT) {
-                buf.append(" WHERE ");
-            }
-
-            // Add "WHERE pk1 = , pk2 = "
-            
             List<ColumnDefinition> pk = cfMetaData.partitionKeyColumns();
             AbstractType<?> type = cfMetaData.getKeyValidator();
             ByteBuffer bufs[];
@@ -532,49 +553,100 @@ public class SSTableToCQL {
             } else {
                 bufs = new ByteBuffer[] { key.getKey() };
             }
+
             int k = 0;
             for (ColumnDefinition c : pk) {
-                where.put(c, Pair.create(Comp.Equal, c.type.compose(bufs[k++])));
-            }
-
-            for (Map.Entry<ColumnDefinition, Collection<Pair<Comp, Object>>> e : where.asMap().entrySet()) {
-                ColumnDefinition d = e.getKey();
-                int instanceNumber = 0;
-                for (Pair<Comp, Object> p : e.getValue()) {
-                    params.put(varName(d, instanceNumber), p.right);
-                    instanceNumber++;
-                }
+                params.put(varName(c), c.type.compose(bufs[k++]));
             }
 
             if (op == Op.INSERT) {
+                assert where == null || where.getLow() == Comp.Equal;
+
+                if (where != null) {
+                    Iterator<Object> li = where.getLowBounds().iterator();
+                    for (ColumnDefinition c : where.getLowColumnDefs()) {
+                        params.put(varName(c), li.next());
+                    }
+                }
+
                 if (setAllColumns) {
                     appendColumns(buf, cfMetaData.allColumns());
                 } else {
-                    appendColumns(buf, values.keySet(), where.keySet());
+                    appendColumns(buf, values.keySet(), pk, where != null ? where.getLowColumnDefs() : emptyList());
                 }
                 writeUsingTimestamp(buf, params);
                 writeUsingTTL(buf, params);
             } else {
+                buf.append(" WHERE ");
+
                 i = 0;
-                for (Map.Entry<ColumnDefinition, Collection<Pair<Comp, Object>>> e : where.asMap().entrySet()) {
+
+                for (ColumnDefinition c : pk) {
+                    if (i++ > 0) {
+                        buf.append(" AND ");
+                    }
+                    String var = varName(c);
+                    writeColumnName(buf, c);
+                    buf.append(' ');
+                    buf.append(Comp.Equal.toString());
+                    buf.append(" :");
+                    buf.append(var);
+                }
+
+                if (where != null && !where.isEmpty()) {
                     int instanceNumber = 0;
-                    for (Pair<Comp, Object> p : e.getValue()) {
-                        if (i++ > 0) {
-                            buf.append(" AND ");
+                    for (Pair<Pair<List<ColumnDefinition>, List<Object>>, Comp> p : Arrays.asList(
+                            Pair.create(Pair.create(where.getLowColumnDefs(), where.getLowBounds()), where.getLow()),
+                            Pair.create(Pair.create(where.getHighColumnDefs(), where.getHighBounds()),
+                                    where.getHi()))) {
+                        if (p.left.left.isEmpty()) {
+                            continue;
                         }
-                        writeColumnName(buf, e.getKey());
-                        buf.append(' ');
-                        buf.append(p.left.toString());
-                        buf.append(" :");
-                        buf.append(varName(e.getKey(), instanceNumber));
-                        instanceNumber++;
+
+                        buf.append(" AND (");
+
+                        i = 0;
+                        for (ColumnDefinition c : p.left.left) {
+                            if (i > 0) {
+                                buf.append(',');
+                            }
+                            writeColumnName(buf, c);
+                            ++i;
+                        }
+
+                        buf.append(") ").append(p.right.toString()).append(' ');
+                        if (p.right != Comp.Equal) {
+                            buf.append("SCYLLA_CLUSTERING_BOUND ");
+                        }
+                        buf.append('(');
+
+                        i = 0;
+                        for (ColumnDefinition c : p.left.left) {
+                            if (i > 0) {
+                                buf.append(',');
+                            }
+                            String var = varName(c, instanceNumber);
+                            params.put(var, p.left.right.get(i));
+                            buf.append(':').append(var);
+                            ++i;
+                        }
+
+                        buf.append(")");
+
+                        ++instanceNumber;
+                        if (p.right == Comp.Equal) {
+                            break;
+                        }
                     }
                 }
             }
             buf.append(';');
 
-            makeStatement(key, timestamp, buf.toString(), params);
-            clear();
+            try {
+                makeStatement(key, timestamp, buf.toString(), params);
+            } finally {
+                clear();
+            }
         }
 
         @SafeVarargs
