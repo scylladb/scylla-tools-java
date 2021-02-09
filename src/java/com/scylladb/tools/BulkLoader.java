@@ -1369,9 +1369,10 @@ public class BulkLoader {
             }
 
             boolean done = false;
+            long lastSum = -1;
             do {
                 done = latch.await(1, TimeUnit.SECONDS);
-                printSummary(client, totalBytes);
+                printSummary(client, totalBytes, lastSum);
             } while (!done);
 
             System.out.println();
@@ -1407,13 +1408,17 @@ public class BulkLoader {
         }
     }
 
-    private static void printSummary(CQLClient client, long totalBytes) {
+    private static long printSummary(CQLClient client, long totalBytes, long lastSum) {
         if (client.verbose.greaterOrEqual(Verbosity.Normal)) {
             Metrics sum = client.metrics.sum();
-            int percent = (int) (100 * ((double)sum.bytesProcessed / (totalBytes + sum.additionalBytes)));
-            System.out.format("%1$3d%% done. %2$8d statements sent (in %3$8d batches, %4$8d failed).\r", percent, sum.statementsSent,
-                    sum.batchesProcessed, sum.statementsFailed);
+            if (sum.bytesProcessed != lastSum) {
+                int percent = (int) (100 * ((double)sum.bytesProcessed / (totalBytes + sum.additionalBytes)));
+                System.out.format("%1$3d%% done. %2$8d statements sent (in %3$8d batches, %4$8d failed).\r", percent, sum.statementsSent,
+                        sum.batchesProcessed, sum.statementsFailed);
+            }
+            lastSum = sum.bytesProcessed;
         }
+        return lastSum;
     }
 
     private static Map<InetAddress, Collection<Range<Token>>> getRanges(LoaderOptions options, CQLClient client) {
