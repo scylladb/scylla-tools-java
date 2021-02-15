@@ -480,6 +480,18 @@ public class NodeProbe implements AutoCloseable
         return result;
     }
 
+    public Map<Sampler, CompositeData> getToppartitions(List<String> keyspaceFilters, List<String> tableFilters, int capacity, int duration, int count, List<Sampler> samplers) throws OpenDataException
+    {
+        Map<Sampler, CompositeData> result = Maps.newHashMap();
+
+        for (Sampler sampler : samplers)
+        {
+            result.put(sampler, ssProxy.getToppartitions(sampler.name(), keyspaceFilters, tableFilters, duration, capacity, count));
+        }
+
+        return result;
+    }
+
     public void invalidateCounterCache()
     {
         cacheService.invalidateCounterCache();
