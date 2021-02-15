@@ -23,11 +23,14 @@ import io.airlift.command.Arguments;
 import io.airlift.command.Command;
 import io.airlift.command.Option;
 
+import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.stream.Stream;
+import java.util.stream.Collectors;
 
 import javax.management.openmbean.CompositeData;
 import javax.management.openmbean.OpenDataException;
@@ -46,6 +49,12 @@ public class TopPartitions extends NodeToolCmd
 {
     @Arguments(usage = "<keyspace> <cfname> <duration>", description = "The keyspace, column family name, and duration in milliseconds")
     private List<String> args = new ArrayList<>();
+    @Option(name = {"-d", "--duration"}, description = "Duration in milliseconds")
+    private int duration = 5000;
+    @Option(name = "--ks-filters", description = "Comma separated list of keyspaces to include in the query (Default: all)")
+    private String keyspaceFilters = null;
+    @Option(name = "--cf-filters", description = "Comma separated list of column families to include in the query in the form of 'ks:cf' (Default: all)")
+    private String tableFilters = null;
     @Option(name = "-s", description = "Capacity of stream summary, closer to the actual cardinality of partitions will yield more accurate results (Default: 256)")
     private int size = 256;
     @Option(name = "-k", description = "Number of the top partitions to list (Default: 10)")
@@ -55,11 +64,7 @@ public class TopPartitions extends NodeToolCmd
     @Override
     public void execute(NodeProbe probe)
     {
-        checkArgument(args.size() == 3, "toppartitions requires keyspace, column family name, and duration");
         checkArgument(topCount < size, "TopK count (-k) option must be smaller then the summary capacity (-s)");
-        String keyspace = args.get(0);
-        String cfname = args.get(1);
-        Integer duration = Integer.valueOf(args.get(2));
         // generate the list of samplers
         List<Sampler> targets = Lists.newArrayList();
         for (String s : samplers.split(","))
@@ -73,10 +78,26 @@ public class TopPartitions extends NodeToolCmd
             }
         }
 
+        if (args.size() == 3) {
+            tableFilters = args.get(0) + ":" + args.get(1);
+            duration = Integer.valueOf(args.get(2));
+        } else if (!args.isEmpty()) {
+            checkArgument(false, "toppartitions requires either a keyspace, column family name and duration or no arguments at all");
+        }
+
+        List<String> keyspaceFiltersList = null;
+        List<String> tableFiltersList = null;
+
+        if (keyspaceFilters != null)
+            keyspaceFiltersList = Stream.of(keyspaceFilters.split(",")).collect(Collectors.toList());
+        
+        if (tableFilters != null)
+            tableFiltersList = Stream.of(tableFilters.split(",")).collect(Collectors.toList());
+
         Map<Sampler, CompositeData> results;
         try
         {
-            results = probe.getPartitionSample(keyspace, cfname, size, duration, topCount, targets);
+            results = probe.getToppartitions(keyspaceFiltersList, tableFiltersList, size, duration, topCount, targets);
         } catch (OpenDataException e)
         {
             throw new RuntimeException(e);
