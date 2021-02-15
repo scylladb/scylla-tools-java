@@ -134,7 +134,7 @@ public class NodeTool
                 // Remove for GA: RangeKeySample.class,
                 EnableBackup.class,
                 DisableBackup.class,
-                // Remove for GA: ResetLocalSchema.class,
+                ResetLocalSchema.class,
                 // Remove for GA: ReloadTriggers.class,
                 // Remove until proven otherwise: ReloadTriggers.class,
                 // Remove for GA: SetCacheKeysToSave.class,
