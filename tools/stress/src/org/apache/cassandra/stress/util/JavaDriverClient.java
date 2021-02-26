@@ -258,6 +258,12 @@ public class JavaDriverClient
 
     public void disconnect()
     {
-        cluster.close();
+        try {
+            cluster.close();
+        } catch (Exception e) {
+            System.out.printf(
+                    "Failed to close connection due to the following error: %s",
+                    e.toString());
+        }
     }
 }
