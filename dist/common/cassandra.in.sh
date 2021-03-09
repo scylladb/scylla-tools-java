@@ -27,7 +27,7 @@ for jar in /opt/scylladb/share/cassandra/*.jar; do
     CLASSPATH=$CLASSPATH:$jar
 done
 
-CLASSPATH="$CLASSPATH:$EXTRA_CLASSPATH"
+CLASSPATH="$CLASSPATH:$SCYLLA_CONF:$EXTRA_CLASSPATH"
 
 # set JVM javaagent opts to avoid warnings/errors
 if [ "$JVM_VENDOR" != "OpenJDK" -o "$JVM_VERSION" \> "1.6.0" ] \
