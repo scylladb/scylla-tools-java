@@ -9,6 +9,7 @@ URL:            http://www.scylladb.com/
 Source0:        scylla-tools-package.tar.gz
 BuildArch:      noarch
 Requires:       %{product}-conf %{product}-tools-core
+AutoReqProv:    no
 Conflicts:      cassandra
 
 %description
@@ -21,7 +22,7 @@ Requires:       java-headless
 Summary:        Core files for Scylla tools
 Version:        %{version}
 Release:        %{release}%{?dist}
-Requires:       java-1.8.0-openjdk-headless python2
+Requires:       jre-1.8.0-headless python2
 # Since RHEL7 and RHEL8 has different pacakge name for pyyaml,
 # we need to use a file path to the resolve package name on
 # current distribution.
