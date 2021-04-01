@@ -808,7 +808,6 @@ public class SSTableToCQL {
 
             if (!deletionTime.isLive()) {
                 deletePartition(key, deletionTime);
-                return;
             }
 
             Row sr = rows.staticRow();
