@@ -798,7 +798,9 @@ public class BulkLoader {
             }
         }
 
-        private static final Pattern variable = Pattern.compile("\\:(\\w+)");
+        // #241 - cql table identifiers can have names with ":" in them.
+        // In that case, it should be escaped by now. Need to match against this.
+        private static final Pattern variable = Pattern.compile("(?<=[^\"]|^)\\:(\\w+)(?=[^\"]|$)");
 
         private void send(DecoratedKey key, long timestamp, String what, Map<String, Object> objects, boolean allowBatch) {
             SimpleStatement s;
