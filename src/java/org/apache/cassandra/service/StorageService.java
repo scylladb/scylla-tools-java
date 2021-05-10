@@ -5205,4 +5205,9 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     {
         return null;
     }
+
+    public Map<String, CompositeData> getToppartitions(List<String> samplers, List<String> keyspaceFilters, List<String> tableFilters, int duration, int capacity, int count) throws OpenDataException
+    {
+        return null;
+    }
 }
