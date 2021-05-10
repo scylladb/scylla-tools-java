@@ -44,6 +44,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.stream.Collectors;
 
 import javax.management.InstanceNotFoundException;
 import javax.management.JMX;
@@ -483,10 +484,31 @@ public class NodeProbe implements AutoCloseable
     public Map<Sampler, CompositeData> getToppartitions(List<String> keyspaceFilters, List<String> tableFilters, int capacity, int duration, int count, List<Sampler> samplers) throws OpenDataException
     {
         Map<Sampler, CompositeData> result = Maps.newHashMap();
-
-        for (Sampler sampler : samplers)
+        
+        try
         {
-            result.put(sampler, ssProxy.getToppartitions(sampler.name(), keyspaceFilters, tableFilters, duration, capacity, count));
+            Class[] cArg = new Class[6];
+            cArg[0] = cArg[1] = cArg[2] = (Class<List<String>>) Collections.<String>emptyList().getClass();
+            cArg[3] = cArg[4] = cArg[5] = int.class;
+
+            // make sure that JMX has the newer API, throws NoSuchMethodException if not
+            ssProxy.getClass().getMethod("getToppartitions", cArg);
+
+            Map<String, CompositeData> toppartitions = ssProxy.getToppartitions(samplers.stream().map(sampler -> sampler.name().toLowerCase()).collect(Collectors.toList()),
+                keyspaceFilters, tableFilters, duration, capacity, count);
+
+            for (Sampler sampler : samplers)
+            {
+                result.put(sampler, toppartitions.get(sampler.name().toLowerCase()));
+            }
+        }
+        catch (NoSuchMethodException e) 
+        {
+            // fall back to the old JMX API
+            for (Sampler sampler : samplers) 
+            {
+                result.put(sampler, ssProxy.getToppartitions(sampler.name(), keyspaceFilters, tableFilters, duration, capacity, count));
+            }
         }
 
         return result;

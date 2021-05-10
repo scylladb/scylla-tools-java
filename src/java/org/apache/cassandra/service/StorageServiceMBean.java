@@ -675,6 +675,8 @@ public interface StorageServiceMBean extends NotificationEmitter
 
     public CompositeData getToppartitions(String sampler, List<String> keyspaceFilters, List<String> tableFilters, int duration, int capacity, int count) throws OpenDataException;
 
+    public Map<String, CompositeData> getToppartitions(List<String> samplers, List<String> keyspaceFilters, List<String> tableFilters, int duration, int capacity, int count) throws OpenDataException;
+
     /**
      * Resume bootstrap streaming when there is failed data streaming.
      *
