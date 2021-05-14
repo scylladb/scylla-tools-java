@@ -46,7 +46,7 @@ public class JavaDriverClient
     public final String username;
     public final String password;
     public final AuthProvider authProvider;
-    public final int maxPendingPerConnection;
+    public final Integer maxPendingPerConnection;
     public final int connectionsPerHost;
 
     private final ProtocolVersion protocolVersion;
@@ -84,7 +84,7 @@ public class JavaDriverClient
         //See https://issues.apache.org/jira/browse/CASSANDRA-7217
         int requestsPerConnection = (maxThreadCount / connectionsPerHost) + connectionsPerHost;
 
-        maxPendingPerConnection = settings.mode.maxPendingPerConnection == null ? Math.max(128, requestsPerConnection ) : settings.mode.maxPendingPerConnection;
+        maxPendingPerConnection = settings.mode.maxPendingPerConnection;
     }
 
     private LoadBalancingPolicy loadBalancingPolicy(StressSettings settings)
@@ -123,8 +123,10 @@ public class JavaDriverClient
     {
         PoolingOptions poolingOpts = new PoolingOptions()
                                      .setConnectionsPerHost(HostDistance.LOCAL, connectionsPerHost, connectionsPerHost)
-                                     .setMaxRequestsPerConnection(HostDistance.LOCAL, maxPendingPerConnection)
                                      .setNewConnectionThreshold(HostDistance.LOCAL, 100);
+        if (maxPendingPerConnection != null) {
+            poolingOpts.setMaxRequestsPerConnection(HostDistance.LOCAL, maxPendingPerConnection);
+        }
 
         Cluster.Builder clusterBuilder = Cluster.builder()
                                                 .addContactPoint(host)
