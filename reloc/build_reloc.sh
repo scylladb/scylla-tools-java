@@ -66,4 +66,4 @@ fi
 printf "version=%s" $VERSION > build.properties
 ant jar
 dist/debian/debian_files_gen.py
-scripts/create-relocatable-package.py --version $VERSION build/$PRODUCT-tools-package.tar.gz
+scripts/create-relocatable-package.py --version $VERSION build/$PRODUCT-tools-$(arch)-package.tar.gz
