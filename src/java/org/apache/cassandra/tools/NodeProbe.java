@@ -488,7 +488,7 @@ public class NodeProbe implements AutoCloseable
         try
         {
             Class[] cArg = new Class[6];
-            cArg[0] = cArg[1] = cArg[2] = (Class<List<String>>) Collections.<String>emptyList().getClass();
+            cArg[0] = cArg[1] = cArg[2] = List.class;
             cArg[3] = cArg[4] = cArg[5] = int.class;
 
             // make sure that JMX has the newer API, throws NoSuchMethodException if not
