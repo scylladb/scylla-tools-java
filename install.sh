@@ -31,6 +31,7 @@ Options:
   --prefix /prefix         directory prefix (default /usr)
   --etcdir /etc            specify etc directory path (default /etc)
   --nonroot                install Scylla without required root priviledge
+  --supervisor             enable supervisor to manage scylla processes
   --help                   this helpful message
 EOF
     exit 1
@@ -39,6 +40,7 @@ EOF
 root=/
 etcdir=/etc
 nonroot=false
+supervisor=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -56,6 +58,10 @@ while [ $# -gt 0 ]; do
             ;;
         "--nonroot")
             nonroot=true
+            shift 1
+            ;;
+        "--supervisor")
+            supervisor=true
             shift 1
             ;;
         "--help")
