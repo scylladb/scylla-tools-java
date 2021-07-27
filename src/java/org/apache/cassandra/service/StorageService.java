@@ -2983,6 +2983,16 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         return status.statusCode;
     }
 
+    public int validate(String keyspaceName, String... tables) throws IOException, ExecutionException, InterruptedException
+    {
+        return validate(0, keyspaceName, tables);
+    }
+
+    public int validate(int jobs, String keyspaceName, String... tables) throws IOException, ExecutionException, InterruptedException
+    {
+        throw new RuntimeException("Validate is not implemented");
+    }
+
     public int scrub(boolean disableSnapshot, boolean skipCorrupted, String keyspaceName, String... tables) throws IOException, ExecutionException, InterruptedException
     {
         return scrub(disableSnapshot, skipCorrupted, true, 0, keyspaceName, tables);

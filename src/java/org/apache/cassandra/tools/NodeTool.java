@@ -66,6 +66,7 @@ public class NodeTool
                 Cleanup.class,
                 ClearSnapshot.class,
                 Compact.class,
+                Validate.class,
                 Scrub.class,
                 // Remove until proven otherwise: Verify.class,
                 Flush.class,

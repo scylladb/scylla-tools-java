@@ -270,6 +270,19 @@ public interface StorageServiceMBean extends NotificationEmitter
     public int forceKeyspaceCleanup(int jobs, String keyspaceName, String... tables) throws IOException, ExecutionException, InterruptedException;
 
     /**
+     * Run validation compaction of tables in a single keyspace.
+     * If tables array is empty, all tables are validated.
+     *
+     * This is essentially a read-only version of scrub.
+     */
+    @Deprecated
+    public int validate(String keyspaceName, String... tables)
+            throws IOException, ExecutionException, InterruptedException;
+
+    public int validate(int jobs, String keyspaceName, String... tables)
+            throws IOException, ExecutionException, InterruptedException;
+
+    /**
      * Scrub (deserialize + reserialize at the latest version, skipping bad rows if any) the given keyspace.
      * If tableNames array is empty, all CFs are scrubbed.
      *

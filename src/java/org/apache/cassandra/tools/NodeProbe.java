@@ -312,6 +312,11 @@ public class NodeProbe implements AutoCloseable
         return ssProxy.forceKeyspaceCleanup(jobs, keyspaceName, tables);
     }
 
+    public int validate(int jobs, String keyspaceName, String... tables) throws IOException, ExecutionException, InterruptedException
+    {
+        return ssProxy.validate(jobs, keyspaceName, tables);
+    }
+
     public int scrub(boolean disableSnapshot, boolean skipCorrupted, boolean checkData, boolean reinsertOverflowedTTL, int jobs, String keyspaceName, String... tables) throws IOException, ExecutionException, InterruptedException
     {
         return ssProxy.scrub(disableSnapshot, skipCorrupted, checkData, reinsertOverflowedTTL, jobs, keyspaceName, tables);
@@ -352,6 +357,22 @@ public class NodeProbe implements AutoCloseable
             case 2:
                 failed = true;
                 out.println("Failed marking some sstables compacting in keyspace "+keyspaceName+", check server logs for more information");
+                break;
+        }
+    }
+
+    public void validate(PrintStream out, int jobs, String keyspaceName, String... tableNames) throws IOException, ExecutionException, InterruptedException
+    {
+        checkJobs(out, jobs);
+        switch (validate(jobs, keyspaceName, tableNames))
+        {
+            case 1:
+                failed = true;
+                out.println("Aborted validation at least one table in keyspace "+keyspaceName+", check server logs for more information.");
+                break;
+            case 2:
+                failed = true;
+                out.println("Failed validation of some sstables in keyspace "+keyspaceName+", check server logs for more information");
                 break;
         }
     }
