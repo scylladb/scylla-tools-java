@@ -30,7 +30,7 @@ public class Stop extends NodeToolCmd
 {
     @Arguments(title = "compaction_type",
               usage = "<compaction type>",
-              description = "Supported types are COMPACTION, VALIDATION, CLEANUP, SCRUB, VERIFY, INDEX_BUILD",
+              description = "Supported types are COMPACTION, VALIDATION, CLEANUP, SCRUB, VERIFY, INDEX_BUILD, RESHAPE",
               required = false)
     private OperationType compactionType = OperationType.UNKNOWN;
 

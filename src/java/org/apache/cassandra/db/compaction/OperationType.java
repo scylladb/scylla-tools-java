@@ -39,7 +39,8 @@ public enum OperationType
     VIEW_BUILD("View build"),
     INDEX_SUMMARY("Index summary redistribution"),
     RELOCATE("Relocate sstables to correct disk"),
-    GARBAGE_COLLECT("Remove deleted data");
+    GARBAGE_COLLECT("Remove deleted data"),
+    RESHAPE("Reshape");
 
     public final String type;
     public final String fileName;
