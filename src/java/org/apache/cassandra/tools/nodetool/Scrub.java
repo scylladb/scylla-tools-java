@@ -41,8 +41,13 @@ public class Scrub extends NodeToolCmd
 
     @Option(title = "skip_corrupted",
             name = {"-s", "--skip-corrupted"},
-            description = "Skip corrupted partitions even when scrubbing counter tables. (default false)")
+            description = "Skip corrupted partitions even when scrubbing counter tables. (Deprecated, use '--mode' instead. default false)")
     private boolean skipCorrupted = false;
+
+    @Option(title = "scrub_mode",
+                   name = {"-m", "--mode"},
+                   description = "How to handle corrupt data (one of: ABORT|SKIP|SEGREGATE|VALIDATE, default ABORT; overrides '--skip-corrupted')")
+    private String scrubMode = "";
 
     @Option(title = "no_validate",
                    name = {"-n", "--no-validate"},
@@ -67,9 +72,16 @@ public class Scrub extends NodeToolCmd
 
         for (String keyspace : keyspaces)
         {
+            if (skipCorrupted) {
+                if (scrubMode != "") {
+                    throw new IllegalArgumentException("skipCorrupted and scrubMode must not be specified together");
+                }
+                scrubMode = "SKIP";
+            }
+
             try
             {
-                probe.scrub(System.out, disableSnapshot, skipCorrupted, !noValidation, reinsertOverflowedTTL, jobs, keyspace, tableNames);
+                probe.scrub(System.out, disableSnapshot, scrubMode, !noValidation, reinsertOverflowedTTL, jobs, keyspace, tableNames);
             }
             catch (IllegalArgumentException e)
             {
