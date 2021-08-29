@@ -64,6 +64,19 @@ if [ -z "$NODEPS" ]; then
 fi
 
 printf "version=%s" $VERSION > build.properties
+
+# Our ant build.xml requires JAVA8_HOME to be set. In case it wasn't (e.g.,
+# dbuild sets it), let's try some common possibilities
+if [ -z "$JAVA8_HOME"]; then
+    for i in /usr/lib/jvm/java-1.8.0
+    do
+        if [ -e "$i" ]; then
+            export JAVA8_HOME="$i"
+            break
+        fi
+    done
+fi
+
 ant jar
 dist/debian/debian_files_gen.py
 scripts/create-relocatable-package.py --version $VERSION build/$PRODUCT-tools-package.tar.gz
