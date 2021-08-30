@@ -615,8 +615,9 @@ public interface StorageServiceMBean extends NotificationEmitter
      *
      * @param ksName The parent keyspace name
      * @param tableName The ColumnFamily name where SSTables belong
+     * @param isLoadAndStream Whether or not arbitrary SSTables should be loaded (and streamed to the owning nodes)
      */
-    public void loadNewSSTables(String ksName, String tableName);
+    public void loadNewSSTables(String ksName, String tableName, boolean isLoadAndStream);
 
     /**
      * Return a List of Tokens representing a sample of keys across all ColumnFamilyStores.
