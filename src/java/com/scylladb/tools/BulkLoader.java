@@ -1062,7 +1062,8 @@ public class BulkLoader {
                 opts.simulate = cmd.hasOption(SIMULATE);
                 opts.noProgress = cmd.hasOption(NOPROGRESS_OPTION);
                 opts.infiniteRetry = !cmd.hasOption(NO_INFINITE_RETRY_OPTION);
-
+                opts.port = config.native_transport_port;
+                
                 if (cmd.hasOption(PORT_OPTION)) {
                     opts.port = Integer.parseInt(cmd.getOptionValue(PORT_OPTION));
                 }
@@ -1156,7 +1157,6 @@ public class BulkLoader {
                 } else {
                     config = new Config();
                 }
-                opts.port = config.native_transport_port;
                 opts.throttle = config.stream_throughput_outbound_megabits_per_sec;
                 opts.encOptions = config.client_encryption_options;
 
