@@ -67,7 +67,7 @@ printf "version=%s" $VERSION > build.properties
 
 # Our ant build.xml requires JAVA8_HOME to be set. In case it wasn't (e.g.,
 # dbuild sets it), let's try some common possibilities
-if [ -z "$JAVA8_HOME"]; then
+if [ -z "$JAVA8_HOME" ]; then
     for i in /usr/lib/jvm/java-1.8.0
     do
         if [ -e "$i" ]; then
