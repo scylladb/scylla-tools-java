@@ -20,6 +20,7 @@ package org.apache.cassandra.tools.nodetool;
 import static org.apache.commons.lang3.StringUtils.EMPTY;
 import io.airlift.command.Arguments;
 import io.airlift.command.Command;
+import io.airlift.command.Option;
 
 import org.apache.cassandra.tools.NodeProbe;
 import org.apache.cassandra.tools.NodeTool.NodeToolCmd;
@@ -29,6 +30,9 @@ public class RemoveNode extends NodeToolCmd
 {
     @Arguments(title = "remove_operation", usage = "<status>|<force>|<ID>", description = "Show status of current node removal, force completion of pending removal, or remove provided ID", required = true)
     private String removeOperation = EMPTY;
+
+    @Option(title = "ignore_dead_nodes", name = {"-ignore", "--ignore-nodes", "--ignore-dead-nodes"}, description = "Use -ignore to specify a comma-separated list of dead nodes to ignore during removenode")
+    private String ignoreNodes = null;
 
     @Override
     public void execute(NodeProbe probe)
@@ -43,7 +47,7 @@ public class RemoveNode extends NodeToolCmd
                 probe.forceRemoveCompletion();
                 break;
             default:
-                probe.removeNode(removeOperation);
+                probe.removeNode(removeOperation, ignoreNodes);
                 break;
         }
     }

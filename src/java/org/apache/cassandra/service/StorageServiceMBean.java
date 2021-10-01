@@ -402,6 +402,8 @@ public interface StorageServiceMBean extends NotificationEmitter
      */
     public void removeNode(String token);
 
+    public void removeNode(String token, String ignoreNodes);
+
     /**
      * Get the status of a token removal.
      */
