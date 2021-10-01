@@ -4395,6 +4395,14 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         removingNode = null;
     }
 
+    public void removeNode(String hostIdString, String ignoreNodes)
+    {
+        if (ignoreNodes != null)
+            throw new UnsupportedOperationException("ignoreNodes is not supported.");
+
+        removeNode(hostIdString);
+    }
+
     public void confirmReplication(InetAddress node)
     {
         // replicatingNodes can be empty in the case where this node used to be a removal coordinator,

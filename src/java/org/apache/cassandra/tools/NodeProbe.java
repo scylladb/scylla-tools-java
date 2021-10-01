@@ -765,9 +765,9 @@ public class NodeProbe implements AutoCloseable
         ssProxy.move(newToken);
     }
 
-    public void removeNode(String token)
+    public void removeNode(String token, String ignoreNodes)
     {
-        ssProxy.removeNode(token);
+        ssProxy.removeNode(token, ignoreNodes);
     }
 
     public String getRemovalStatus()
