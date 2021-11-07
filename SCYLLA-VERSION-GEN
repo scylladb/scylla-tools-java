@@ -8,7 +8,7 @@ then
 	SCYLLA_VERSION=$(cat version | awk -F'-' '{print $1}')
 	SCYLLA_RELEASE=$(cat version | awk -F'-' '{print $2}')
 else
-	DATE=$(date +%Y%m%d)
+	DATE=$(date --utc +%Y%m%d)
 	GIT_COMMIT=$(git log --pretty=format:'%h' -n 1)
 	SCYLLA_VERSION=$VERSION
 	SCYLLA_RELEASE=$DATE.$GIT_COMMIT
