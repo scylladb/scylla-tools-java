@@ -23,10 +23,6 @@ Summary:        Core files for Scylla tools
 Version:        %{version}
 Release:        %{release}%{?dist}
 Requires:       jre-1.8.0-headless python2
-# Since RHEL7 and RHEL8 has different pacakge name for pyyaml,
-# we need to use a file path to the resolve package name on
-# current distribution.
-Requires:       /usr/lib64/python2.7/site-packages/yaml/__init__.py
 
 %global __brp_python_bytecompile %{nil}
 %global __brp_mangle_shebangs %{nil}
