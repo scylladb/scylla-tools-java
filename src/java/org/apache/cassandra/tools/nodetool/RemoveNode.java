@@ -31,7 +31,7 @@ public class RemoveNode extends NodeToolCmd
     @Arguments(title = "remove_operation", usage = "<status>|<force>|<ID>", description = "Show status of current node removal, force completion of pending removal, or remove provided ID", required = true)
     private String removeOperation = EMPTY;
 
-    @Option(title = "ignore_dead_nodes", name = {"-ignore", "--ignore-nodes", "--ignore-dead-nodes"}, description = "Use -ignore to specify a comma-separated list of dead nodes to ignore during removenode")
+    @Option(title = "ignore_dead_nodes", name = {"--ignore-dead-nodes"}, description = "Use --ignore-dead-nodes to specify a comma-separated list of dead nodes to ignore during removenode")
     private String ignoreNodes = null;
 
     @Override
