@@ -38,6 +38,7 @@ public class SettingsLog implements Serializable
 
     public final boolean noSummary;
     public final boolean noSettings;
+    public final boolean printStatementsOnError;
     public final File file;
     public final File hdrFile;
     public final int intervalMillis;
@@ -48,7 +49,8 @@ public class SettingsLog implements Serializable
 
         noSummary = options.noSummmary.setByUser();
         noSettings = options.noSettings.setByUser();
-
+        printStatementsOnError = options.printStatementsOnError.setByUser();
+        
         if (options.outputFile.setByUser())
             file = new File(options.outputFile.value());
         else
@@ -86,6 +88,7 @@ public class SettingsLog implements Serializable
     {
         final OptionSimple noSummmary = new OptionSimple("no-summary", "", null, "Disable printing of aggregate statistics at the end of a test", false);
         final OptionSimple noSettings = new OptionSimple("no-settings", "", null, "Disable printing of settings values at start of test", false);
+        final OptionSimple printStatementsOnError = new OptionSimple("print-statements-on-error", "", null, "Print failing CQL statements on errors", false);
         final OptionSimple outputFile = new OptionSimple("file=", ".*", null, "Log to a file", false);
         final OptionSimple hdrOutputFile = new OptionSimple("hdrfile=", ".*", null, "Log to a file", false);
         final OptionSimple interval = new OptionSimple("interval=", "[0-9]+(ms|s|)", "1s", "Log progress every <value> seconds or milliseconds", false);
@@ -94,7 +97,7 @@ public class SettingsLog implements Serializable
         @Override
         public List<? extends Option> options()
         {
-            return Arrays.asList(level, noSummmary, outputFile, hdrOutputFile, interval, noSettings);
+            return Arrays.asList(level, noSummmary, outputFile, hdrOutputFile, interval, noSettings, printStatementsOnError);
         }
     }
 

@@ -41,11 +41,17 @@ import static com.google.common.collect.Iterables.toArray;
 import static com.google.common.collect.Lists.newArrayList;
 import static java.lang.Integer.parseInt;
 import static java.lang.String.format;
+import static java.util.Arrays.asList;
 import static org.apache.commons.lang3.ArrayUtils.EMPTY_STRING_ARRAY;
 import static org.apache.commons.lang3.StringUtils.*;
 
 public class NodeTool
 {
+    static
+    {
+        FBUtilities.preventIllegalAccessWarnings();
+    }
+
     private static final String HISTORYFILE = "nodetool.history";
 
     private final INodeProbeFactory nodeProbeFactory;
@@ -70,17 +76,17 @@ public class NodeTool
                 Ring.class,
                 NetStats.class,
                 CfStats.class,
-                TableStats.class,
+                TableStats.class, // New name
                 CfHistograms.class,
-                TableHistograms.class,
+                TableHistograms.class, // New name
                 Cleanup.class,
                 ClearSnapshot.class,
                 Compact.class,
                 Scrub.class,
-                Verify.class,
+                // Remove until proven otherwise: Verify.class,
                 Flush.class,
                 UpgradeSSTable.class,
-                GarbageCollect.class,
+                // Remove until supported: GarbageCollect.class,
                 DisableAutoCompaction.class,
                 EnableAutoCompaction.class,
                 CompactionStats.class,
@@ -91,76 +97,81 @@ public class NodeTool
                 EnableBinary.class,
                 EnableGossip.class,
                 DisableGossip.class,
-                EnableHandoff.class,
-                EnableThrift.class,
-                GcStats.class,
-                GetCompactionThreshold.class,
-                GetCompactionThroughput.class,
-                GetTimeout.class,
-                GetStreamThroughput.class,
+                // Remove for GA: EnableHandoff.class,
+                // Remove for GA: EnableThrift.class,
+                // Remove for GA: GcStats.class,
+                // Remove for GA: GetCompactionThreshold.class,
+                // Remove for GA: GetCompactionThroughput.class,
+                // Remove until known: GetTimeout.class,
+                // Remove for GA: GetStreamThroughput.class,
                 GetTraceProbability.class,
-                GetInterDCStreamThroughput.class,
+                // Remove until proven otherwise: GetInterDCStreamThroughput.class,
                 GetEndpoints.class,
                 GetSSTables.class,
                 GossipInfo.class,
-                InvalidateKeyCache.class,
-                InvalidateRowCache.class,
-                InvalidateCounterCache.class,
-                Join.class,
+                // Remove for GA: InvalidateKeyCache.class,
+                // Remove for GA: InvalidateRowCache.class,
+                // Remove for GA: InvalidateCounterCache.class,
+                // Remove for GA: Join.class,
                 Move.class,
-                PauseHandoff.class,
-                ResumeHandoff.class,
+                // Remove for GA: PauseHandoff.class,
+                // Remove for GA: ResumeHandoff.class,
                 ProxyHistograms.class,
                 Rebuild.class,
                 Refresh.class,
+                // Remove for GA: RemoveToken.class,
                 RemoveNode.class,
-                Assassinate.class,
+                // Remove until proven otherwise: Assassinate.class,
                 Repair.class,
-                ReplayBatchlog.class,
-                SetCacheCapacity.class,
-                SetHintedHandoffThrottleInKB.class,
-                SetCompactionThreshold.class,
-                SetCompactionThroughput.class,
-                GetConcurrentCompactors.class,
-                SetConcurrentCompactors.class,
-                SetTimeout.class,
-                SetStreamThroughput.class,
-                SetInterDCStreamThroughput.class,
+                // Remove until proven otherwise: ReplayBatchlog.class,
+                // Remove until proven otherwise: SetCacheCapacity.class,
+                // Remove until proven otherwise: SetHintedHandoffThrottleInKB.class,
+                // Remove until proven otherwise: SetCompactionThreshold.class,
+                // Remove until proven otherwise: SetCompactionThroughput.class,
+                // Remove until proven otherwise: SetStreamThroughput.class,
+                // Remove until proven otherwise: SetInterDCStreamThroughput.class,
+                // Remove until proven otherwise: GetConcurrentCompactors.class,
+                // Remove until proven otherwise: SetConcurrentCompactors.class,
+                // Remove until proven otherwise: SetTimeout.class,
                 SetTraceProbability.class,
                 Snapshot.class,
                 ListSnapshots.class,
                 Status.class,
                 StatusBinary.class,
                 StatusGossip.class,
-                StatusThrift.class,
+                // Remove for GA: StatusThrift.class,
                 StatusBackup.class,
-                StatusHandoff.class,
+                // Remove for GA: StatusHandoff.class,
                 Stop.class,
-                StopDaemon.class,
+                // Remove for GA: StopDaemon.class,
                 Version.class,
                 DescribeRing.class,
-                RebuildIndex.class,
-                RangeKeySample.class,
+                // Remove for GA: RebuildIndex.class,
+                // Remove for GA: RangeKeySample.class,
                 EnableBackup.class,
                 DisableBackup.class,
                 ResetLocalSchema.class,
-                ReloadLocalSchema.class,
-                ReloadTriggers.class,
-                SetCacheKeysToSave.class,
-                DisableThrift.class,
-                DisableHandoff.class,
+                // Remove for GA: ReloadTriggers.class,
+                // Remove until proven otherwise: ReloadTriggers.class,
+                // Remove for GA: SetCacheKeysToSave.class,
+                // Remove for GA: DisableThrift.class,
+                // Remove for GA: DisableHandoff.class,
                 Drain.class,
-                TruncateHints.class,
-                TpStats.class,
+                // Remove for GA: TruncateHints.class,
+                // Remove for GA: TpStats.class,
                 TopPartitions.class,
                 SetLoggingLevel.class,
                 GetLoggingLevels.class,
-                DisableHintsForDC.class,
-                EnableHintsForDC.class,
-                FailureDetectorInfo.class,
-                RefreshSizeEstimates.class,
-                RelocateSSTables.class,
-                ViewBuildStatus.class
+                // Remove until proven otherwise: DisableHintsForDC.class,
+                // Remove until proven otherwise: EnableHintsForDC.class,
+                // Remove until proven otherwise: FailureDetectorInfo.class,
+                // Remove until proven otherwise: RefreshSizeEstimates.class
+                // Remove until proven otherwise: RelocateSSTables.class,
+                ViewBuildStatus.class,
+                
+                SSTableInfo.class,
+
+                CheckAndRepairCdcStreams.class
         );
 
         Cli.CliBuilder<NodeToolCmdRunnable> builder = Cli.builder("nodetool");
@@ -194,6 +205,8 @@ public class NodeTool
                 ParseCommandUnrecognizedException e)
         {
             badUse(e);
+            status = 1;
+        } catch (CommandFailedButNeedNoMoreOutput e) {
             status = 1;
         } catch (Throwable throwable)
         {
@@ -250,6 +263,8 @@ public class NodeTool
         void run(INodeProbeFactory nodeProbeFactory, Output output);
     }
 
+    @SuppressWarnings("serial")
+    public static class CommandFailedButNeedNoMoreOutput extends Error {};
     public static abstract class NodeToolCmd implements NodeToolCmdRunnable
     {
 
@@ -411,6 +426,7 @@ public class NodeTool
                                                                   Map<String, String> tokenToEndpoint,
                                                                   Map<InetAddress, Float> ownerships)
     {
+
         SortedMap<String, SetHostStat> ownershipByDc = Maps.newTreeMap();
         EndpointSnitchInfoMBean epSnitchInfo = probe.getEndpointSnitchInfoProxy();
         try

@@ -311,16 +311,33 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
      */
     public static class Deletion
     {
-        public static final Deletion LIVE = new Deletion(DeletionTime.LIVE, false);
+        public static final Deletion LIVE = live(null);
 
         private final DeletionTime time;
         private final boolean isShadowable;
+        // Either isShadowable is true or scyllaShadowableTime != null. Never both but can be neither of them.
+        private final DeletionTime scyllaShadowableTime;
+
+        public Deletion(DeletionTime time, boolean isShadowable, DeletionTime scyllaShadowableTime)
+        {
+            assert !time.isLive() || !isShadowable;
+            assert !isShadowable || scyllaShadowableTime == null;
+            this.time = time;
+            this.isShadowable = isShadowable;
+            this.scyllaShadowableTime = scyllaShadowableTime;
+        }
 
         public Deletion(DeletionTime time, boolean isShadowable)
         {
             assert !time.isLive() || !isShadowable;
             this.time = time;
             this.isShadowable = isShadowable;
+            this.scyllaShadowableTime = null;
+        }
+
+        public static Deletion live(DeletionTime scyllaShadowableTime)
+        {
+            return new Deletion(DeletionTime.LIVE, false, scyllaShadowableTime);
         }
 
         public static Deletion regular(DeletionTime time)
@@ -328,10 +345,15 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
             return time.isLive() ? LIVE : new Deletion(time, false);
         }
 
-        @Deprecated
-        public static Deletion shadowable(DeletionTime time)
+        public static Deletion regular(DeletionTime time, DeletionTime scyllaShadowableTime)
         {
-            return new Deletion(time, true);
+            return time.isLive() ? new Deletion(DeletionTime.LIVE, false, scyllaShadowableTime) : new Deletion(time, false, scyllaShadowableTime);
+        }
+
+        @Deprecated
+        public static Deletion shadowable(DeletionTime time, DeletionTime scyllaShadowableTime)
+        {
+            return new Deletion(time, true, scyllaShadowableTime);
         }
 
         /**
@@ -342,6 +364,10 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
         public DeletionTime time()
         {
             return time;
+        }
+
+        public DeletionTime scyllaShadowableTime() {
+            return scyllaShadowableTime;
         }
 
         /**
@@ -420,7 +446,8 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
         @Override
         public String toString()
         {
-            return String.format("%s%s", time, isShadowable ? "(shadowable)" : "");
+            return String.format("%s%s%s", time, isShadowable ? "(shadowable)" : "",
+                    scyllaShadowableTime != null ? (" - scylla shadowable tombstone " + scyllaShadowableTime) : "");
         }
     }
 
@@ -660,6 +687,7 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
             lastRowSet = i;
         }
 
+        @SuppressWarnings("resource")
         public Row merge(DeletionTime activeDeletion)
         {
             // If for this clustering we have only one row version and have no activeDeletion (i.e. nothing to filter out),
@@ -771,6 +799,7 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
                 return ColumnDefinitionVersionComparator.INSTANCE.compare(column, dataColumn) < 0;
             }
 
+            @SuppressWarnings("resource")
             protected ColumnData getReduced()
             {
                 if (column.isSimple())

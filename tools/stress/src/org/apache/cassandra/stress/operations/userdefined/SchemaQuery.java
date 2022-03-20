@@ -52,10 +52,10 @@ public class SchemaQuery extends SchemaStatement
     final Object[][] randomBuffer;
     final Random random = new Random();
 
-    public SchemaQuery(Timer timer, StressSettings settings, PartitionGenerator generator, SeedManager seedManager, Integer thriftId, PreparedStatement statement, ConsistencyLevel cl, ArgSelect argSelect)
+    public SchemaQuery(Timer timer, StressSettings settings, PartitionGenerator generator, SeedManager seedManager, Integer thriftId, PreparedStatement statement, ArgSelect argSelect)
     {
         super(timer, settings, new DataSpec(generator, seedManager, new DistributionFixed(1), settings.insert.rowPopulationRatio.get(), argSelect == ArgSelect.MULTIROW ? statement.getVariables().size() : 1), statement,
-              statement.getVariables().asList().stream().map(d -> d.getName()).collect(Collectors.toList()), thriftId, cl);
+              statement.getVariables().asList().stream().map(d -> d.getName()).collect(Collectors.toList()), thriftId);
         this.argSelect = argSelect;
         randomBuffer = new Object[argumentIndex.length][argumentIndex.length];
     }
@@ -89,7 +89,7 @@ public class SchemaQuery extends SchemaStatement
 
         public boolean run() throws Exception
         {
-            CqlResult rs = client.execute_prepared_cql3_query(thriftId, partitions.get(0).getToken(), thriftArgs(), ThriftConversion.toThrift(cl));
+            CqlResult rs = client.execute_prepared_cql3_query(thriftId, partitions.get(0).getToken(), thriftArgs(), ThriftConversion.toThrift(ConsistencyLevel.valueOf(statement.getConsistencyLevel().toString())));
             rowCount = rs.getRowsSize();
             partitionCount = Math.min(1, rowCount);
             return true;

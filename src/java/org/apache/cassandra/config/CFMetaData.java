@@ -334,7 +334,13 @@ public final class CFMetaData
             flags.add(Flag.COMPOUND);
         this.flags = Sets.immutableEnumSet(flags);
 
-        isIndex = cfName.contains(".");
+        // FIXME: https://issues.apache.org/jira/browse/CASSANDRA-4464
+        // added the notion that a table name with a dot is an index
+        // name. Not only is this not useful in Scylla, it is counter-
+        // productive (https://github.com/scylladb/scylla/issues/6521).
+        // Do we need some other way to address indexes?
+        //isIndex = cfName.contains(".");
+        isIndex = false;
 
         assert partitioner != null : "This assertion failure is probably due to accessing Schema.instance " +
                                      "from client-mode tools - See CASSANDRA-8143.";

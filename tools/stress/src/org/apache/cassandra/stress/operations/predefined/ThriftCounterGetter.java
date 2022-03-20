@@ -29,6 +29,7 @@ import org.apache.cassandra.stress.settings.StressSettings;
 import org.apache.cassandra.stress.util.ThriftClient;
 import org.apache.cassandra.thrift.ColumnParent;
 import org.apache.cassandra.thrift.SlicePredicate;
+import org.apache.cassandra.thrift.ThriftConversion;
 
 public class ThriftCounterGetter extends PredefinedOperation
 {
@@ -46,7 +47,7 @@ public class ThriftCounterGetter extends PredefinedOperation
             @Override
             public boolean run() throws Exception
             {
-                List<?> r = client.get_slice(key, new ColumnParent(type.table), predicate, settings.command.consistencyLevel);
+                List<?> r = client.get_slice(key, new ColumnParent(type.table), predicate, ThriftConversion.toThrift(settings.command.consistencyLevel));
                 return r != null && r.size() > 0;
             }
 

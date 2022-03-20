@@ -35,6 +35,7 @@ import org.apache.cassandra.stress.util.ThriftClient;
 import org.apache.cassandra.thrift.ColumnOrSuperColumn;
 import org.apache.cassandra.thrift.CounterColumn;
 import org.apache.cassandra.thrift.Mutation;
+import org.apache.cassandra.thrift.ThriftConversion;
 
 public class ThriftCounterAdder extends PredefinedOperation
 {
@@ -73,7 +74,7 @@ public class ThriftCounterAdder extends PredefinedOperation
             @Override
             public boolean run() throws Exception
             {
-                client.batch_mutate(record, settings.command.consistencyLevel);
+                client.batch_mutate(record, ThriftConversion.toThrift(settings.command.consistencyLevel));
                 return true;
             }
 

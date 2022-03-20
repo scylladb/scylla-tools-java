@@ -127,7 +127,6 @@ public class YamlConfigurationLoader implements ConfigurationLoader
             constructor.setPropertyUtils(propertiesChecker);
             Yaml yaml = new Yaml(constructor);
             Config result = loadConfig(yaml, configBytes);
-            propertiesChecker.check();
             return result;
         }
         catch (YAMLException e)

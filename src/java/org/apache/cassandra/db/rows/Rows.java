@@ -131,6 +131,7 @@ public abstract class Rows
      * @param merged the result of merging {@code inputs}.
      * @param inputs the inputs whose merge yielded {@code merged}.
      */
+    @SuppressWarnings("resource")
     public static void diff(RowDiffListener diffListener, Row merged, Row...inputs)
     {
         Clustering clustering = merged.clustering();
@@ -279,6 +280,10 @@ public abstract class Rows
 
         Row.Deletion rowDeletion = existing.deletion().supersedes(update.deletion()) ? existing.deletion() : update.deletion();
 
+        if (rowDeletion.scyllaShadowableTime() != null) {
+            throw new UnsupportedOperationException("Merging Scylla shadowable tombstone is not implemented");
+        }
+        
         if (rowDeletion.deletes(mergedInfo))
             mergedInfo = LivenessInfo.EMPTY;
         else if (rowDeletion.isShadowedBy(mergedInfo))

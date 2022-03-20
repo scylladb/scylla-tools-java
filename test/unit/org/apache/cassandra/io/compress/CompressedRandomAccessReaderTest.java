@@ -57,30 +57,46 @@ public class CompressedRandomAccessReaderTest
     public void testResetAndTruncate() throws IOException
     {
         // test reset in current buffer or previous one
-        testResetAndTruncate(File.createTempFile("normal", "1"), false, false, 10);
-        testResetAndTruncate(File.createTempFile("normal", "2"), false, false, CompressionParams.DEFAULT_CHUNK_LENGTH);
+        testResetAndTruncate(FileUtils.createTempFile("normal", "1"), false, false, 10, 0);
+        testResetAndTruncate(FileUtils.createTempFile("normal", "2"), false, false, CompressionParams.DEFAULT_CHUNK_LENGTH, 0);
     }
 
     @Test
     public void testResetAndTruncateCompressed() throws IOException
     {
         // test reset in current buffer or previous one
-        testResetAndTruncate(File.createTempFile("compressed", "1"), true, false, 10);
-        testResetAndTruncate(File.createTempFile("compressed", "2"), true, false, CompressionParams.DEFAULT_CHUNK_LENGTH);
+        testResetAndTruncate(FileUtils.createTempFile("compressed", "1"), true, false, 10, 0);
+        testResetAndTruncate(FileUtils.createTempFile("compressed", "2"), true, false, CompressionParams.DEFAULT_CHUNK_LENGTH, 0);
     }
 
     @Test
     public void testResetAndTruncateCompressedMmap() throws IOException
     {
         // test reset in current buffer or previous one
-        testResetAndTruncate(File.createTempFile("compressed_mmap", "1"), true, true, 10);
-        testResetAndTruncate(File.createTempFile("compressed_mmap", "2"), true, true, CompressionParams.DEFAULT_CHUNK_LENGTH);
+        testResetAndTruncate(FileUtils.createTempFile("compressed_mmap", "1"), true, true, 10, 0);
+        testResetAndTruncate(FileUtils.createTempFile("compressed_mmap", "2"), true, true, CompressionParams.DEFAULT_CHUNK_LENGTH, 0);
+    }
+
+    @Test
+    public void testResetAndTruncateCompressedUncompressedChunks() throws IOException
+    {
+        // test reset in current buffer or previous one
+        testResetAndTruncate(FileUtils.createTempFile("compressed_uchunks", "1"), true, false, 10, 3);
+        testResetAndTruncate(FileUtils.createTempFile("compressed_uchunks", "2"), true, false, CompressionParams.DEFAULT_CHUNK_LENGTH, 3);
+    }
+
+    @Test
+    public void testResetAndTruncateCompressedUncompressedChunksMmap() throws IOException
+    {
+        // test reset in current buffer or previous one
+        testResetAndTruncate(FileUtils.createTempFile("compressed_uchunks_mmap", "1"), true, true, 10, 3);
+        testResetAndTruncate(FileUtils.createTempFile("compressed_uchunks_mmap", "2"), true, true, CompressionParams.DEFAULT_CHUNK_LENGTH, 3);
     }
 
     @Test
     public void test6791() throws IOException, ConfigurationException
     {
-        File f = File.createTempFile("compressed6791_", "3");
+        File f = FileUtils.createTempFile("compressed6791_", "3");
         String filename = f.getAbsolutePath();
         MetadataCollector sstableMetadataCollector = new MetadataCollector(new ClusteringComparator(BytesType.instance));
         try(CompressedSequentialWriter writer = new CompressedSequentialWriter(f, filename + ".metadata",
@@ -165,7 +181,7 @@ public class CompressedRandomAccessReaderTest
         }
     }
 
-    private static void testResetAndTruncate(File f, boolean compressed, boolean usemmap, int junkSize) throws IOException
+    private static void testResetAndTruncate(File f, boolean compressed, boolean usemmap, int junkSize, double minCompressRatio) throws IOException
     {
         final String filename = f.getAbsolutePath();
         writeSSTable(f, compressed ? CompressionParams.snappy() : null, junkSize);

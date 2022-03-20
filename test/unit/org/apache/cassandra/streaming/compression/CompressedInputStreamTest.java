@@ -28,6 +28,7 @@ import org.apache.cassandra.db.ClusteringComparator;
 import org.apache.cassandra.db.marshal.BytesType;
 import org.apache.cassandra.io.compress.CompressedSequentialWriter;
 import org.apache.cassandra.io.compress.CompressionMetadata;
+import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.io.util.SequentialWriterOption;
 import org.apache.cassandra.schema.CompressionParams;
 import org.apache.cassandra.io.sstable.Component;
@@ -85,8 +86,9 @@ public class CompressedInputStreamTest
         assert valuesToCheck != null && valuesToCheck.length > 0;
 
         // write compressed data file of longs
-        File tmp = new File(File.createTempFile("cassandra", "unittest").getParent(), "ks-cf-ib-1-Data.db");
-        Descriptor desc = Descriptor.fromFilename(tmp.getAbsolutePath());
+        File parentDir = FileUtils.getTempDir();
+        Descriptor desc = new Descriptor(parentDir, "ks", "cf", 1);
+        File tmp = new File(desc.filenameFor(Component.DATA));
         MetadataCollector collector = new MetadataCollector(new ClusteringComparator(BytesType.instance));
         CompressionParams param = CompressionParams.snappy(32);
         Map<Long, Long> index = new HashMap<Long, Long>();

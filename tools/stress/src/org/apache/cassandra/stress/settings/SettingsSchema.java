@@ -85,9 +85,8 @@ public class SettingsSchema implements Serializable
 
             client.execute("USE \""+keyspace+"\"", org.apache.cassandra.db.ConsistencyLevel.LOCAL_ONE);
 
-            //Add standard1 and counter1
+            //Add standard1
             client.execute(createStandard1StatementCQL3(settings), org.apache.cassandra.db.ConsistencyLevel.LOCAL_ONE);
-            client.execute(createCounter1StatementCQL3(settings), org.apache.cassandra.db.ConsistencyLevel.LOCAL_ONE);
 
             System.out.println(String.format("Created keyspaces. Sleeping %ss for propagation.", settings.node.nodes.size()));
             Thread.sleep(settings.node.nodes.size() * 1000L); // seconds
@@ -151,7 +150,7 @@ public class SettingsSchema implements Serializable
         }
 
         //Compression
-        b.append(") WITH COMPACT STORAGE AND compression = {");
+        b.append(") WITH compression = {");
         if (compression != null)
             b.append("'sstable_compression' : '").append(compression).append("'");
 
@@ -192,7 +191,7 @@ public class SettingsSchema implements Serializable
         }
 
         //Compression
-        b.append(") WITH COMPACT STORAGE AND compression = {");
+        b.append(") WITH compression = {");
         if (compression != null)
             b.append("'sstable_compression' : '").append(compression).append("'");
 
@@ -304,7 +303,7 @@ public class SettingsSchema implements Serializable
     {
         out.println("  Keyspace: " + keyspace);
         out.println("  Replication Strategy: " + replicationStrategy);
-        out.println("  Replication Strategy Pptions: " + replicationStrategyOptions);
+        out.println("  Replication Strategy Options: " + replicationStrategyOptions);
 
         out.println("  Table Compression: " + compression);
         out.println("  Table Compaction Strategy: " + compactionStrategy);

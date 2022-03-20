@@ -39,6 +39,7 @@ import org.apache.cassandra.cql3.functions.UDFunction;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.compaction.AbstractCompactionStrategy;
 import org.apache.cassandra.db.marshal.*;
+import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.db.rows.RowIterator;
 import org.apache.cassandra.db.rows.UnfilteredRowIterators;
 import org.apache.cassandra.exceptions.InvalidRequestException;
@@ -72,15 +73,35 @@ public final class LegacySchemaMigrator
                          SystemKeyspace.LegacyFunctions,
                          SystemKeyspace.LegacyAggregates);
 
-    public static void migrate()
-    {
+    public static void migrate() {
+        migrate(false);
+    }
+    /**
+     * Note: This is a workaround fix at best, in the sense that we "load" old
+     * (and for scylla, that is currently all) schemas by first traversing the 
+     * data we parsed, generating cql to write it in the new 3.x format, insert 
+     * into memtables, and then re-parse it in Schema::load. 
+     * If the added overhead is truly noticable, we should write code to just build 
+     * the meta data proper.   
+     */
+    public static void load() {
+        migrate(true);
+    }
+
+    private static boolean nonPersistent;
+    
+    private static void migrate(boolean nonPersistent) {
+        LegacySchemaMigrator.nonPersistent = nonPersistent;
+        
         // read metadata from the legacy schema tables
         Collection<Keyspace> keyspaces = readSchema();
 
         // if already upgraded, or starting a new 3.0 node, abort early
         if (keyspaces.isEmpty())
         {
-            unloadLegacySchemaTables();
+            if (!nonPersistent) {
+                unloadLegacySchemaTables();
+            }
             return;
         }
 
@@ -91,6 +112,9 @@ public final class LegacySchemaMigrator
         keyspaces.forEach(LegacySchemaMigrator::storeKeyspaceInNewSchemaTables);
         keyspaces.forEach(LegacySchemaMigrator::migrateBuiltIndexesForKeyspace);
 
+        if (nonPersistent) {
+            return;
+        }
         // flush the new tables before truncating the old ones
         SchemaKeyspace.flush();
 
@@ -874,7 +898,22 @@ public final class LegacySchemaMigrator
         try (ReadExecutionController controller = command.executionController();
              RowIterator partition = UnfilteredRowIterators.filter(command.queryMemtableAndDisk(store, controller), nowInSec))
         {
-            return partition.next().primaryKeyLivenessInfo().timestamp();
+            long timestamp;
+            do {
+                Row row = partition.next();
+                timestamp = row.primaryKeyLivenessInfo().timestamp();
+                if (row.primaryKeyLivenessInfo().isEmpty() && nonPersistent) {
+                    // I don't think this is a scylla bug per se, but apparently we 
+                    // generate sstables slightly different from origin, thus though we get the 
+                    // data, the pk liveness/timestamp is not set. But returning NO_TIMESTAMP
+                    // here will lead to all mutations generated being empty (deletion deletes).
+                    // Work around this (only in tool/non-persistent mode) by saying "now" 
+                    timestamp = FBUtilities.timestampMicros();
+                    break;
+                }
+            } while (partition.hasNext());
+
+            return timestamp;
         }
     }
 

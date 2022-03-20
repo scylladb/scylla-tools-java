@@ -49,7 +49,18 @@ public class ViewBuildStatus extends NodeTool.NodeToolCmd
         }
         else if (args.size() == 1)
         {
-            String[] input = args.get(0).split("\\.");
+            // Usually, keyspace name and table is are separated by a
+            // dot, but to allow names which themselves contain a dot
+            // (this is allowed in Alternator), also allow to separate
+            // the two parts with a slash instead:
+            String[] input = args.get(0).split("/", 2);
+            if (input.length == 1) {
+                input = args.get(0).split("\\.", 2);
+            } else if (input.length == 2 && input[1].isEmpty()) {
+                // Allow the syntax "keyspace.name/" to represent a
+                // keyspace with a dot in its name.
+                input = new String[] {input[0]};
+            }
             checkArgument(input.length == 2, "viewbuildstatus requires keyspace and view name arguments");
             keyspace = input[0];
             view = input[1];

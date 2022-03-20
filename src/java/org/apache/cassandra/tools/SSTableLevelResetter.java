@@ -65,7 +65,7 @@ public class SSTableLevelResetter
         try
         {
             // load keyspace descriptions.
-            Schema.instance.loadFromDisk(false);
+            Schema.instance.loadFromDiskForTool();
 
             String keyspaceName = args[1];
             String columnfamily = args[2];

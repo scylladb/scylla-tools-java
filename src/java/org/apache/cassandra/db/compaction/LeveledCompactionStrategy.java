@@ -66,7 +66,12 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy
             if (options.containsKey(SSTABLE_SIZE_OPTION))
             {
                 configuredMaxSSTableSize = Integer.parseInt(options.get(SSTABLE_SIZE_OPTION));
-                if (!tolerateSstableSize)
+                /**
+                 * TODO: remove.
+                 * Scylla generates 2.x config, and thus we get loads of annoying spurious warnings.
+                 * Enable this once scylla is fully in sync CF-config wise with C
+                 */
+                if (false && !tolerateSstableSize)
                 {
                     if (configuredMaxSSTableSize >= 1000)
                         logger.warn("Max sstable size of {}MB is configured for {}.{}; having a unit of compaction this large is probably a bad idea",

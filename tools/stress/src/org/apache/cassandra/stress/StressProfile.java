@@ -57,7 +57,7 @@ import org.apache.cassandra.stress.util.JavaDriverClient;
 import org.apache.cassandra.stress.util.ResultLogger;
 import org.apache.cassandra.stress.util.ThriftClient;
 import org.apache.cassandra.thrift.Compression;
-import org.apache.cassandra.thrift.ThriftConversion;
+import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.thrift.TException;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.Constructor;
@@ -87,6 +87,8 @@ public class StressProfile implements Serializable
     transient volatile DistributionFactory partitions;
     transient volatile RatioDistributionFactory selectchance;
     transient volatile RatioDistributionFactory rowPopulation;
+    transient volatile ConsistencyLevel consistencyLevel;
+    transient volatile ConsistencyLevel serialConsistencyLevel;
     transient volatile PreparedStatement insertStatement;
     transient volatile Integer thriftInsertId;
     transient volatile List<ValidatingSchemaQuery.Factory> validationFactories;
@@ -158,9 +160,10 @@ public class StressProfile implements Serializable
         assert queries != null : "queries map is required in yaml file";
 
         for (String query : queries.keySet())
-            assert !tokenRangeQueries.containsKey(query) :
-                String.format("Found %s in both queries and token_range_queries, please use different names", query);
-
+        {
+            assert !tokenRangeQueries.containsKey(query) : String.format("Found %s in both queries and token_range_queries, please use different names", query);
+            assert query != "insert" : String.format("Found 'insert' in queries, this name is reserved, please use different name");
+        }
         if (keyspaceCql != null && keyspaceCql.length() > 0)
         {
             try
@@ -380,14 +383,30 @@ public class StressProfile implements Serializable
                         Map<String, SchemaQuery.ArgSelect> args = new HashMap<>();
                         for (Map.Entry<String, StressYaml.QueryDef> e : queries.entrySet())
                         {
-                            stmts.put(e.getKey().toLowerCase(), jclient.prepare(e.getValue().cql));
+                            StressYaml.QueryDef query = e.getValue();
+                            PreparedStatement stmt = jclient.prepare(query.cql);
+                            String queryName = e.getKey().toLowerCase();
+
+                            if (query.consistencyLevel != null) {
+                                stmt.setConsistencyLevel(JavaDriverClient.from(ConsistencyLevel.valueOf(query.consistencyLevel.toUpperCase())));
+                            } else {
+                                stmt.setConsistencyLevel(JavaDriverClient.from(settings.command.consistencyLevel));
+                            }
+
+                            if (query.serialConsistencyLevel != null) {
+                                stmt.setSerialConsistencyLevel(JavaDriverClient.from(ConsistencyLevel.valueOf(query.serialConsistencyLevel.toUpperCase())));
+                            } else {
+                                stmt.setSerialConsistencyLevel(JavaDriverClient.from(settings.command.serialConsistencyLevel));
+                            }
 
                             if (tclient != null)
-                                tids.put(e.getKey().toLowerCase(), tclient.prepare_cql3_query(e.getValue().cql, Compression.NONE));
+                                tids.put(queryName, tclient.prepare_cql3_query(query.cql, Compression.NONE));
 
-                            args.put(e.getKey().toLowerCase(), e.getValue().fields == null
-                                                                     ? SchemaQuery.ArgSelect.MULTIROW
-                                                                     : SchemaQuery.ArgSelect.valueOf(e.getValue().fields.toUpperCase()));
+                            stmts.put(queryName, stmt);
+                            args.put(queryName, query.fields == null
+                                    ? SchemaQuery.ArgSelect.MULTIROW
+                                    : SchemaQuery.ArgSelect.valueOf(query.fields.toUpperCase()));
+
                         }
                         thriftQueryIds = tids;
                         queryStatements = stmts;
@@ -402,7 +421,7 @@ public class StressProfile implements Serializable
         }
 
         return new SchemaQuery(timer, settings, generator, seeds, thriftQueryIds.get(name), queryStatements.get(name),
-                               ThriftConversion.fromThrift(settings.command.consistencyLevel), argSelects.get(name));
+                argSelects.get(name));
     }
 
     public Operation getBulkReadQueries(String name, Timer timer, StressSettings settings, TokenRangeIterator tokenRangeIterator, boolean isWarmup)
@@ -474,7 +493,6 @@ public class StressProfile implements Serializable
         value.delete(value.lastIndexOf(","), value.length());
         sb.append(") ").append("values(").append(value).append(')');
 
-
         if (insert == null)
             insert = new HashMap<>();
         lowerCase(insert);
@@ -482,6 +500,8 @@ public class StressProfile implements Serializable
         partitions = select(settings.insert.batchsize, "partitions", "fixed(1)", insert, OptionDistribution.BUILDER);
         selectchance = select(settings.insert.selectRatio, "select", "fixed(1)/1", insert, OptionRatioDistribution.BUILDER);
         rowPopulation = select(settings.insert.rowPopulationRatio, "row-population", "fixed(1)/1", insert, OptionRatioDistribution.BUILDER);
+        consistencyLevel = selectConsistency(settings.insert.consistencyLevel, "consistencyLevel", settings.command.consistencyLevel, insert);
+        serialConsistencyLevel = selectConsistency(settings.insert.serialConsistencyLevel, "serialConsistencyLevel", settings.command.serialConsistencyLevel, insert);
 
         if (generator.maxRowCount > 100 * 1000 * 1000)
             System.err.printf("WARNING: You have defined a schema that permits very large partitions (%.0f max rows (>100M))%n", generator.maxRowCount);
@@ -532,6 +552,8 @@ public class StressProfile implements Serializable
                         boolean firstCol = true;
                         boolean firstPred = true;
                         for (ColumnMetadata c : tableMetaData.getColumns()) {
+                            if (!isTypeSupported(c.getType()))
+                                continue;
 
                             if (keyColumns.contains(c)) {
                                 if (firstPred)
@@ -591,6 +613,8 @@ public class StressProfile implements Serializable
                     partitions = select(settings.insert.batchsize, "partitions", "fixed(1)", insert, OptionDistribution.BUILDER);
                     selectchance = select(settings.insert.selectRatio, "select", "fixed(1)/1", insert, OptionRatioDistribution.BUILDER);
                     rowPopulation = select(settings.insert.rowPopulationRatio, "row-population", "fixed(1)/1", insert, OptionRatioDistribution.BUILDER);
+                    consistencyLevel = selectConsistency(settings.insert.consistencyLevel, "consistencyLevel", settings.command.consistencyLevel, insert);
+                    serialConsistencyLevel = selectConsistency(settings.insert.serialConsistencyLevel, "serialConsistencyLevel", settings.command.serialConsistencyLevel, insert);
                     batchType = settings.insert.batchType != null
                                 ? settings.insert.batchType
                                 : !insert.containsKey("batchtype")
@@ -633,11 +657,13 @@ public class StressProfile implements Serializable
                     }
 
                     insertStatement = client.prepare(query);
+                    insertStatement.setConsistencyLevel(JavaDriverClient.from(consistencyLevel));
+                    insertStatement.setSerialConsistencyLevel(JavaDriverClient.from(serialConsistencyLevel));
                 }
             }
         }
 
-        return new SchemaInsert(timer, settings, generator, seedManager, partitions.get(), selectchance.get(), rowPopulation.get(), thriftInsertId, insertStatement, ThriftConversion.fromThrift(settings.command.consistencyLevel), batchType);
+        return new SchemaInsert(timer, settings, generator, seedManager, partitions.get(), selectchance.get(), rowPopulation.get(), thriftInsertId, insertStatement, batchType);
     }
 
     public List<ValidatingSchemaQuery> getValidate(Timer timer, PartitionGenerator generator, SeedManager seedManager, StressSettings settings)
@@ -656,7 +682,7 @@ public class StressProfile implements Serializable
 
         List<ValidatingSchemaQuery> queries = new ArrayList<>();
         for (ValidatingSchemaQuery.Factory factory : validationFactories)
-            queries.add(factory.create(timer, settings, generator, seedManager, ThriftConversion.fromThrift(settings.command.consistencyLevel)));
+            queries.add(factory.create(timer, settings, generator, seedManager, settings.command.consistencyLevel, settings.command.serialConsistencyLevel));
         return queries;
     }
 
@@ -672,6 +698,34 @@ public class StressProfile implements Serializable
         return builder.apply(defValue);
     }
 
+    private static ConsistencyLevel selectConsistency(ConsistencyLevel first, String key, ConsistencyLevel defValue, Map<String, String> map)
+    {
+        String val = map.remove(key);
+
+        if (first != null)
+            return first;
+        if (val != null && val.trim().length() > 0)
+            return ConsistencyLevel.valueOf(val.toUpperCase());
+
+        return defValue;
+    }
+
+    private static boolean isTypeSupported(DataType dataType) {
+        // Maps are not supported due to lack of a corresponding generator.
+        // Embedded collections are not supported for the same reason.
+        if (!dataType.isCollection())
+            return true;
+        List<com.datastax.driver.core.DataType> arguments = dataType.getTypeArguments();
+        if (arguments.size() >= 2)
+            return false;
+        for (com.datastax.driver.core.DataType argumentType : arguments) {
+            if (argumentType.isCollection()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     public PartitionGenerator newGenerator(StressSettings settings)
     {
         if (generatorFactory == null)
@@ -681,7 +735,7 @@ public class StressProfile implements Serializable
                 maybeCreateSchema(settings);
                 maybeLoadSchemaInfo(settings);
                 if (generatorFactory == null)
-                    generatorFactory = new GeneratorFactory();
+                    generatorFactory = new GeneratorFactory(settings);
             }
         }
 
@@ -694,23 +748,33 @@ public class StressProfile implements Serializable
         final List<ColumnInfo> clusteringColumns = new ArrayList<>();
         final List<ColumnInfo> valueColumns = new ArrayList<>();
 
-        private GeneratorFactory()
+        private GeneratorFactory(StressSettings settings)
         {
+            List<ColumnInfo> unsupportedColumns = new ArrayList<>();
+            List<ColumnInfo> unsupportedCriticalColumns = new ArrayList<>();
             Set<ColumnMetadata> keyColumns = com.google.common.collect.Sets.newHashSet(tableMetaData.getPrimaryKey());
 
             for (ColumnMetadata metadata : tableMetaData.getPartitionKey())
-                partitionKeys.add(new ColumnInfo(metadata.getName(), metadata.getType().getName().toString(),
-                                                 metadata.getType().isCollection() ? metadata.getType().getTypeArguments().get(0).getName().toString() : "",
-                                                 columnConfigs.get(metadata.getName())));
+                pushColumnInfo(metadata, partitionKeys, true, unsupportedColumns, unsupportedCriticalColumns);
             for (ColumnMetadata metadata : tableMetaData.getClusteringColumns())
-                clusteringColumns.add(new ColumnInfo(metadata.getName(), metadata.getType().getName().toString(),
-                                                     metadata.getType().isCollection() ? metadata.getType().getTypeArguments().get(0).getName().toString() : "",
-                                                     columnConfigs.get(metadata.getName())));
-            for (ColumnMetadata metadata : tableMetaData.getColumns())
+                pushColumnInfo(metadata, clusteringColumns, true, unsupportedColumns, unsupportedCriticalColumns);
+            for (ColumnMetadata metadata : tableMetaData.getColumns()) {
                 if (!keyColumns.contains(metadata))
-                    valueColumns.add(new ColumnInfo(metadata.getName(), metadata.getType().getName().toString(),
-                                                    metadata.getType().isCollection() ? metadata.getType().getTypeArguments().get(0).getName().toString() : "",
-                                                    columnConfigs.get(metadata.getName())));
+                    pushColumnInfo(metadata, valueColumns, !(settings.errors.skipUnsupportedColumns), unsupportedColumns, unsupportedCriticalColumns);
+            }
+            if (unsupportedColumns.size() > 0) {
+                for (ColumnInfo column : unsupportedColumns) {
+                    System.err.printf("WARNING: Table '%s' has column '%s' of unsupported type\n",
+                            tableName, column.name);
+                }
+            }
+            if (unsupportedCriticalColumns.size() > 0) {
+                for (ColumnInfo column : unsupportedCriticalColumns) {
+                    System.err.printf("ERROR: Table '%s' has column '%s' of unsupported type\n",
+                            tableName, column.name);
+                }
+                assert false: "Can't continue due to the errors";
+            }
         }
 
         PartitionGenerator newGenerator(StressSettings settings)
@@ -724,6 +788,24 @@ public class StressProfile implements Serializable
             for (ColumnInfo columnInfo : columnInfos)
                 result.add(columnInfo.getGenerator());
             return result;
+        }
+
+        boolean pushColumnInfo(ColumnMetadata metadata, List<ColumnInfo> targetList, boolean isCritical,
+                                   List<ColumnInfo> unsupportedColumns, List<ColumnInfo> unsupportedCriticalColumns)
+        {
+            ColumnInfo column = new ColumnInfo(metadata.getName(), metadata.getType().getName().toString(),
+                    metadata.getType().isCollection() ? metadata.getType().getTypeArguments().get(0).getName().toString() : "",
+                    columnConfigs.get(metadata.getName()));
+            if (!isTypeSupported(metadata.getType())) {
+                if (isCritical) {
+                    unsupportedCriticalColumns.add(column);
+                } else {
+                    unsupportedColumns.add(column);
+                }
+                return false;
+            }
+            targetList.add(column);
+            return true;
         }
     }
 

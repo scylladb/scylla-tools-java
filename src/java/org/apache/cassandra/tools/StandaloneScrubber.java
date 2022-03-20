@@ -69,7 +69,7 @@ public class StandaloneScrubber
         try
         {
             // load keyspace descriptions.
-            Schema.instance.loadFromDisk(false);
+            Schema.instance.loadFromDiskForTool();
 
             if (Schema.instance.getKSMetaData(options.keyspaceName) == null)
                 throw new IllegalArgumentException(String.format("Unknown keyspace %s", options.keyspaceName));

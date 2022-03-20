@@ -91,17 +91,17 @@ public class EstimatedHistogram
         int i = 0;
         if (considerZeroes)
             result[i++] = 0;
-        long last = 1;
-        result[i++] = last;
-        for (; i < result.length; i++)
-        {
-            long next = Math.round(last * 1.2);
-            if (next == last)
-                next++;
-            result[i] = next;
-            last = next;
+        if (result.length > 0) {
+            long last = 1;
+            result[i++] = last;
+            for (; i < result.length; i++) {
+                long next = Math.round(last * 1.2);
+                if (next == last)
+                    next++;
+                result[i] = next;
+                last = next;
+            }
         }
-
         return result;
     }
 

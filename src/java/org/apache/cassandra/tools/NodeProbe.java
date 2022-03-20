@@ -17,6 +17,8 @@
  */
 package org.apache.cassandra.tools;
 
+import static java.lang.Math.floor;
+
 import java.io.IOException;
 import java.io.PrintStream;
 import java.lang.management.ManagementFactory;
@@ -30,6 +32,7 @@ import java.rmi.server.RMIClientSocketFactory;
 import java.rmi.server.RMISocketFactory;
 import java.util.AbstractMap;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -41,11 +44,15 @@ import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.stream.Collectors;
 
+import javax.management.InstanceNotFoundException;
 import javax.management.JMX;
+import javax.management.MBeanException;
 import javax.management.MBeanServerConnection;
 import javax.management.MalformedObjectNameException;
 import javax.management.ObjectName;
+import javax.management.ReflectionException;
 import javax.management.openmbean.CompositeData;
 import javax.management.openmbean.OpenDataException;
 import javax.management.openmbean.TabularData;
@@ -126,6 +133,56 @@ public class NodeProbe implements AutoCloseable
     protected Output output;
     private boolean failed;
 
+    private static class BufferSamples  {
+        private final long[] samples;
+
+        public BufferSamples(long[] samples) {
+            this.samples = samples;
+            Arrays.sort(this.samples);
+        }
+
+        public long[] getValues() {
+            return samples;
+        }
+
+        public double getMin() {
+            if (samples.length == 0) {
+                return 0.0;
+            }
+            return samples[0];
+        }
+
+        public double getMax() {
+            if (samples.length == 0) {
+                return 0.0;
+            }
+            return samples[samples.length - 1];
+        }
+
+        public double getValue(double quantile) {
+            if (quantile < 0.0 || quantile > 1.0) {
+                throw new IllegalArgumentException(quantile + " is not in [0..1]");
+            }
+
+            if (samples.length == 0) {
+                return 0.0;
+            }
+
+            final double pos = quantile * (samples.length + 1);
+
+            if (pos < 1) {
+                return samples[0];
+            }
+
+            if (pos >= samples.length) {
+                return samples[samples.length - 1];
+            }
+
+            final double lower = samples[(int) pos - 1];
+            final double upper = samples[(int) pos];
+            return lower + (pos - floor(pos)) * (upper - lower);
+        }
+    }
     /**
      * Creates a NodeProbe using the specified JMX host, port, username, and password.
      *
@@ -276,9 +333,9 @@ public class NodeProbe implements AutoCloseable
         return ssProxy.forceKeyspaceCleanup(jobs, keyspaceName, tables);
     }
 
-    public int scrub(boolean disableSnapshot, boolean skipCorrupted, boolean checkData, boolean reinsertOverflowedTTL, int jobs, String keyspaceName, String... tables) throws IOException, ExecutionException, InterruptedException
+    public int scrub(boolean disableSnapshot, String scrubMode, boolean checkData, boolean reinsertOverflowedTTL, int jobs, String keyspaceName, String... tables) throws IOException, ExecutionException, InterruptedException
     {
-        return ssProxy.scrub(disableSnapshot, skipCorrupted, checkData, reinsertOverflowedTTL, jobs, keyspaceName, tables);
+        return ssProxy.scrub(disableSnapshot, scrubMode, checkData, reinsertOverflowedTTL, jobs, keyspaceName, tables);
     }
 
     public int verify(boolean extendedVerify, String keyspaceName, String... tableNames) throws IOException, ExecutionException, InterruptedException
@@ -319,10 +376,10 @@ public class NodeProbe implements AutoCloseable
         }
     }
 
-    public void scrub(PrintStream out, boolean disableSnapshot, boolean skipCorrupted, boolean checkData, boolean reinsertOverflowedTTL, int jobs, String keyspaceName, String... tables) throws IOException, ExecutionException, InterruptedException
+    public void scrub(PrintStream out, boolean disableSnapshot, String scrubMode, boolean checkData, boolean reinsertOverflowedTTL, int jobs, String keyspaceName, String... tables) throws IOException, ExecutionException, InterruptedException
     {
         checkJobs(out, jobs);
-        switch (ssProxy.scrub(disableSnapshot, skipCorrupted, checkData, reinsertOverflowedTTL, jobs, keyspaceName, tables))
+        switch (ssProxy.scrub(disableSnapshot, scrubMode, checkData, reinsertOverflowedTTL, jobs, keyspaceName, tables))
         {
             case 1:
                 failed = true;
@@ -435,7 +492,7 @@ public class NodeProbe implements AutoCloseable
         ColumnFamilyStoreMBean cfsProxy = getCfsProxy(ks, cf);
         for(Sampler sampler : samplers)
         {
-            cfsProxy.beginLocalSampling(sampler.name(), capacity);
+            cfsProxy.beginLocalSampling(sampler.name() + ":" + duration, capacity);
         }
         Uninterruptibles.sleepUninterruptibly(duration, TimeUnit.MILLISECONDS);
         Map<Sampler, CompositeData> result = Maps.newHashMap();
@@ -443,6 +500,39 @@ public class NodeProbe implements AutoCloseable
         {
             result.put(sampler, cfsProxy.finishLocalSampling(sampler.name(), count));
         }
+        return result;
+    }
+
+    public Map<Sampler, CompositeData> getToppartitions(List<String> keyspaceFilters, List<String> tableFilters, int capacity, int duration, int count, List<Sampler> samplers) throws OpenDataException
+    {
+        Map<Sampler, CompositeData> result = Maps.newHashMap();
+        
+        try
+        {
+            Class[] cArg = new Class[6];
+            cArg[0] = cArg[1] = cArg[2] = List.class;
+            cArg[3] = cArg[4] = cArg[5] = int.class;
+
+            // make sure that JMX has the newer API, throws NoSuchMethodException if not
+            ssProxy.getClass().getMethod("getToppartitions", cArg);
+
+            Map<String, CompositeData> toppartitions = ssProxy.getToppartitions(samplers.stream().map(sampler -> sampler.name().toLowerCase()).collect(Collectors.toList()),
+                keyspaceFilters, tableFilters, duration, capacity, count);
+
+            for (Sampler sampler : samplers)
+            {
+                result.put(sampler, toppartitions.get(sampler.name().toLowerCase()));
+            }
+        }
+        catch (NoSuchMethodException e) 
+        {
+            // fall back to the old JMX API
+            for (Sampler sampler : samplers) 
+            {
+                result.put(sampler, ssProxy.getToppartitions(sampler.name(), keyspaceFilters, tableFilters, duration, capacity, count));
+            }
+        }
+
         return result;
     }
 
@@ -702,9 +792,9 @@ public class NodeProbe implements AutoCloseable
         ssProxy.move(newToken);
     }
 
-    public void removeNode(String token)
+    public void removeNode(String token, String ignoreNodes)
     {
-        ssProxy.removeNode(token);
+        ssProxy.removeNode(token, ignoreNodes);
     }
 
     public String getRemovalStatus()
@@ -823,6 +913,17 @@ public class NodeProbe implements AutoCloseable
         }
     }
 
+    // Note. We're not unpacking this, or changing the local definition of 
+    // the MBean interface, to avoid skewing. 
+    // The return value will be a list of CompositeData
+    public Object getSSTableInfo(String keyspace, String table) throws IOException {
+        try {
+            return mbeanServerConn.invoke(new ObjectName(ssObjName), "getSSTableInfo", new Object[] { keyspace,  table }, new String[] { String.class.getName(), String.class.getName() });
+        } catch (InstanceNotFoundException | MalformedObjectNameException | MBeanException | ReflectionException e) {
+            throw new IOException(e);
+        }        
+    }
+    
     public EndpointSnitchInfoMBean getEndpointSnitchInfoProxy()
     {
         try
@@ -852,7 +953,13 @@ public class NodeProbe implements AutoCloseable
         ColumnFamilyStoreMBean cfsProxy = null;
         try
         {
-            String type = cf.contains(".") ? "IndexColumnFamilies" : "ColumnFamilies";
+            // FIXME: https://issues.apache.org/jira/browse/CASSANDRA-4464
+            // added the notion that a table name with a dot is an index
+            // name. Not only is this not useful in Scylla, it is counter-
+            // productive (https://github.com/scylladb/scylla/issues/6521).
+            // Do we need some other way to address indexes?
+            //String type = cf.contains(".") ? "IndexColumnFamilies" : "ColumnFamilies";
+            String type = "ColumnFamilies";
             Set<ObjectName> beans = mbeanServerConn.queryNames(
                     new ObjectName("org.apache.cassandra.db:type=*" + type +",keyspace=" + ks + ",columnfamily=" + cf), null);
 
@@ -1135,9 +1242,9 @@ public class NodeProbe implements AutoCloseable
         return msProxy.getDroppedMessages();
     }
 
-    public void loadNewSSTables(String ksName, String cfName)
+    public void loadNewSSTables(String ksName, String cfName, boolean isLoadAndStream)
     {
-        ssProxy.loadNewSSTables(ksName, cfName);
+        ssProxy.loadNewSSTables(ksName, cfName, isLoadAndStream);
     }
 
     public void rebuildIndex(String ksName, String cfName, String... idxNames)
@@ -1339,7 +1446,13 @@ public class NodeProbe implements AutoCloseable
             ObjectName oName = null;
             if (!Strings.isNullOrEmpty(ks) && !Strings.isNullOrEmpty(cf))
             {
-                String type = cf.contains(".") ? "IndexTable" : "Table";
+                // FIXME: https://issues.apache.org/jira/browse/CASSANDRA-4464
+                // added the notion that a table name with a dot is an index
+                // name. Not only is this not useful in Scylla, it is counter-
+                // productive (https://github.com/scylladb/scylla/issues/6521).
+                // Do we need some other way to address indexes?
+                //String type = cf.contains(".") ? "IndexTable" : "Table";
+                String type = "Table";
                 oName = new ObjectName(String.format("org.apache.cassandra.metrics:type=%s,keyspace=%s,scope=%s,name=%s", type, ks, cf, metricName));
             }
             else if (!Strings.isNullOrEmpty(ks))
@@ -1475,24 +1588,28 @@ public class NodeProbe implements AutoCloseable
 
     public double[] metricPercentilesAsArray(CassandraMetricsRegistry.JmxHistogramMBean metric)
     {
-        return new double[]{ metric.get50thPercentile(),
-                metric.get75thPercentile(),
-                metric.get95thPercentile(),
-                metric.get98thPercentile(),
-                metric.get99thPercentile(),
-                metric.getMin(),
-                metric.getMax()};
+        BufferSamples bs = new BufferSamples(metric.values());
+
+        return new double[]{ bs.getValue(0.5),
+                bs.getValue(0.75),
+                bs.getValue(0.95),
+                bs.getValue(0.98),
+                bs.getValue(0.99),
+                bs.getMin(),
+                bs.getMax()};
     }
 
     public double[] metricPercentilesAsArray(CassandraMetricsRegistry.JmxTimerMBean metric)
     {
-        return new double[]{ metric.get50thPercentile(),
-                metric.get75thPercentile(),
-                metric.get95thPercentile(),
-                metric.get98thPercentile(),
-                metric.get99thPercentile(),
-                metric.getMin(),
-                metric.getMax()};
+        BufferSamples bs = new BufferSamples(metric.values());
+
+        return new double[]{ bs.getValue(0.5),
+                bs.getValue(0.75),
+                bs.getValue(0.95),
+                bs.getValue(0.98),
+                bs.getValue(0.99),
+                bs.getMin(),
+                bs.getMax()};
     }
 
     public TabularData getCompactionHistory()
@@ -1582,6 +1699,11 @@ public class NodeProbe implements AutoCloseable
             throw new RuntimeException(e);
         }
     }
+
+    public void checkAndRepairCdcStreams()
+    {
+        ssProxy.checkAndRepairCdcStreams();
+    }
 }
 
 class ColumnFamilyStoreMBeanIterator implements Iterator<Map.Entry<String, ColumnFamilyStoreMBean>>
@@ -1604,26 +1726,32 @@ class ColumnFamilyStoreMBeanIterator implements Iterator<Map.Entry<String, Colum
                 if(keyspaceNameCmp != 0)
                     return keyspaceNameCmp;
 
-                // get CF name and split it for index name
-                String e1CF[] = e1.getValue().getColumnFamilyName().split("\\.");
-                String e2CF[] = e2.getValue().getColumnFamilyName().split("\\.");
-                assert e1CF.length <= 2 && e2CF.length <= 2 : "unexpected split count for table name";
+                // FIXME: https://issues.apache.org/jira/browse/CASSANDRA-4464
+                // added the notion that a table name with a dot is an index
+                // name. Not only is this not useful in Scylla, it is counter-
+                // productive (https://github.com/scylladb/scylla/issues/6521).
+                // Do we need some other way to address indexes?
+                return e1.getValue().getColumnFamilyName().compareTo(e2.getValue().getColumnFamilyName());
+                //// get CF name and split it for index name
+                //String e1CF[] = e1.getValue().getColumnFamilyName().split("\\.");
+                //String e2CF[] = e2.getValue().getColumnFamilyName().split("\\.");
+                //assert e1CF.length <= 2 && e2CF.length <= 2 : "unexpected split count for table name";
+                //
+                ////if neither are indexes, just compare CF names
+                //if(e1CF.length == 1 && e2CF.length == 1)
+                //    return e1CF[0].compareTo(e2CF[0]);
 
-                //if neither are indexes, just compare CF names
-                if(e1CF.length == 1 && e2CF.length == 1)
-                    return e1CF[0].compareTo(e2CF[0]);
+                ////check if it's the same CF
+                //int cfNameCmp = e1CF[0].compareTo(e2CF[0]);
+                //if(cfNameCmp != 0)
+                //    return cfNameCmp;
 
-                //check if it's the same CF
-                int cfNameCmp = e1CF[0].compareTo(e2CF[0]);
-                if(cfNameCmp != 0)
-                    return cfNameCmp;
+                //// if both are indexes (for the same CF), compare them
+                //if(e1CF.length == 2 && e2CF.length == 2)
+                //    return e1CF[1].compareTo(e2CF[1]);
 
-                // if both are indexes (for the same CF), compare them
-                if(e1CF.length == 2 && e2CF.length == 2)
-                    return e1CF[1].compareTo(e2CF[1]);
-
-                //if length of e1CF is 1, it's not an index, so sort it higher
-                return e1CF.length == 1 ? 1 : -1;
+                ////if length of e1CF is 1, it's not an index, so sort it higher
+                //return e1CF.length == 1 ? 1 : -1;
             }
         });
         mbeans = cfMbeans.iterator();

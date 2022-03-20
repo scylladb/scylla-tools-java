@@ -95,6 +95,13 @@ public class Schema
         return this;
     }
 
+    public Schema loadFromDiskForTool() {
+        // for scylla we need to load 2.x format schemas
+        LegacySchemaMigrator.load();
+        loadFromDisk(false);
+        return this;
+    }
+
     /**
      * Load up non-system keyspaces
      *

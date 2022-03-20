@@ -46,7 +46,7 @@ public class JavaDriverClient
     public final String username;
     public final String password;
     public final AuthProvider authProvider;
-    public final int maxPendingPerConnection;
+    public final Integer maxPendingPerConnection;
     public final int connectionsPerHost;
 
     private final ProtocolVersion protocolVersion;
@@ -84,7 +84,7 @@ public class JavaDriverClient
         //See https://issues.apache.org/jira/browse/CASSANDRA-7217
         int requestsPerConnection = (maxThreadCount / connectionsPerHost) + connectionsPerHost;
 
-        maxPendingPerConnection = settings.mode.maxPendingPerConnection == null ? Math.max(128, requestsPerConnection ) : settings.mode.maxPendingPerConnection;
+        maxPendingPerConnection = settings.mode.maxPendingPerConnection;
     }
 
     private LoadBalancingPolicy loadBalancingPolicy(StressSettings settings)
@@ -121,11 +121,12 @@ public class JavaDriverClient
 
     public void connect(ProtocolOptions.Compression compression) throws Exception
     {
-
         PoolingOptions poolingOpts = new PoolingOptions()
                                      .setConnectionsPerHost(HostDistance.LOCAL, connectionsPerHost, connectionsPerHost)
-                                     .setMaxRequestsPerConnection(HostDistance.LOCAL, maxPendingPerConnection)
                                      .setNewConnectionThreshold(HostDistance.LOCAL, 100);
+        if (maxPendingPerConnection != null) {
+            poolingOpts.setMaxRequestsPerConnection(HostDistance.LOCAL, maxPendingPerConnection);
+        }
 
         Cluster.Builder clusterBuilder = Cluster.builder()
                                                 .addContactPoint(host)
@@ -189,9 +190,31 @@ public class JavaDriverClient
         return getSession().execute(stmt);
     }
 
+    public ResultSet execute(String query, org.apache.cassandra.db.ConsistencyLevel consistency,
+                             org.apache.cassandra.db.ConsistencyLevel serialConsistency)
+    {
+        SimpleStatement stmt = new SimpleStatement(query);
+        if (consistency != null)
+            stmt.setConsistencyLevel(from(consistency));
+        if (serialConsistency != null)
+            stmt.setSerialConsistencyLevel(from(serialConsistency));
+        return getSession().execute(stmt);
+    }
+
     public ResultSet executePrepared(PreparedStatement stmt, List<Object> queryParams, org.apache.cassandra.db.ConsistencyLevel consistency)
     {
-        stmt.setConsistencyLevel(from(consistency));
+        if (stmt.getConsistencyLevel() == null)
+            stmt.setConsistencyLevel(from(consistency));
+        BoundStatement bstmt = stmt.bind((Object[]) queryParams.toArray(new Object[queryParams.size()]));
+        return getSession().execute(bstmt);
+    }
+
+    public ResultSet executePrepared(PreparedStatement stmt, List<Object> queryParams, org.apache.cassandra.db.ConsistencyLevel consistency, org.apache.cassandra.db.ConsistencyLevel serialConsistency )
+    {
+        if (stmt.getConsistencyLevel() == null)
+            stmt.setConsistencyLevel(from(consistency));
+        if (stmt.getSerialConsistencyLevel() == null)
+            stmt.setSerialConsistencyLevel(from(serialConsistency));
         BoundStatement bstmt = stmt.bind((Object[]) queryParams.toArray(new Object[queryParams.size()]));
         return getSession().execute(bstmt);
     }
@@ -225,12 +248,22 @@ public class JavaDriverClient
                 return com.datastax.driver.core.ConsistencyLevel.EACH_QUORUM;
             case LOCAL_ONE:
                 return com.datastax.driver.core.ConsistencyLevel.LOCAL_ONE;
+            case LOCAL_SERIAL:
+                return com.datastax.driver.core.ConsistencyLevel.LOCAL_SERIAL;
+            case SERIAL:
+                return com.datastax.driver.core.ConsistencyLevel.SERIAL;
         }
         throw new AssertionError();
     }
 
     public void disconnect()
     {
-        cluster.close();
+        try {
+            cluster.close();
+        } catch (Exception e) {
+            System.out.printf(
+                    "Failed to close connection due to the following error: %s",
+                    e.toString());
+        }
     }
 }

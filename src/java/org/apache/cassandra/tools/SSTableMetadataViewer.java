@@ -19,6 +19,7 @@ package org.apache.cassandra.tools;
 
 import java.io.*;
 import java.nio.ByteBuffer;
+import java.security.InvalidParameterException;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.List;
@@ -52,6 +53,67 @@ import org.apache.commons.cli.PosixParser;
 public class SSTableMetadataViewer
 {
     private static final String GCGS_KEY = "gc_grace_seconds";
+
+    private static enum SSTableFormat {
+        JB(),
+        KA(),
+        LA(),
+        LB(),
+        MA(),
+        MB(),
+        MC(),
+        MD(),
+        ME();
+
+        public static SSTableFormat fromString(String sstableVersion) {
+            if(sstableVersion.equals("jb")) {
+                return JB;
+            } else if (sstableVersion.equals("ka")) {
+                return KA;
+            } else if (sstableVersion.equals("la")) {
+                return LA;
+            } else if (sstableVersion.equals("lb")) {
+                return LB;
+            } else if (sstableVersion.equals("ma")) {
+                return MA;
+            } else if (sstableVersion.equals("mb")) {
+                return MB;
+            } else if (sstableVersion.equals("mc")) {
+                return MC;
+            } else if (sstableVersion.equals("md")) {
+                return MD;
+            } else if (sstableVersion.equals("me")) {
+                return ME;
+            } else {
+                throw new InvalidParameterException("SSTable Format: '" + sstableVersion + "' is unsupported.");
+            }
+        }
+    }
+
+    /**
+     * This function prints into the given stream the requested text only if
+     * the current sstable format is one of the relevant formats for this field.
+     * @param format - the format of the current table
+     * @param relevantFormats - formats that are relevant for the printed field
+     * @param ps - a PrintStream into which to do the write.
+     * @param formatStr - the format streang for printf.
+     * @param printParams - the parameters for printf.
+     * @return true if the string was printed.
+     */
+    static boolean printField(SSTableFormat format, SSTableFormat[] relevantFormats, PrintStream ps,
+            String formatStr,Object...printParams) {
+        boolean print = false;
+        for (SSTableFormat currentFormat : relevantFormats) {
+            if(currentFormat == format) {
+                print = true;
+                break;
+            }
+        }
+        if (print) {
+            ps.printf(formatStr, printParams);
+        }
+        return print;
+    }
 
     /**
      * @param args a list of sstables whose metadata we're interested in
@@ -96,26 +158,57 @@ public class SSTableMetadataViewer
                     compression = CompressionMetadata.create(fname);
                 SerializationHeader.Component header = (SerializationHeader.Component) metadata.get(MetadataType.HEADER);
 
-                out.printf("SSTable: %s%n", descriptor);
+                // We could have just use the SSTableFormat.Values() method but here we add another layer of defence
+                // that will force someone to revisit this code whenever a new format is added.
+                SSTableFormat[] jklFormats = { SSTableFormat.JB, SSTableFormat.KA, SSTableFormat.LA, SSTableFormat.LB };
+                SSTableFormat[] mFormats = {SSTableFormat.MA, SSTableFormat.MB, SSTableFormat.MC, SSTableFormat.MD};
+                SSTableFormat[] allFormats = new SSTableFormat[jklFormats.length + mFormats.length];
+                System.arraycopy(jklFormats, 0, allFormats, 0, jklFormats.length);
+                System.arraycopy(mFormats, 0, allFormats, jklFormats.length, mFormats.length);
+
+                SSTableFormat sstableFormat = SSTableFormat.fromString(descriptor.version.getVersion());
+
+                // Lets check if the sstable_type is present in what we once considered to be all of the available formats.
+                boolean supportedType = false;
+                for (SSTableFormat fmt : allFormats) {
+                    if (fmt == sstableFormat) {
+                        supportedType = true;
+                        break;
+                    }
+                }
+
+                if (!supportedType) {
+                    throw new InvalidParameterException("SSTable Format: '" + descriptor.version.getVersion() + "' metadata printing is unsupported.");
+                }
+
+                printField(sstableFormat, allFormats, out, "SSTable: %s%n", descriptor);
+
                 if (validation != null)
                 {
-                    out.printf("Partitioner: %s%n", validation.partitioner);
-                    out.printf("Bloom Filter FP chance: %f%n", validation.bloomFilterFPChance);
+                    printField(sstableFormat, allFormats, out, "Partitioner: %s%n", validation.partitioner);
+                    printField(sstableFormat, allFormats, out, "Bloom Filter FP chance: %f%n", validation.bloomFilterFPChance);
                 }
                 if (stats != null)
                 {
-                    out.printf("Minimum timestamp: %s%n", stats.minTimestamp);
-                    out.printf("Maximum timestamp: %s%n", stats.maxTimestamp);
-                    out.printf("SSTable min local deletion time: %s%n", stats.minLocalDeletionTime);
-                    out.printf("SSTable max local deletion time: %s%n", stats.maxLocalDeletionTime);
-                    out.printf("Compressor: %s%n", compression != null ? compression.compressor().getClass().getName() : "-");
+                    printField(sstableFormat, allFormats, out, "Minimum timestamp: %s%n", stats.minTimestamp);
+                    printField(sstableFormat, allFormats, out, "Maximum timestamp: %s%n", stats.maxTimestamp);
+                    printField(sstableFormat, mFormats, out, "SSTable min local deletion time: %s%n", stats.minLocalDeletionTime);
+                    printField(sstableFormat, allFormats, out, "SSTable max local deletion time: %s%n", stats.maxLocalDeletionTime);
+                    printField(sstableFormat, allFormats, out, "Compressor: %s%n", compression != null ? compression.compressor().getClass().getName() : "-");
                     if (compression != null)
-                        out.printf("Compression ratio: %s%n", stats.compressionRatio);
-                    out.printf("TTL min: %s%n", stats.minTTL);
-                    out.printf("TTL max: %s%n", stats.maxTTL);
+                        printField(sstableFormat, allFormats, out, "Compression ratio: %s%n", stats.compressionRatio);
+                    printField(sstableFormat, mFormats, out, "TTL min: %s%n", stats.minTTL);
+                    printField(sstableFormat, mFormats, out, "TTL max: %s%n", stats.maxTTL);
 
-                    if (validation != null && header != null)
-                        printMinMaxToken(descriptor, FBUtilities.newPartitioner(descriptor), header.getKeyType(), out);
+                    if (validation != null) {
+                        IPartitioner partitioner;
+                        if (header == null) {
+                            partitioner = FBUtilities.newPartitioner(validation.partitioner);
+                        } else {
+                            partitioner = FBUtilities.newPartitioner(descriptor);
+                        }
+                        printMinMaxToken(descriptor, partitioner, header, out);
+                    }
 
                     if (header != null && header.getClusteringTypes().size() == stats.minClusteringValues.size())
                     {
@@ -129,16 +222,16 @@ public class SSTableMetadataViewer
                             minValues[i] = clusteringTypes.get(i).getString(minClusteringValues.get(i));
                             maxValues[i] = clusteringTypes.get(i).getString(maxClusteringValues.get(i));
                         }
-                        out.printf("minClustringValues: %s%n", Arrays.toString(minValues));
-                        out.printf("maxClustringValues: %s%n", Arrays.toString(maxValues));
+                        printField(sstableFormat, allFormats, out, "minClustringValues: %s%n", Arrays.toString(minValues));
+                        printField(sstableFormat, allFormats, out, "maxClustringValues: %s%n", Arrays.toString(maxValues));
                     }
-                    out.printf("Estimated droppable tombstones: %s%n", stats.getEstimatedDroppableTombstoneRatio((int) (System.currentTimeMillis() / 1000) - gcgs));
-                    out.printf("SSTable Level: %d%n", stats.sstableLevel);
-                    out.printf("Repaired at: %d%n", stats.repairedAt);
-                    out.printf("Replay positions covered: %s%n", stats.commitLogIntervals);
-                    out.printf("totalColumnsSet: %s%n", stats.totalColumnsSet);
-                    out.printf("totalRows: %s%n", stats.totalRows);
-                    out.println("Estimated tombstone drop times:");
+                    printField(sstableFormat, allFormats, out, "Estimated droppable tombstones: %s%n", stats.getEstimatedDroppableTombstoneRatio((int) (System.currentTimeMillis() / 1000) - gcgs));
+                    printField(sstableFormat, allFormats, out, "SSTable Level: %d%n", stats.sstableLevel);
+                    printField(sstableFormat, allFormats, out, "Repaired at: %d%n", stats.repairedAt);
+                    printField(sstableFormat, mFormats, out, "Replay positions covered: %s%n", stats.commitLogIntervals);
+                    printField(sstableFormat, mFormats, out, "totalColumnsSet: %s%n", stats.totalColumnsSet);
+                    printField(sstableFormat, mFormats, out, "totalRows: %s%n", stats.totalRows);
+                    printField(sstableFormat, allFormats, out, "Estimated tombstone drop times:");
 
                     for (Map.Entry<Number, long[]> entry : stats.estimatedTombstoneDropTime.getAsMap().entrySet())
                     {
@@ -148,7 +241,7 @@ public class SSTableMetadataViewer
                 }
                 if (compaction != null)
                 {
-                    out.printf("Estimated cardinality: %s%n", compaction.cardinalityEstimator.cardinality());
+                    printField(sstableFormat, allFormats, out, "Estimated cardinality: %s%n", compaction.cardinalityEstimator.cardinality());
                 }
                 if (header != null)
                 {
@@ -166,13 +259,13 @@ public class SSTableMetadataViewer
                                                                  e -> UTF8Type.instance.getString(e.getKey()),
                                                                  e -> e.getValue().toString()));
 
-                    out.printf("EncodingStats minTTL: %s%n", encodingStats.minTTL);
-                    out.printf("EncodingStats minLocalDeletionTime: %s%n", encodingStats.minLocalDeletionTime);
-                    out.printf("EncodingStats minTimestamp: %s%n", encodingStats.minTimestamp);
-                    out.printf("KeyType: %s%n", keyType.toString());
-                    out.printf("ClusteringTypes: %s%n", clusteringTypes.toString());
-                    out.printf("StaticColumns: {%s}%n", FBUtilities.toString(statics));
-                    out.printf("RegularColumns: {%s}%n", FBUtilities.toString(regulars));
+                    printField(sstableFormat, mFormats, out, "EncodingStats minTTL: %s%n", encodingStats.minTTL);
+                    printField(sstableFormat, mFormats, out, "EncodingStats minLocalDeletionTime: %s%n", encodingStats.minLocalDeletionTime);
+                    printField(sstableFormat, mFormats, out, "EncodingStats minTimestamp: %s%n", encodingStats.minTimestamp);
+                    printField(sstableFormat, mFormats, out, "KeyType: %s%n", keyType.toString());
+                    printField(sstableFormat, mFormats, out, "ClusteringTypes: %s%n", clusteringTypes.toString());
+                    printField(sstableFormat, mFormats, out, "StaticColumns: {%s}%n", FBUtilities.toString(statics));
+                    printField(sstableFormat, mFormats, out, "RegularColumns: {%s}%n", FBUtilities.toString(regulars));
                 }
             }
             else
@@ -207,7 +300,7 @@ public class SSTableMetadataViewer
         }
     }
 
-    private static void printMinMaxToken(Descriptor descriptor, IPartitioner partitioner, AbstractType<?> keyType, PrintStream out) throws IOException
+    private static void printMinMaxToken(Descriptor descriptor, IPartitioner partitioner, SerializationHeader.Component header, PrintStream out) throws IOException
     {
         File summariesFile = new File(descriptor.filenameFor(Component.SUMMARY));
         if (!summariesFile.exists())
@@ -216,8 +309,15 @@ public class SSTableMetadataViewer
         try (DataInputStream iStream = new DataInputStream(new FileInputStream(summariesFile)))
         {
             Pair<DecoratedKey, DecoratedKey> firstLast = new IndexSummary.IndexSummarySerializer().deserializeFirstLastKey(iStream, partitioner, descriptor.version.hasSamplingLevel());
-            out.printf("First token: %s (key=%s)%n", firstLast.left.getToken(), keyType.getString(firstLast.left.getKey()));
-            out.printf("Last token: %s (key=%s)%n", firstLast.right.getToken(), keyType.getString(firstLast.right.getKey()));
+
+            if (header != null) {
+                AbstractType<?> keyType = header.getKeyType();
+                out.printf("First token: %s (key=%s)%n", firstLast.left.getToken(), keyType.getString(firstLast.left.getKey()));
+                out.printf("Last token: %s (key=%s)%n", firstLast.right.getToken(), keyType.getString(firstLast.right.getKey()));
+            } else {
+                out.printf("First token: %s %n", firstLast.left.getToken());
+                out.printf("Last token: %s %n", firstLast.right.getToken());
+            }
         }
     }
 

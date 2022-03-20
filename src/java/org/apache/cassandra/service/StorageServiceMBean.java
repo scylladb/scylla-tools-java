@@ -29,6 +29,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
 import javax.management.NotificationEmitter;
+import javax.management.openmbean.CompositeData;
+import javax.management.openmbean.OpenDataException;
 import javax.management.openmbean.TabularData;
 
 public interface StorageServiceMBean extends NotificationEmitter
@@ -199,6 +201,7 @@ public interface StorageServiceMBean extends NotificationEmitter
     public List<InetAddress> getNaturalEndpoints(String keyspaceName, String cf, String key);
     public List<InetAddress> getNaturalEndpoints(String keyspaceName, ByteBuffer key);
 
+    public void checkAndRepairCdcStreams();
     /**
      * @deprecated use {@link #takeSnapshot(String tag, Map options, String... entities)} instead.
      */
@@ -282,6 +285,10 @@ public interface StorageServiceMBean extends NotificationEmitter
      * If tableNames array is empty, all CFs are scrubbed.
      *
      * Scrubbed CFs will be snapshotted first, if disableSnapshot is false
+     *
+     * scrubMode controls what scrub does when encountering corruption.
+     * It replaces skipCorrupted where skipCorrupted is equivalent to scrubMode="SKIP".
+     * Can be one of: "ABORT", "SKIP", "SEGREGATE", or "VALIDATE".
      */
     @Deprecated
     public int scrub(boolean disableSnapshot, boolean skipCorrupted, String keyspaceName, String... tableNames) throws IOException, ExecutionException, InterruptedException;
@@ -289,8 +296,10 @@ public interface StorageServiceMBean extends NotificationEmitter
     public int scrub(boolean disableSnapshot, boolean skipCorrupted, boolean checkData, String keyspaceName, String... tableNames) throws IOException, ExecutionException, InterruptedException;
     @Deprecated
     public int scrub(boolean disableSnapshot, boolean skipCorrupted, boolean checkData, int jobs, String keyspaceName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException;
-
+    @Deprecated
     public int scrub(boolean disableSnapshot, boolean skipCorrupted, boolean checkData, boolean reinsertOverflowedTTL, int jobs, String keyspaceName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException;
+
+    public int scrub(boolean disableSnapshot, String scrubMode, boolean checkData, boolean reinsertOverflowedTTL, int jobs, String keyspaceName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException;
 
     /**
      * Verify (checksums of) the given keyspace.
@@ -407,6 +416,8 @@ public interface StorageServiceMBean extends NotificationEmitter
      * enpoint that had it) from the ring
      */
     public void removeNode(String token);
+
+    public void removeNode(String token, String ignoreNodes);
 
     /**
      * Get the status of a token removal.
@@ -628,8 +639,9 @@ public interface StorageServiceMBean extends NotificationEmitter
      *
      * @param ksName The parent keyspace name
      * @param tableName The ColumnFamily name where SSTables belong
+     * @param isLoadAndStream Whether or not arbitrary SSTables should be loaded (and streamed to the owning nodes)
      */
-    public void loadNewSSTables(String ksName, String tableName);
+    public void loadNewSSTables(String ksName, String tableName, boolean isLoadAndStream);
 
     /**
      * Return a List of Tokens representing a sample of keys across all ColumnFamilyStores.
@@ -703,6 +715,10 @@ public interface StorageServiceMBean extends NotificationEmitter
 
     /** Sets the hinted handoff throttle in kb per second, per delivery thread. */
     public void setHintedHandoffThrottleInKB(int throttleInKB);
+
+    public CompositeData getToppartitions(String sampler, List<String> keyspaceFilters, List<String> tableFilters, int duration, int capacity, int count) throws OpenDataException;
+
+    public Map<String, CompositeData> getToppartitions(List<String> samplers, List<String> keyspaceFilters, List<String> tableFilters, int duration, int capacity, int count) throws OpenDataException;
 
     /**
      * Resume bootstrap streaming when there is failed data streaming.

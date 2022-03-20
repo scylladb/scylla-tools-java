@@ -1,0 +1,24 @@
+Source: %{product}-tools
+Section: misc
+Priority: extra
+Maintainer: Takuya ASADA <syuu@scylladb.com>
+Homepage: http://www.scylladb.com
+Standards-Version: 3.9.5
+Rules-Requires-Root: no
+
+Package: %{product}-tools
+Architecture: all
+Depends: %{product}-conf, %{product}-tools-core (>= 2.0~rc0), ${misc:Depends}
+Recommends: ntp | time-daemon
+Conflicts: cassandra
+Description: Scylla database tools
+ Scylla is a highly scalable, eventually consistent, distributed,
+ partitioned row DB.
+
+Package: %{product}-tools-core
+Architecture: all
+Depends: openjdk-8-jre-headless | openjdk-8-jre | oracle-java8-set-default | adoptopenjdk-8-hotspot-jre | openjdk-11-jre-headless | openjdk-11-jre | oracle-java11-set-default, python (>=2.7) | python2, procps
+Description: Scylla database tools core files
+ Core files for scylla database tools
+Replaces: %{product}-tools (<< 2.0~rc0)
+Breaks: %{product}-tools (<< 2.0~rc0)

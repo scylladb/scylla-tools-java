@@ -59,7 +59,7 @@ public class SSTableExpiredBlockers
 
         String keyspace = args[args.length - 2];
         String columnfamily = args[args.length - 1];
-        Schema.instance.loadFromDisk(false);
+        Schema.instance.loadFromDiskForTool();
 
         CFMetaData metadata = Schema.instance.getCFMetaData(keyspace, columnfamily);
         if (metadata == null)

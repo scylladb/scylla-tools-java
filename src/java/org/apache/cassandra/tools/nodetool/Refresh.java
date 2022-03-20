@@ -20,6 +20,7 @@ package org.apache.cassandra.tools.nodetool;
 import static com.google.common.base.Preconditions.checkArgument;
 import io.airlift.command.Arguments;
 import io.airlift.command.Command;
+import io.airlift.command.Option;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -33,10 +34,15 @@ public class Refresh extends NodeToolCmd
     @Arguments(usage = "<keyspace> <table>", description = "The keyspace and table name")
     private List<String> args = new ArrayList<>();
 
+    @Option(title = "load-and-stream",
+    name = {"-las", "--load-and-stream"},
+    description = "Allows loading sstables that do not belong to this node, in which case they are automatically streamed to the owning nodes.")
+    private boolean isLoadAndStream = false;
+
     @Override
     public void execute(NodeProbe probe)
     {
         checkArgument(args.size() == 2, "refresh requires ks and cf args");
-        probe.loadNewSSTables(args.get(0), args.get(1));
+        probe.loadNewSSTables(args.get(0), args.get(1), isLoadAndStream);
     }
 }

@@ -17,12 +17,33 @@
  */
 package org.apache.cassandra.io.util;
 
-import java.io.*;
+import static org.apache.cassandra.utils.Throwables.maybeFail;
+import static org.apache.cassandra.utils.Throwables.merge;
+
+import java.io.Closeable;
+import java.io.DataInput;
+import java.io.File;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.DirectoryIteratorException;
+import java.nio.file.DirectoryStream;
+import java.nio.file.FileStore;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttributeView;
 import java.nio.file.attribute.FileStoreAttributeView;
@@ -31,14 +52,11 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.stream.StreamSupport;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import sun.nio.ch.DirectBuffer;
 
 import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.io.FSError;
@@ -49,8 +67,8 @@ import org.apache.cassandra.io.sstable.CorruptSSTableException;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 
 import static com.google.common.base.Throwables.propagate;
-import static org.apache.cassandra.utils.Throwables.maybeFail;
-import static org.apache.cassandra.utils.Throwables.merge;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class FileUtils
 {
@@ -63,24 +81,31 @@ public final class FileUtils
     public static final long ONE_TB = 1024 * ONE_GB;
 
     private static final DecimalFormat df = new DecimalFormat("#.##");
-    public static final boolean isCleanerAvailable;
     private static final AtomicReference<Optional<FSErrorHandler>> fsErrorHandler = new AtomicReference<>(Optional.empty());
+
+    private static Class clsDirectBuffer;
+    private static MethodHandle mhDirectBufferCleaner;
+    private static MethodHandle mhCleanerClean;
 
     static
     {
-        boolean canClean = false;
         try
         {
+            clsDirectBuffer = Class.forName("sun.nio.ch.DirectBuffer");
+            Method mDirectBufferCleaner = clsDirectBuffer.getMethod("cleaner");
+            mhDirectBufferCleaner = MethodHandles.lookup().unreflect(mDirectBufferCleaner);
+            Method mCleanerClean = mDirectBufferCleaner.getReturnType().getMethod("clean");
+            mhCleanerClean = MethodHandles.lookup().unreflect(mCleanerClean);
+
             ByteBuffer buf = ByteBuffer.allocateDirect(1);
-            ((DirectBuffer) buf).cleaner().clean();
-            canClean = true;
+            clean(buf);
         }
         catch (Throwable t)
         {
-            logger.error("Cannot initialize un-mmaper.  (Are you using a non-Oracle JVM?)  Compacted data files will not be removed promptly.  Consider using an Oracle JVM or using standard disk access mode", t);
+            logger.error("FATAL: Cannot initialize optimized memory deallocator. Some data, both in-memory and on-disk, may live longer due to garbage collection.", t);
             JVMStabilityInspector.inspectThrowable(t);
+            throw new RuntimeException(t);
         }
-        isCleanerAvailable = canClean;
     }
 
     public static void createHardLink(String from, String to)
@@ -105,11 +130,44 @@ public final class FileUtils
         }
     }
 
+    private static final File tempDir = new File(System.getProperty("java.io.tmpdir"));
+    private static final AtomicLong tempFileNum = new AtomicLong();
+
+    public static File getTempDir()
+    {
+        return tempDir;
+    }
+
+    /**
+     * Pretty much like {@link File#createTempFile(String, String, File)}, but with
+     * the guarantee that the "random" part of the generated file name between
+     * {@code prefix} and {@code suffix} is a positive, increasing {@code long} value.
+     */
     public static File createTempFile(String prefix, String suffix, File directory)
     {
         try
         {
-            return File.createTempFile(prefix, suffix, directory);
+            // Do not use java.io.File.createTempFile(), because some tests rely on the
+            // behavior that the "random" part in the temp file name is a positive 'long'.
+            // However, at least since Java 9 the code to generate the "random" part
+            // uses an _unsigned_ random long generated like this:
+            // Long.toUnsignedString(new java.util.Random.nextLong())
+
+            while (true)
+            {
+                // The contract of File.createTempFile() says, that it must not return
+                // the same file name again. We do that here in a very simple way,
+                // that probably doesn't cover all edge cases. Just rely on system
+                // wall clock and return strictly increasing values from that.
+                long num = tempFileNum.getAndIncrement();
+
+                // We have a positive long here, which is safe to use for example
+                // for CommitLogTest.
+                String fileName = prefix + Long.toString(num) + suffix;
+                File candidate = new File(directory, fileName);
+                if (candidate.createNewFile())
+                    return candidate;
+            }
         }
         catch (IOException e)
         {
@@ -119,7 +177,14 @@ public final class FileUtils
 
     public static File createTempFile(String prefix, String suffix)
     {
-        return createTempFile(prefix, suffix, new File(System.getProperty("java.io.tmpdir")));
+        return createTempFile(prefix, suffix, tempDir);
+    }
+
+    public static File createDeletableTempFile(String prefix, String suffix)
+    {
+        File f = createTempFile(prefix, suffix, getTempDir());
+        f.deleteOnExit();
+        return f;
     }
 
     public static Throwable deleteWithConfirm(String filePath, boolean expect, Throwable accumulate)
@@ -342,13 +407,29 @@ public final class FileUtils
 
     public static void clean(ByteBuffer buffer)
     {
-        if (buffer == null)
+        if (buffer == null || !buffer.isDirect())
             return;
-        if (isCleanerAvailable && buffer.isDirect())
+
+        // TODO Once we can get rid of Java 8, it's simpler to call sun.misc.Unsafe.invokeCleaner(ByteBuffer),
+        // but need to take care of the attachment handling (i.e. whether 'buf' is a duplicate or slice) - that
+        // is different in sun.misc.Unsafe.invokeCleaner and this implementation.
+
+        try
         {
-            DirectBuffer db = (DirectBuffer) buffer;
-            if (db.cleaner() != null)
-                db.cleaner().clean();
+            Object cleaner = mhDirectBufferCleaner.bindTo(buffer).invoke();
+            if (cleaner != null)
+            {
+                // ((DirectBuffer) buf).cleaner().clean();
+                mhCleanerClean.bindTo(cleaner).invoke();
+            }
+        }
+        catch (RuntimeException e)
+        {
+            throw e;
+        }
+        catch (Throwable e)
+        {
+            throw new RuntimeException(e);
         }
     }
 

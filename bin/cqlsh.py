@@ -115,8 +115,8 @@ if is_win and sys.version_info < (3, 3):
     codecs.register(lambda name: codecs.lookup(UTF8) if name == CP65001 else None)
 
 if myplatform == 'Linux':
-    ZIPLIB_DIRS.append('/usr/share/cassandra/lib')
-
+    ZIPLIB_DIRS.append('/usr/share/scylla/cassandra/lib')
+    
 if os.environ.get('CQLSH_NO_BUNDLED', ''):
     ZIPLIB_DIRS = ()
 
@@ -178,6 +178,9 @@ from cqlshlib.util import get_file_encoding_bomsize, trim_if_present
 
 DEFAULT_HOST = '127.0.0.1'
 DEFAULT_PORT = 9042
+#TODO merge-3: update scylla to handle 3.4.0
+# was 3.4.0
+DEFAULT_CQLVER = '3.3.1'
 DEFAULT_SSL = False
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 10

@@ -67,6 +67,8 @@ def ssl_settings(host, config_file, env=os.environ):
     ssl_version_str = env.get('SSL_VERSION')
     if ssl_version_str is None:
         ssl_version_str = get_option('ssl', 'version')
+    if ssl_version_str is None:
+        ssl_version_str = "TLSv1_2"
 
     ssl_version = get_best_tls_protocol(ssl_version_str)
     if ssl_version is None:

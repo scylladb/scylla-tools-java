@@ -101,6 +101,8 @@ import org.apache.cassandra.utils.progress.ProgressEvent;
 import org.apache.cassandra.utils.progress.ProgressEventType;
 import org.apache.cassandra.utils.progress.jmx.JMXProgressSupport;
 import org.apache.cassandra.utils.progress.jmx.LegacyJMXProgressSupport;
+import javax.management.openmbean.CompositeData;
+import javax.management.openmbean.OpenDataException;
 
 import static java.util.Arrays.asList;
 import static java.util.concurrent.TimeUnit.MINUTES;
@@ -3150,6 +3152,11 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         return status.statusCode;
     }
 
+    public int scrub(boolean disableSnapshot, String scrubMode, boolean checkData, boolean reinsertOverflowedTTL, int jobs, String keyspaceName, String... tables) throws IOException, ExecutionException, InterruptedException
+    {
+        throw new UnsupportedOperationException("Scylla scrubMode parameter is not supported");
+    }
+
     public int verify(boolean extendedVerify, String keyspaceName, String... tableNames) throws IOException, ExecutionException, InterruptedException
     {
         CompactionManager.AllSSTableOpStatus status = CompactionManager.AllSSTableOpStatus.SUCCESSFUL;
@@ -3986,6 +3993,10 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         }
     }
 
+    public void checkAndRepairCdcStreams()
+    {
+    }
+
     public void setLoggingLevel(String classQualifier, String rawLevel) throws Exception
     {
         LoggingSupportFactory.getLoggingSupport().setLoggingLevel(classQualifier, rawLevel);
@@ -4557,6 +4568,14 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
         replicatingNodes.clear();
         removingNode = null;
+    }
+
+    public void removeNode(String hostIdString, String ignoreNodes)
+    {
+        if (ignoreNodes != null)
+            throw new UnsupportedOperationException("ignoreNodes is not supported.");
+
+        removeNode(hostIdString);
     }
 
     public void confirmReplication(InetAddress node)
@@ -5272,7 +5291,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     /**
      * #{@inheritDoc}
      */
-    public void loadNewSSTables(String ksName, String cfName)
+    public void loadNewSSTables(String ksName, String cfName, boolean isLoadAndStream)
     {
         if (!isInitialized())
             throw new RuntimeException("Not yet initialized, can't load new sstables");
@@ -5432,5 +5451,15 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     {
         Map<UUID, Set<InetAddress>> outstanding = MigrationCoordinator.instance.outstandingVersions();
         return outstanding.entrySet().stream().collect(Collectors.toMap(e -> e.getKey().toString(), Entry::getValue));
+    }
+
+    public CompositeData getToppartitions(String sampler, List<String> keyspaceFilters, List<String> tableFilters, int duration, int capacity, int count) throws OpenDataException
+    {
+        return null;
+    }
+
+    public Map<String, CompositeData> getToppartitions(List<String> samplers, List<String> keyspaceFilters, List<String> tableFilters, int duration, int capacity, int count) throws OpenDataException
+    {
+        return null;
     }
 }

@@ -51,7 +51,18 @@ public class TableHistograms extends NodeToolCmd
         }
         else if (args.size() == 1)
         {
-            String[] input = args.get(0).split("\\.");
+            // Usually, keyspace name and table is are separated by a
+            // dot, but to allow names which themselves contain a dot
+            // (this is allowed in Alternator), also allow to separate
+            // the two parts with a slash instead:
+            String[] input = args.get(0).split("/", 2);
+            if (input.length == 1) {
+                input = args.get(0).split("\\.", 2);
+            } else if (input.length == 2 && input[1].isEmpty()) {
+                // Allow the syntax "keyspace.name/" to represent a
+                // keyspace with a dot in its name.
+                input = new String[] {input[0]};
+            }
             checkArgument(input.length == 2, "tablehistograms requires keyspace and table name arguments");
             keyspace = input[0];
             table = input[1];
@@ -60,11 +71,15 @@ public class TableHistograms extends NodeToolCmd
         {
             checkArgument(false, "tablehistograms requires keyspace and table name arguments");
         }
-
-        // calculate percentile of row size and column count
-        long[] estimatedPartitionSize = (long[]) probe.getColumnFamilyMetric(keyspace, table, "EstimatedPartitionSizeHistogram");
-        long[] estimatedColumnCount = (long[]) probe.getColumnFamilyMetric(keyspace, table, "EstimatedColumnCountHistogram");
-
+        long[] estimatedPartitionSize;
+        long[] estimatedColumnCount;
+        try {
+            // calculate percentile of row size and column count
+            estimatedPartitionSize = (long[]) probe.getColumnFamilyMetric(keyspace, table, "EstimatedPartitionSizeHistogram");
+            estimatedColumnCount = (long[]) probe.getColumnFamilyMetric(keyspace, table, "EstimatedColumnCountHistogram");
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Unknown table: " + table + " or keyspace: " + keyspace);
+        }
         // build arrays to store percentile values
         double[] estimatedRowSizePercentiles = new double[7];
         double[] estimatedColumnCountPercentiles = new double[7];

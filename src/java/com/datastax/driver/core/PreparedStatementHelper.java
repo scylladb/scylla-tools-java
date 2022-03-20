@@ -38,7 +38,7 @@ public class PreparedStatementHelper
 
     private static MD5Digest id(PreparedStatement statement)
     {
-        return statement.getPreparedId().id;
+        return statement.getPreparedId().resultSetMetadata.id;
     }
 
     public static void assertStable(PreparedStatement first, PreparedStatement subsequent)

@@ -25,6 +25,7 @@ import java.util.*;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.partitions.*;
@@ -70,7 +71,7 @@ public class SSTableUtils
 
     public static File tempSSTableFile(String keyspaceName, String cfname, int generation) throws IOException
     {
-        File tempdir = File.createTempFile(keyspaceName, cfname);
+        File tempdir = FileUtils.createTempFile(keyspaceName, cfname);
         if(!tempdir.delete() || !tempdir.mkdir())
             throw new IOException("Temporary directory creation failed.");
         tempdir.deleteOnExit();

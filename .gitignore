@@ -78,3 +78,6 @@ venv/
 # build-scripts will put cassandra-builds and cassandra-dtest into the directory
 cassandra-builds/
 cassandra-dtest/
+doc/source/tools/nodetool
+
+audit

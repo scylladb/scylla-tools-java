@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.concurrent.locks.Condition;
 
 import org.apache.cassandra.service.StorageServiceMBean;
+import org.apache.cassandra.tools.NodeTool.CommandFailedButNeedNoMoreOutput;
 import org.apache.cassandra.utils.concurrent.SimpleCondition;
 import org.apache.cassandra.utils.progress.ProgressEvent;
 import org.apache.cassandra.utils.progress.ProgressEventType;
@@ -38,7 +39,8 @@ public class RepairRunner extends JMXNotificationProgressListener
     private final String keyspace;
     private final Map<String, String> options;
     private final Condition condition = new SimpleCondition();
-
+    private boolean success = false;
+    
     private int cmd;
     private volatile boolean hasNotificationLost;
     private volatile Exception error;
@@ -71,6 +73,9 @@ public class RepairRunner extends JMXNotificationProgressListener
             {
                 out.println(String.format("There were some lost notification(s). You should check server log for repair status of keyspace %s", keyspace));
             }
+        }
+        if (!success) {
+            throw new NodeTool.CommandFailedButNeedNoMoreOutput();
         }
     }
 
@@ -111,6 +116,9 @@ public class RepairRunner extends JMXNotificationProgressListener
             message = message + " (progress: " + (int)event.getProgressPercentage() + "%)";
         }
         out.println(message);
+        if (type == ProgressEventType.SUCCESS) {
+            success = true;
+        }
         if (type == ProgressEventType.ERROR)
         {
             error = new RuntimeException("Repair job has failed with the error message: " + message);

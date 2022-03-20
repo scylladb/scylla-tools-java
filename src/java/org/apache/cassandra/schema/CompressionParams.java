@@ -45,9 +45,15 @@ public final class CompressionParams
 {
     private static final Logger logger = LoggerFactory.getLogger(CompressionParams.class);
 
-    private static volatile boolean hasLoggedSsTableCompressionWarning;
-    private static volatile boolean hasLoggedChunkLengthWarning;
-    private static volatile boolean hasLoggedCrcCheckChanceWarning;
+    /**
+     * TODO: remove.
+     * Since scylla does not (yet) support 3.x CF options etc, its annoying to
+     * hear the warnings about it. And it makes tests fail.
+     * Kill these until scylla actually generates CF:s that _don't_ warn.
+     */
+    private static volatile boolean hasLoggedSsTableCompressionWarning = true;
+    private static volatile boolean hasLoggedChunkLengthWarning = true;
+    private static volatile boolean hasLoggedCrcCheckChanceWarning = true;
 
     public static final int DEFAULT_CHUNK_LENGTH = 65536;
     public static final IVersionedSerializer<CompressionParams> serializer = new Serializer();
@@ -140,6 +146,17 @@ public final class CompressionParams
     public static CompressionParams lz4(Integer chunkLength)
     {
         return new CompressionParams(LZ4Compressor.create(Collections.emptyMap()), chunkLength, Collections.emptyMap());
+    }
+
+    public static CompressionParams zstd()
+    {
+        return zstd(DEFAULT_CHUNK_LENGTH);
+    }
+
+    public static CompressionParams zstd(Integer chunkLength)
+    {
+        ZstdCompressor compressor = ZstdCompressor.create(Collections.emptyMap());
+        return new CompressionParams(compressor, chunkLength, Collections.emptyMap());
     }
 
     public CompressionParams(String sstableCompressorClass, Integer chunkLength, Map<String, String> otherOptions) throws ConfigurationException

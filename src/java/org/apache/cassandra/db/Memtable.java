@@ -80,10 +80,6 @@ public class Memtable implements Comparable<Memtable>
             case heap_buffers:
                 return new SlabPool(heapLimit, 0, cleaningThreshold, cleaner);
             case offheap_buffers:
-                if (!FileUtils.isCleanerAvailable)
-                {
-                    throw new IllegalStateException("Could not free direct byte buffer: offheap_buffers is not a safe memtable_allocation_type without this ability, please adjust your config. This feature is only guaranteed to work on an Oracle JVM. Refusing to start.");
-                }
                 return new SlabPool(heapLimit, offHeapLimit, cleaningThreshold, cleaner);
             case offheap_objects:
                 return new NativePool(heapLimit, offHeapLimit, cleaningThreshold, cleaner);

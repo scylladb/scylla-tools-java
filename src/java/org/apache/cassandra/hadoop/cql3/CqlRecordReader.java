@@ -268,7 +268,7 @@ public class CqlRecordReader extends RecordReader<Long, Row>
 
         public RowIterator()
         {
-            AbstractType type = partitioner.getTokenValidator();
+            AbstractType<?> type = partitioner.getTokenValidator();
             ResultSet rs = session.execute(cqlQuery, type.compose(type.fromString(split.getStartToken())), type.compose(type.fromString(split.getEndToken())) );
             for (ColumnMetadata meta : cluster.getMetadata().getKeyspace(quote(keyspace)).getTable(quote(cfName)).getPartitionKey())
                 partitionBoundColumns.put(meta.getName(), Boolean.TRUE);
@@ -341,8 +341,7 @@ public class CqlRecordReader extends RecordReader<Long, Row>
         {
             return row.getObject(i);
         }
-
-        @Override
+        
         public <T> T get(int i, Class<T> aClass)
         {
             return row.get(i, aClass);
@@ -695,6 +694,7 @@ public class CqlRecordReader extends RecordReader<Long, Row>
         {
             return row.getToken(name);
         }
+
 
         @Override
         public Token getPartitionKeyToken()

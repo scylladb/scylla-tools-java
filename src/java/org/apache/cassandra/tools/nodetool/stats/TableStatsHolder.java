@@ -161,7 +161,13 @@ public class TableStatsHolder implements StatsHolder
                 String tableName = table.getTableName();
                 StatsTable statsTable = new StatsTable();
                 statsTable.name = tableName;
-                statsTable.isIndex = tableName.contains(".");
+                // FIXME: https://issues.apache.org/jira/browse/CASSANDRA-4464
+                // added the notion that a table name with a dot is an index
+                // name. Not only is this not useful in Scylla, it is counter-
+                // productive (https://github.com/scylladb/scylla/issues/6521).
+                // Do we need some other way to address indexes?
+                //statsTable.isIndex = tableName.contains(".");
+                statsTable.isIndex = false;
                 statsTable.sstableCount = probe.getColumnFamilyMetric(keyspaceName, tableName, "LiveSSTableCount");
                 int[] leveledSStables = table.getSSTableCountPerLevel();
                 if (leveledSStables != null)
@@ -304,7 +310,18 @@ public class TableStatsHolder implements StatsHolder
 
             for (String s : filterList)
             {
-                String[] keyValues = s.split("\\.", 2);
+                // Usually, keyspace name and table is are separated by a
+                // dot, but to allow names which themselves contain a dot
+                // (this is allowed in Alternator), also allow to separate
+                // the two parts with a slash instead:
+                String[] keyValues = s.split("/", 2);
+                if (keyValues.length == 1) {
+                    keyValues = s.split("\\.", 2);
+                } else if (keyValues.length == 2 && keyValues[1].isEmpty()) {
+                    // Allow the syntax "keyspace.name/" to represent a
+                    // keyspace with a dot in its name.
+                    keyValues = new String[] {keyValues[0]};
+                }
 
                 // build the map that stores the keyspaces and tables to use
                 if (!filter.containsKey(keyValues[0]))
