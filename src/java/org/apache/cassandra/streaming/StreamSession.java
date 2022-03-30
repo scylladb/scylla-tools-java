@@ -48,6 +48,7 @@ import org.apache.cassandra.metrics.StreamingMetrics;
 import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.streaming.messages.*;
 import org.apache.cassandra.utils.CassandraVersion;
+import org.apache.cassandra.utils.ExecutorUtils;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.Pair;
@@ -165,12 +166,27 @@ public class StreamSession implements IEndpointStateChangeSubscriber
 
     public static enum State
     {
-        INITIALIZED,
-        PREPARING,
-        STREAMING,
-        WAIT_COMPLETE,
-        COMPLETE,
-        FAILED,
+        INITIALIZED(false),
+        PREPARING(false),
+        STREAMING(false),
+        WAIT_COMPLETE(false),
+        COMPLETE(true),
+        FAILED(true);
+
+        private final boolean finalState;
+
+        State(boolean finalState)
+        {
+            this.finalState = finalState;
+        }
+
+        /**
+         * @return true if current state is final, either COMPLETE OR FAILED.
+         */
+        public boolean isFinalState()
+        {
+            return finalState;
+        }
     }
 
     private volatile State state = State.INITIALIZED;
@@ -223,10 +239,10 @@ public class StreamSession implements IEndpointStateChangeSubscriber
     }
 
 
-    public LifecycleTransaction getTransaction(UUID cfId)
+    StreamReceiveTask getReceivingTask(UUID cfId)
     {
         assert receivers.containsKey(cfId);
-        return receivers.get(cfId).getTransaction();
+        return receivers.get(cfId);
     }
 
     private boolean isKeepAliveSupported()
@@ -334,7 +350,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
 
     private void failIfFinished()
     {
-        if (state() == State.COMPLETE || state() == State.FAILED)
+        if (state().isFinalState())
             throw new RuntimeException(String.format("Stream %s is finished with state %s", planId(), state().name()));
     }
 
@@ -733,12 +749,6 @@ public class StreamSession implements IEndpointStateChangeSubscriber
         maybeCompleted();
     }
 
-    public void onJoin(InetAddress endpoint, EndpointState epState) {}
-    public void beforeChange(InetAddress endpoint, EndpointState currentState, ApplicationState newStateKey, VersionedValue newValue) {}
-    public void onChange(InetAddress endpoint, ApplicationState state, VersionedValue value) {}
-    public void onAlive(InetAddress endpoint, EndpointState state) {}
-    public void onDead(InetAddress endpoint, EndpointState state) {}
-
     public void onRemove(InetAddress endpoint)
     {
         logger.error("[Stream #{}] Session failed because remote peer {} has left.", planId(), peer.getHostAddress());
@@ -836,5 +846,13 @@ public class StreamSession implements IEndpointStateChangeSubscriber
                 logger.trace("[Stream #{}] Skip sending keep-alive to {} (previous was not yet sent).", planId(), peer);
             }
         }
+    }
+
+    @VisibleForTesting
+    public static void shutdownAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
+    {
+        List<ExecutorService> executors = ImmutableList.of(keepAliveExecutor);
+        ExecutorUtils.shutdownNow(executors);
+        ExecutorUtils.awaitTermination(timeout, unit, executors);
     }
 }

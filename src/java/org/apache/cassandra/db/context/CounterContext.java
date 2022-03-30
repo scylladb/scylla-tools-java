@@ -137,6 +137,14 @@ public class CounterContext
     }
 
     /**
+     * Returns the count associated with the update counter id, or 0 if no such shard is present.
+     */
+    public long getUpdateCount(ByteBuffer context)
+    {
+        return getClockAndCountOf(context, UPDATE_CLOCK_ID).count;
+    }
+
+    /**
      * Creates a counter context with a single global, 2.1+ shard (a result of increment).
      */
     public ByteBuffer createGlobal(CounterId id, long clock, long count)
@@ -692,6 +700,9 @@ public class CounterContext
      */
     public void updateDigest(MessageDigest message, ByteBuffer context)
     {
+        // context can be empty due to the optimization from CASSANDRA-10657
+        if (!context.hasRemaining())
+            return;
         ByteBuffer dup = context.duplicate();
         dup.position(context.position() + headerLength(context));
         message.update(dup);
@@ -703,14 +714,6 @@ public class CounterContext
     public ClockAndCount getLocalClockAndCount(ByteBuffer context)
     {
         return getClockAndCountOf(context, CounterId.getLocalId());
-    }
-
-    /**
-     * Returns the count associated with the local counter id, or 0 if no such shard is present.
-     */
-    public long getLocalCount(ByteBuffer context)
-    {
-        return getLocalClockAndCount(context).count;
     }
 
     /**

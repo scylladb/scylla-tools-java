@@ -379,6 +379,16 @@ public class SchemaLoader
                       .compression(getCompressionParameters());
     }
 
+    public static CFMetaData staticCFMD(String ksName, String cfName)
+    {
+        return CFMetaData.Builder.create(ksName, cfName)
+                                 .addPartitionKey("key", AsciiType.instance)
+                                 .addClusteringColumn("cols", AsciiType.instance)
+                                 .addStaticColumn("val", AsciiType.instance)
+                                 .addRegularColumn("val2", AsciiType.instance)
+                                 .build();
+    }
+
 
     public static CFMetaData denseCFMD(String ksName, String cfName)
     {
@@ -423,8 +433,6 @@ public class SchemaLoader
 
     public static CFMetaData compositeIndexCFMD(String ksName, String cfName, boolean withRegularIndex, boolean withStaticIndex) throws ConfigurationException
     {
-        // the withIndex flag exists to allow tests index creation
-        // on existing columns
         CFMetaData cfm = CFMetaData.Builder.create(ksName, cfName)
                 .addPartitionKey("key", AsciiType.instance)
                 .addClusteringColumn("c1", AsciiType.instance)
@@ -458,6 +466,39 @@ public class SchemaLoader
                                                             IndexMetadata.Kind.COMPOSITES,
                                                             Collections.EMPTY_MAP)));
         }
+
+        return cfm.compression(getCompressionParameters());
+    }
+
+    public static CFMetaData compositeMultipleIndexCFMD(String ksName, String cfName) throws ConfigurationException
+    {
+        // the withIndex flag exists to allow tests index creation
+        // on existing columns
+        CFMetaData cfm = CFMetaData.Builder.create(ksName, cfName)
+                                           .addPartitionKey("key", AsciiType.instance)
+                                           .addClusteringColumn("c1", AsciiType.instance)
+                                           .addRegularColumn("birthdate", LongType.instance)
+                                           .addRegularColumn("notbirthdate", LongType.instance)
+                                           .build();
+
+        cfm.indexes(
+        cfm.getIndexes()
+           .with(IndexMetadata.fromIndexTargets(cfm,
+                                                Collections.singletonList(
+                                                new IndexTarget(new ColumnIdentifier("birthdate", true),
+                                                                IndexTarget.Type.VALUES)),
+                                                "birthdate_key_index",
+                                                IndexMetadata.Kind.COMPOSITES,
+                                                Collections.EMPTY_MAP))
+           .with(IndexMetadata.fromIndexTargets(cfm,
+                                                Collections.singletonList(
+                                                new IndexTarget(new ColumnIdentifier("notbirthdate", true),
+                                                                IndexTarget.Type.VALUES)),
+                                                "notbirthdate_key_index",
+                                                IndexMetadata.Kind.COMPOSITES,
+                                                Collections.EMPTY_MAP))
+        );
+
 
         return cfm.compression(getCompressionParameters());
     }

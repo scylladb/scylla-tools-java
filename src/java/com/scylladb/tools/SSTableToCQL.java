@@ -761,7 +761,11 @@ public class SSTableToCQL {
                 updateTimestamp(liveInfo.timestamp());
                 updateTTL(liveInfo.ttl());
 
+                boolean hasColumns = false;
+
                 for (ColumnData cd : row) {
+                    hasColumns = true;
+
                     if (cd.column().isSimple()) {
                         process((Cell) cd, liveInfo, null);
                     } else {
@@ -780,7 +784,7 @@ public class SSTableToCQL {
                 if (rowDelete) {
                     setOp(Op.DELETE, d.time().markedForDeleteAt(), invalidTTL);
                 }
-                if (row.size() == 0 && !rowDelete && !row.isStatic()) {
+                if (!hasColumns && !rowDelete && !row.isStatic()) {
                     op = Op.INSERT;
                 }
 

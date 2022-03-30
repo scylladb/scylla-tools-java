@@ -23,19 +23,21 @@ import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+
+import com.google.common.base.Preconditions;
 
 import com.clearspring.analytics.stream.cardinality.HyperLogLogPlus;
 import com.clearspring.analytics.stream.cardinality.ICardinality;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
 import org.apache.cassandra.db.commitlog.IntervalSet;
-import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.partitions.PartitionStatisticsCollector;
 import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.service.ActiveRepairService;
-import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.EstimatedHistogram;
 import org.apache.cassandra.utils.MurmurHash;
 import org.apache.cassandra.utils.StreamingHistogram;
@@ -43,11 +45,12 @@ import org.apache.cassandra.utils.StreamingHistogram;
 public class MetadataCollector implements PartitionStatisticsCollector
 {
     public static final double NO_COMPRESSION_RATIO = -1.0;
+    private static final ByteBuffer[] EMPTY_CLUSTERING = new ByteBuffer[0];
 
     static EstimatedHistogram defaultCellPerPartitionCountHistogram()
     {
-        // EH of 114 can track a max value of 2395318855, i.e., > 2B columns
-        return new EstimatedHistogram(114);
+        // EH of 118 can track a max value of 4139110981, i.e., > 4B cells
+        return new EstimatedHistogram(118);
     }
 
     static EstimatedHistogram defaultPartitionSizeHistogram()
@@ -80,7 +83,8 @@ public class MetadataCollector implements PartitionStatisticsCollector
                                  true,
                                  ActiveRepairService.UNREPAIRED_SSTABLE,
                                  -1,
-                                 -1);
+                                 -1,
+                                 null);
     }
 
     protected EstimatedHistogram estimatedPartitionSize = defaultPartitionSizeHistogram();
@@ -93,8 +97,8 @@ public class MetadataCollector implements PartitionStatisticsCollector
     protected double compressionRatio = NO_COMPRESSION_RATIO;
     protected StreamingHistogram.StreamingHistogramBuilder estimatedTombstoneDropTime = defaultTombstoneDropTimeHistogramBuilder();
     protected int sstableLevel;
-    protected ByteBuffer[] minClusteringValues;
-    protected ByteBuffer[] maxClusteringValues;
+    private ClusteringPrefix minClustering = null;
+    private ClusteringPrefix maxClustering = null;
     protected boolean hasLegacyCounterShards = false;
     protected long totalColumnsSet;
     protected long totalRows;
@@ -108,12 +112,17 @@ public class MetadataCollector implements PartitionStatisticsCollector
     protected ICardinality cardinality = new HyperLogLogPlus(13, 25);
     private final ClusteringComparator comparator;
 
+    private final UUID originatingHostId;
+
     public MetadataCollector(ClusteringComparator comparator)
     {
-        this.comparator = comparator;
+        this(comparator, StorageService.instance.getLocalHostUUID());
+    }
 
-        this.minClusteringValues = new ByteBuffer[comparator.size()];
-        this.maxClusteringValues = new ByteBuffer[comparator.size()];
+    public MetadataCollector(ClusteringComparator comparator, UUID originatingHostId)
+    {
+        this.comparator = comparator;
+        this.originatingHostId = originatingHostId;
     }
 
     public MetadataCollector(Iterable<SSTableReader> sstables, ClusteringComparator comparator, int level)
@@ -121,11 +130,14 @@ public class MetadataCollector implements PartitionStatisticsCollector
         this(comparator);
 
         IntervalSet.Builder<CommitLogPosition> intervals = new IntervalSet.Builder<>();
-        for (SSTableReader sstable : sstables)
+        if (originatingHostId != null)
         {
-            intervals.addAll(sstable.getSSTableMetadata().commitLogIntervals);
+            for (SSTableReader sstable : sstables)
+            {
+                if (originatingHostId.equals(sstable.getSSTableMetadata().originatingHostId))
+                    intervals.addAll(sstable.getSSTableMetadata().commitLogIntervals);
+            }
         }
-
         commitLogIntervals(intervals.build());
         sstableLevel(level);
     }
@@ -228,46 +240,9 @@ public class MetadataCollector implements PartitionStatisticsCollector
 
     public MetadataCollector updateClusteringValues(ClusteringPrefix clustering)
     {
-        int size = clustering.size();
-        for (int i = 0; i < size; i++)
-        {
-            AbstractType<?> type = comparator.subtype(i);
-            ByteBuffer newValue = clustering.get(i);
-            minClusteringValues[i] = maybeMinimize(min(minClusteringValues[i], newValue, type));
-            maxClusteringValues[i] = maybeMinimize(max(maxClusteringValues[i], newValue, type));
-        }
+        minClustering = minClustering == null || comparator.compare(clustering, minClustering) < 0 ? clustering.minimize() : minClustering;
+        maxClustering = maxClustering == null || comparator.compare(clustering, maxClustering) > 0 ? clustering.minimize() : maxClustering;
         return this;
-    }
-
-    private static ByteBuffer maybeMinimize(ByteBuffer buffer)
-    {
-        // ByteBuffer.minimalBufferFor doesn't handle null, but we can get it in this case since it's possible
-        // for some clustering values to be null
-        return buffer == null ? null : ByteBufferUtil.minimalBufferFor(buffer);
-    }
-
-    private static ByteBuffer min(ByteBuffer b1, ByteBuffer b2, AbstractType<?> comparator)
-    {
-        if (b1 == null)
-            return b2;
-        if (b2 == null)
-            return b1;
-
-        if (comparator.compare(b1, b2) >= 0)
-            return b2;
-        return b1;
-    }
-
-    private static ByteBuffer max(ByteBuffer b1, ByteBuffer b2, AbstractType<?> comparator)
-    {
-        if (b1 == null)
-            return b2;
-        if (b2 == null)
-            return b1;
-
-        if (comparator.compare(b1, b2) >= 0)
-            return b1;
-        return b2;
     }
 
     public void updateHasLegacyCounterShards(boolean hasLegacyCounterShards)
@@ -277,6 +252,10 @@ public class MetadataCollector implements PartitionStatisticsCollector
 
     public Map<MetadataType, MetadataComponent> finalizeMetadata(String partitioner, double bloomFilterFPChance, long repairedAt, SerializationHeader header)
     {
+        Preconditions.checkState((minClustering == null && maxClustering == null)
+                                 || comparator.compare(maxClustering, minClustering) >= 0);
+        ByteBuffer[] minValues = minClustering != null ? minClustering.getRawValues() : EMPTY_CLUSTERING;
+        ByteBuffer[] maxValues = maxClustering != null ? maxClustering.getRawValues() : EMPTY_CLUSTERING;
         Map<MetadataType, MetadataComponent> components = new EnumMap<>(MetadataType.class);
         components.put(MetadataType.VALIDATION, new ValidationMetadata(partitioner, bloomFilterFPChance));
         components.put(MetadataType.STATS, new StatsMetadata(estimatedPartitionSize,
@@ -291,12 +270,13 @@ public class MetadataCollector implements PartitionStatisticsCollector
                                                              compressionRatio,
                                                              estimatedTombstoneDropTime.build(),
                                                              sstableLevel,
-                                                             makeList(minClusteringValues),
-                                                             makeList(maxClusteringValues),
+                                                             makeList(minValues),
+                                                             makeList(maxValues),
                                                              hasLegacyCounterShards,
                                                              repairedAt,
                                                              totalColumnsSet,
-                                                             totalRows));
+                                                             totalRows,
+                                                             originatingHostId));
         components.put(MetadataType.COMPACTION, new CompactionMetadata(cardinality));
         components.put(MetadataType.HEADER, header.toComponent());
         return components;

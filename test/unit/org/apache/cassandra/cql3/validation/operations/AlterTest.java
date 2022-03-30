@@ -20,14 +20,16 @@ package org.apache.cassandra.cql3.validation.operations;
 import org.junit.Assert;
 import org.junit.Test;
 
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.db.marshal.IntegerType;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.exceptions.SyntaxException;
-import org.apache.cassandra.schema.SchemaKeyspace;
+import org.apache.cassandra.schema.SchemaKeyspaceTables;
 
 import static java.lang.String.format;
 import static org.junit.Assert.assertEquals;
@@ -269,18 +271,83 @@ public class AlterTest extends CQLTester
                    row(1, null, null, "111"));
     }
 
-    /**
-     * Test for 7744,
-     * migrated from cql_tests.py:TestCQL.downgrade_to_compact_bug_test()
-     */
-    @Test
-    public void testDowngradeToCompact() throws Throwable
+    @Test(expected = InvalidRequestException.class)
+    public void testDropComplexAddSimpleColumn() throws Throwable
     {
         createTable("create table %s (k int primary key, v set<text>)");
-        execute("insert into %s (k, v) VALUES (0, {'f'})");
-        flush();
         execute("alter table %s drop v");
-        execute("alter table %s add v int");
+        execute("alter table %s add v text");
+    }
+
+    @Test(expected = InvalidRequestException.class)
+    public void testDropSimpleAddComplexColumn() throws Throwable
+    {
+        createTable("create table %s (k int primary key, v text)");
+        execute("alter table %s drop v");
+        execute("alter table %s add v set<text>");
+    }
+
+    @Test(expected = InvalidRequestException.class)
+    public void testDropMultiCellAddFrozenColumn() throws Throwable
+    {
+        createTable("create table %s (k int primary key, v set<text>)");
+        execute("alter table %s drop v");
+        execute("alter table %s add v frozen<set<text>>");
+    }
+
+    @Test(expected = InvalidRequestException.class)
+    public void testDropFrozenAddMultiCellColumn() throws Throwable
+    {
+        createTable("create table %s (k int primary key, v frozen<set<text>>)");
+        execute("alter table %s drop v");
+        execute("alter table %s add v set<text>");
+    }
+
+    @Test
+    public void testDropTimeUUIDAddUUIDColumn() throws Throwable
+    {
+        createTable("create table %s (k int primary key, v timeuuid)");
+        execute("alter table %s drop v");
+        execute("alter table %s add v uuid");
+    }
+
+    @Test(expected = InvalidRequestException.class)
+    public void testDropUUIDAddTimeUUIDColumn() throws Throwable
+    {
+        createTable("create table %s (k int primary key, v uuid)");
+        execute("alter table %s drop v");
+        execute("alter table %s add v timeuuid");
+    }
+
+    @Test
+    public void testDropAddSameType() throws Throwable
+    {
+        createTable("create table %s (k int primary key, v1 timeuuid, v2 set<uuid>, v3 frozen<list<text>>)");
+
+        execute("alter table %s drop v1");
+        execute("alter table %s add v1 timeuuid");
+
+        execute("alter table %s drop v2");
+        execute("alter table %s add v2 set<uuid>");
+
+        execute("alter table %s drop v3");
+        execute("alter table %s add v3 frozen<list<text>>");
+    }
+
+    @Test(expected = InvalidRequestException.class)
+    public void testDropRegularAddStatic() throws Throwable
+    {
+        createTable("create table %s (k int, c int, v uuid, PRIMARY KEY (k, c))");
+        execute("alter table %s drop v");
+        execute("alter table %s add v uuid static");
+    }
+
+    @Test(expected = InvalidRequestException.class)
+    public void testDropStaticAddRegular() throws Throwable
+    {
+        createTable("create table %s (k int, c int, v uuid static, PRIMARY KEY (k, c))");
+        execute("alter table %s drop v");
+        execute("alter table %s add v uuid");
     }
 
     @Test(expected = SyntaxException.class)
@@ -309,7 +376,7 @@ public class AlterTest extends CQLTester
 
         assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
                                   SchemaConstants.SCHEMA_KEYSPACE_NAME,
-                                  SchemaKeyspace.TABLES),
+                                  SchemaKeyspaceTables.TABLES),
                            KEYSPACE,
                            currentTable()),
                    row(map("chunk_length_in_kb", "64", "class", "org.apache.cassandra.io.compress.LZ4Compressor")));
@@ -318,7 +385,7 @@ public class AlterTest extends CQLTester
 
         assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
                                   SchemaConstants.SCHEMA_KEYSPACE_NAME,
-                                  SchemaKeyspace.TABLES),
+                                  SchemaKeyspaceTables.TABLES),
                            KEYSPACE,
                            currentTable()),
                    row(map("chunk_length_in_kb", "32", "class", "org.apache.cassandra.io.compress.SnappyCompressor")));
@@ -327,7 +394,7 @@ public class AlterTest extends CQLTester
 
         assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
                                   SchemaConstants.SCHEMA_KEYSPACE_NAME,
-                                  SchemaKeyspace.TABLES),
+                                  SchemaKeyspaceTables.TABLES),
                            KEYSPACE,
                            currentTable()),
                    row(map("chunk_length_in_kb", "64", "class", "org.apache.cassandra.io.compress.LZ4Compressor")));
@@ -336,7 +403,7 @@ public class AlterTest extends CQLTester
 
         assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
                                   SchemaConstants.SCHEMA_KEYSPACE_NAME,
-                                  SchemaKeyspace.TABLES),
+                                  SchemaKeyspaceTables.TABLES),
                            KEYSPACE,
                            currentTable()),
                    row(map("enabled", "false")));
@@ -346,7 +413,7 @@ public class AlterTest extends CQLTester
 
         assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
                                   SchemaConstants.SCHEMA_KEYSPACE_NAME,
-                                  SchemaKeyspace.TABLES),
+                                  SchemaKeyspaceTables.TABLES),
                            KEYSPACE,
                            currentTable()),
                    row(map("enabled", "false")));
@@ -429,5 +496,96 @@ public class AlterTest extends CQLTester
         execute("ALTER TABLE %s DROP x");
 
         assertEmpty(execute("SELECT * FROM %s"));
+    }
+
+    /**
+     * Test for CASSANDRA-14564
+     */
+    @Test
+    public void testAlterByAddingColumnToCompactTableShouldFail() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int, b int, PRIMARY KEY (a, b)) WITH COMPACT STORAGE");
+        assertInvalidMessage("Cannot add new column to a COMPACT STORAGE table",
+                             "ALTER TABLE %s ADD column1 text");
+    }
+
+    /**
+     * Test for CASSANDRA-13917
+     */
+    @Test
+    public void testAlterWithCompactStaticFormat() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int PRIMARY KEY, b int, c int) WITH COMPACT STORAGE");
+
+        assertInvalidMessage("Cannot rename unknown column column1 in keyspace",
+                             "ALTER TABLE %s RENAME column1 TO column2");
+
+        assertInvalidMessage("Cannot rename unknown column value in keyspace",
+                             "ALTER TABLE %s RENAME value TO value2");
+    }
+
+    /**
+     * Test for CASSANDRA-13917
+     */
+    @Test
+    public void testAlterWithCompactNonStaticFormat() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int, b int, PRIMARY KEY (a, b)) WITH COMPACT STORAGE");
+        assertInvalidMessage("Cannot rename unknown column column1 in keyspace",
+                             "ALTER TABLE %s RENAME column1 TO column2");
+
+        createTable("CREATE TABLE %s (a int, b int, v int, PRIMARY KEY (a, b)) WITH COMPACT STORAGE");
+        assertInvalidMessage("Cannot rename unknown column column1 in keyspace",
+                             "ALTER TABLE %s RENAME column1 TO column2");
+    }
+
+    @Test
+    public void testAlterTableAlterType() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int, b int, PRIMARY KEY (a,b)) WITH COMPACT STORAGE");
+        assertInvalidMessage(String.format("Compact value type can only be changed to BytesType, but %s was given.",
+                                           IntegerType.instance),
+                             "ALTER TABLE %s ALTER value TYPE 'org.apache.cassandra.db.marshal.IntegerType'");
+
+        execute("ALTER TABLE %s ALTER value TYPE 'org.apache.cassandra.db.marshal.BytesType'");
+
+        createTable("CREATE TABLE %s (a int, b int, c int, PRIMARY KEY (a,b)) WITH COMPACT STORAGE");
+        assertInvalidMessage("Altering of types is not allowed",
+                             "ALTER TABLE %s ALTER c TYPE 'org.apache.cassandra.db.marshal.BytesType'");
+
+        createTable("CREATE TABLE %s (a int, value int, PRIMARY KEY (a,value)) WITH COMPACT STORAGE");
+        assertInvalidMessage("Altering of types is not allowed",
+                             "ALTER TABLE %s ALTER value TYPE 'org.apache.cassandra.db.marshal.IntegerType'");
+        execute("ALTER TABLE %s ALTER value1 TYPE 'org.apache.cassandra.db.marshal.BytesType'");
+    }
+
+    @Test
+    public void testAlterTypeUsedInPartitionKey() throws Throwable
+    {
+        // frozen UDT used directly in a partition key
+        String  type1 = createType("CREATE TYPE %s (v1 int)");
+        String table1 = createTable("CREATE TABLE %s (pk frozen<" + type1 + ">, val int, PRIMARY KEY(pk));");
+
+        // frozen UDT used in a frozen UDT used in a partition key
+        String  type2 = createType("CREATE TYPE %s (v1 frozen<" + type1 + ">, v2 frozen<" + type1 + ">)");
+        String table2 = createTable("CREATE TABLE %s (pk frozen<" + type2 + ">, val int, PRIMARY KEY(pk));");
+
+        // frozen UDT used in a frozen collection used in a partition key
+        String table3 = createTable("CREATE TABLE %s (pk frozen<list<frozen<" + type1 + ">>>, val int, PRIMARY KEY(pk));");
+
+        // assert that ALTER fails and that the error message contains all the names of the table referencing it
+        assertInvalidMessage(table1, format("ALTER TYPE %s.%s ADD v2 int;", keyspace(), type1));
+        assertInvalidMessage(table2, format("ALTER TYPE %s.%s ADD v2 int;", keyspace(), type1));
+        assertInvalidMessage(table3, format("ALTER TYPE %s.%s ADD v2 int;", keyspace(), type1));
+    }
+
+    @Test
+    public void testAlterDropCompactStorageDisabled() throws Throwable
+    {
+        DatabaseDescriptor.setEnableDropCompactStorage(false);
+
+        createTable("CREATE TABLE %s (k text, i int, PRIMARY KEY (k, i)) WITH COMPACT STORAGE");
+
+        assertInvalidMessage("DROP COMPACT STORAGE is disabled. Enable in cassandra.yaml to use.", "ALTER TABLE %s DROP COMPACT STORAGE");
     }
 }

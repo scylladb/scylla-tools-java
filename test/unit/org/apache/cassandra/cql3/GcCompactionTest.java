@@ -21,6 +21,7 @@ package org.apache.cassandra.cql3;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
@@ -34,6 +35,8 @@ import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
+import org.apache.cassandra.schema.CompactionParams;
+import org.apache.cassandra.schema.CompactionParams.TombstoneOption;
 import org.apache.cassandra.utils.FBUtilities;
 
 public class GcCompactionTest extends CQLTester
@@ -146,6 +149,135 @@ public class GcCompactionTest extends CQLTester
         SSTableReader table3 = getNewTable(readers);
         assertEquals(0, countTombstoneMarkers(table3));
         assertTrue(rowCount > countRows(table3));
+    }
+
+    @Test
+    public void testGarbageCollectRetainsLCSLevel() throws Throwable
+    {
+
+      createTable("CREATE TABLE %s(" +
+                  "  key int," +
+                  "  column int," +
+                  "  data int," +
+                  "  PRIMARY KEY ((key), column)" +
+                  ") WITH compaction = { 'class' : 'LeveledCompactionStrategy' };");
+
+      assertEquals("LeveledCompactionStrategy", getCurrentColumnFamilyStore().getCompactionStrategyManager().getName());
+
+      for (int i = 0; i < KEY_COUNT; ++i)
+          for (int j = 0; j < CLUSTERING_COUNT; ++j)
+              execute("INSERT INTO %s (key, column, data) VALUES (?, ?, ?)", i, j, i * j + j);
+
+      ColumnFamilyStore cfs = getCurrentColumnFamilyStore();
+      cfs.disableAutoCompaction();
+      flush();
+      assertEquals(1, cfs.getLiveSSTables().size());
+      SSTableReader table = cfs.getLiveSSTables().iterator().next();
+      int gen = table.descriptor.generation;
+      assertEquals(KEY_COUNT * CLUSTERING_COUNT, countRows(table));
+
+      assertEquals(0, table.getSSTableLevel()); // flush writes to L0
+
+      CompactionManager.AllSSTableOpStatus status;
+      status = CompactionManager.instance.performGarbageCollection(cfs, TombstoneOption.ROW, 1);
+      assertEquals(CompactionManager.AllSSTableOpStatus.SUCCESSFUL, status);
+
+      assertEquals(1, cfs.getLiveSSTables().size());
+      SSTableReader collected = cfs.getLiveSSTables().iterator().next();
+      int collectedGen = collected.descriptor.generation;
+      assertTrue(collectedGen > gen);
+      assertEquals(KEY_COUNT * CLUSTERING_COUNT, countRows(collected));
+
+      assertEquals(0, collected.getSSTableLevel()); // garbagecollect should leave the LCS level where it was
+
+      CompactionManager.instance.performMaximal(cfs, false);
+
+      assertEquals(1, cfs.getLiveSSTables().size());
+      SSTableReader compacted = cfs.getLiveSSTables().iterator().next();
+      int compactedGen = compacted.descriptor.generation;
+      assertTrue(compactedGen > collectedGen);
+      assertEquals(KEY_COUNT * CLUSTERING_COUNT, countRows(compacted));
+
+      assertEquals(1, compacted.getSSTableLevel()); // full compaction with LCS should move to L1
+
+      status = CompactionManager.instance.performGarbageCollection(cfs, TombstoneOption.ROW, 1);
+      assertEquals(CompactionManager.AllSSTableOpStatus.SUCCESSFUL, status);
+
+      assertEquals(1, cfs.getLiveSSTables().size());
+      SSTableReader collected2 = cfs.getLiveSSTables().iterator().next();
+      assertTrue(collected2.descriptor.generation > compactedGen);
+      assertEquals(KEY_COUNT * CLUSTERING_COUNT, countRows(collected2));
+
+      assertEquals(1, collected2.getSSTableLevel()); // garbagecollect should leave the LCS level where it was
+    }
+
+    @Test
+    public void testGarbageCollectOrder() throws Throwable
+    {
+        // partition-level deletions, 0 gc_grace
+        createTable("CREATE TABLE %s(" +
+                    "  key int," +
+                    "  column int," +
+                    "  col2 int," +
+                    "  data int," +
+                    "  extra text," +
+                    "  PRIMARY KEY((key, column))" +
+                    ") WITH gc_grace_seconds = 0;"
+        );
+
+        assertEquals(1, getCurrentColumnFamilyStore().gcBefore(1)); // make sure gc_grace is 0
+
+        for (int i = 0; i < KEY_COUNT; ++i)
+            for (int j = 0; j < CLUSTERING_COUNT; ++j)
+                execute("INSERT INTO %s (key, column, data, extra) VALUES (?, ?, ?, ?)", i, j, i+j, "" + i + ":" + j);
+
+
+        Set<SSTableReader> readers = new HashSet<>();
+        ColumnFamilyStore cfs = getCurrentColumnFamilyStore();
+
+        flush();
+        assertEquals(1, cfs.getLiveSSTables().size());
+        SSTableReader table0 = getNewTable(readers);
+        assertEquals(0, countTombstoneMarkers(table0));
+        int rowCount0 = countRows(table0);
+
+        deleteWithSomeInserts(3, 5, 10);
+        flush();
+        assertEquals(2, cfs.getLiveSSTables().size());
+        SSTableReader table1 = getNewTable(readers);
+        final int rowCount1 = countRows(table1);
+        assertTrue(rowCount1 > 0);
+        assertTrue(countTombstoneMarkers(table1) > 0);
+
+        deleteWithSomeInserts(2, 4, 0);
+        flush();
+        assertEquals(3, cfs.getLiveSSTables().size());
+        SSTableReader table2 = getNewTable(readers);
+        assertEquals(0, countRows(table2));
+        assertTrue(countTombstoneMarkers(table2) > 0);
+
+        // Wait a little to make sure nowInSeconds is greater than gcBefore
+        Thread.sleep(1000);
+
+        CompactionManager.AllSSTableOpStatus status =
+                CompactionManager.instance.performGarbageCollection(getCurrentColumnFamilyStore(), CompactionParams.TombstoneOption.ROW, 1);
+        assertEquals(CompactionManager.AllSSTableOpStatus.SUCCESSFUL, status);
+
+        SSTableReader[] tables = cfs.getLiveSSTables().toArray(new SSTableReader[0]);
+        Arrays.sort(tables, (o1, o2) -> Integer.compare(o1.descriptor.generation, o2.descriptor.generation));  // by order of compaction
+
+        // Make sure deleted data was removed
+        assertTrue(rowCount0 > countRows(tables[0]));
+        assertTrue(rowCount1 > countRows(tables[1]));
+
+        // Make sure all tombstones got purged
+        for (SSTableReader t : tables)
+        {
+            assertEquals("Table " + t + " has tombstones", 0, countTombstoneMarkers(t));
+        }
+
+        // The last table should have become empty and be removed
+        assertEquals(2, tables.length);
     }
 
     @Test
@@ -356,7 +488,7 @@ public class GcCompactionTest extends CQLTester
 
     int countComplexCells(SSTableReader reader)
     {
-        return count(reader, x -> x.isRow() ? ((Row) x).stream().mapToInt(this::countComplex).sum() : 0, x -> 0);
+        return count(reader, x -> x.isRow() ? ((Row) x).columnData().stream().mapToInt(this::countComplex).sum() : 0, x -> 0);
     }
 
     int countComplex(ColumnData c)

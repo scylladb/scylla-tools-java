@@ -21,17 +21,18 @@ package org.apache.cassandra.utils.memory;
 import java.lang.ref.PhantomReference;
 import java.lang.ref.ReferenceQueue;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.Queue;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 
 import com.google.common.annotations.VisibleForTesting;
+import org.apache.cassandra.concurrent.InfiniteLoopExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.netty.util.concurrent.FastThreadLocal;
-import org.apache.cassandra.concurrent.NamedThreadFactory;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.io.compress.BufferType;
 import org.apache.cassandra.io.util.FileUtils;
@@ -39,6 +40,9 @@ import org.apache.cassandra.metrics.BufferPoolMetrics;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.NoSpamLogger;
 import org.apache.cassandra.utils.concurrent.Ref;
+
+import static org.apache.cassandra.utils.ExecutorUtils.awaitTermination;
+import static org.apache.cassandra.utils.ExecutorUtils.shutdownNow;
 
 /**
  * A pool of ByteBuffers that can be recycled.
@@ -493,34 +497,16 @@ public class BufferPool
     private static final ConcurrentLinkedQueue<LocalPoolRef> localPoolReferences = new ConcurrentLinkedQueue<>();
 
     private static final ReferenceQueue<Object> localPoolRefQueue = new ReferenceQueue<>();
-    private static final ExecutorService EXEC = Executors.newFixedThreadPool(1, new NamedThreadFactory("LocalPool-Cleaner"));
-    static
+    private static final InfiniteLoopExecutor EXEC = new InfiniteLoopExecutor("LocalPool-Cleaner", BufferPool::cleanupOneReference).start();
+
+    private static void cleanupOneReference() throws InterruptedException
     {
-        EXEC.execute(new Runnable()
+        Object obj = localPoolRefQueue.remove(100);
+        if (obj instanceof LocalPoolRef)
         {
-            public void run()
-            {
-                try
-                {
-                    while (true)
-                    {
-                        Object obj = localPoolRefQueue.remove();
-                        if (obj instanceof LocalPoolRef)
-                        {
-                            ((LocalPoolRef) obj).release();
-                            localPoolReferences.remove(obj);
-                        }
-                    }
-                }
-                catch (InterruptedException e)
-                {
-                }
-                finally
-                {
-                    EXEC.execute(this);
-                }
-            }
-        });
+            ((LocalPoolRef) obj).release();
+            localPoolReferences.remove(obj);
+        }
     }
 
     private static ByteBuffer allocateDirectAligned(int capacity)
@@ -871,5 +857,12 @@ public class BufferPool
     {
         int mask = unit - 1;
         return (size + mask) & ~mask;
+    }
+
+    @VisibleForTesting
+    public static void shutdownLocalCleaner(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
+    {
+        shutdownNow(Arrays.asList(EXEC));
+        awaitTermination(timeout, unit, Arrays.asList(EXEC));
     }
 }

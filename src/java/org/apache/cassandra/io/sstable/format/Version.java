@@ -74,6 +74,8 @@ public abstract class Version
 
     public abstract boolean hasCommitLogIntervals();
 
+    public abstract boolean hasAccurateMinMax();
+
     public String getVersion()
     {
         return version;
@@ -122,4 +124,6 @@ public abstract class Version
     {
         return version != null ? version.hashCode() : 0;
     }
+
+    public abstract boolean hasOriginatingHostId();
 }

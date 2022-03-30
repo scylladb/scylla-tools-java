@@ -154,8 +154,8 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
     }
     private static final RateLimiter meterSyncThrottle = RateLimiter.create(100.0);
 
-    // Descending order
-    public static final Comparator<SSTableReader> maxTimestampComparator = (o1, o2) -> Long.compare(o2.getMaxTimestamp(), o1.getMaxTimestamp());
+    public static final Comparator<SSTableReader> maxTimestampDescending = (o1, o2) -> Long.compare(o2.getMaxTimestamp(), o1.getMaxTimestamp());
+    public static final Comparator<SSTableReader> maxTimestampAscending = (o1, o2) -> Long.compare(o1.getMaxTimestamp(), o2.getMaxTimestamp());
 
     // it's just an object, which we use regular Object equality on; we introduce a special class just for easy recognition
     public static final class UniqueIdentifier {}
@@ -571,19 +571,19 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
                     }
                     catch (CorruptSSTableException ex)
                     {
-                        FileUtils.handleCorruptSSTable(ex);
+                        JVMStabilityInspector.inspectThrowable(ex);
                         logger.error("Corrupt sstable {}; skipping table", entry, ex);
                         return;
                     }
                     catch (FSError ex)
                     {
-                        FileUtils.handleFSError(ex);
+                        JVMStabilityInspector.inspectThrowable(ex);
                         logger.error("Cannot read sstable {}; file system error, skipping table", entry, ex);
                         return;
                     }
                     catch (IOException ex)
                     {
-                        FileUtils.handleCorruptSSTable(new CorruptSSTableException(ex, entry.getKey().filenameFor(Component.DATA)));
+                        JVMStabilityInspector.inspectThrowable(new CorruptSSTableException(ex, entry.getKey().filenameFor(Component.DATA)));
                         logger.error("Cannot read sstable {}; other IO error, skipping table", entry, ex);
                         return;
                     }
@@ -1158,7 +1158,6 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
             double effectiveInterval = indexSummary.getEffectiveIndexInterval();
 
             IndexSummary newSummary;
-            long oldSize = bytesOnDisk();
 
             // We have to rebuild the summary from the on-disk primary index in three cases:
             // 1. The sampling level went up, so we need to read more entries off disk
@@ -1182,11 +1181,6 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
 
             // Always save the resampled index
             saveSummary(newSummary);
-
-            // The new size will be added in Transactional.commit() as an updated SSTable, more details: CASSANDRA-13738
-            StorageMetrics.load.dec(oldSize);
-            parent.metric.liveDiskSpaceUsed.dec(oldSize);
-            parent.metric.totalDiskSpaceUsed.dec(oldSize);
 
             return cloneAndReplace(first, OpenReason.METADATA_CHANGE, newSummary);
         }
@@ -1720,7 +1714,7 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
     public void markSuspect()
     {
         if (logger.isTraceEnabled())
-            logger.trace("Marking {} as a suspect for blacklisting.", getFilename());
+            logger.trace("Marking {} as a suspect to be excluded from reads.", getFilename());
 
         isSuspect.getAndSet(true);
     }
@@ -1820,6 +1814,11 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
 
     public void createLinks(String snapshotDirectoryPath)
     {
+        createLinks(descriptor, components, snapshotDirectoryPath);
+    }
+
+    public static void createLinks(Descriptor descriptor, Set<Component> components, String snapshotDirectoryPath)
+    {
         for (Component component : components)
         {
             File sourceFile = new File(descriptor.filenameFor(component));
@@ -1904,6 +1903,16 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
     public long getRecentBloomFilterTruePositiveCount()
     {
         return bloomFilterTracker.getRecentTruePositiveCount();
+    }
+
+    public long getBloomFilterTrueNegativeCount()
+    {
+        return bloomFilterTracker.getTrueNegativeCount();
+    }
+
+    public long getRecentBloomFilterTrueNegativeCount()
+    {
+        return bloomFilterTracker.getRecentTrueNegativeCount();
     }
 
     public InstrumentingCache<KeyCacheKey, RowIndexEntry> getKeyCache()
@@ -2369,5 +2378,12 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
                                            OpenReason openReason,
                                            SerializationHeader header);
 
+    }
+
+    public static void shutdownBlocking(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
+    {
+
+        ExecutorUtils.shutdownNowAndWait(timeout, unit, syncExecutor);
+        resetTidying();
     }
 }

@@ -52,7 +52,16 @@ public class Columns extends AbstractCollection<ColumnDefinition> implements Col
 {
     public static final Serializer serializer = new Serializer();
     public static final Columns NONE = new Columns(BTree.empty(), 0);
-    public static final ColumnDefinition FIRST_COMPLEX =
+
+    private static final ColumnDefinition FIRST_COMPLEX_STATIC =
+        new ColumnDefinition("",
+                             "",
+                             ColumnIdentifier.getInterned(ByteBufferUtil.EMPTY_BYTE_BUFFER, UTF8Type.instance),
+                             SetType.getInstance(UTF8Type.instance, true),
+                             ColumnDefinition.NO_POSITION,
+                             ColumnDefinition.Kind.STATIC);
+
+    private static final ColumnDefinition FIRST_COMPLEX_REGULAR =
         new ColumnDefinition("",
                              "",
                              ColumnIdentifier.getInterned(ByteBufferUtil.EMPTY_BYTE_BUFFER, UTF8Type.instance),
@@ -101,11 +110,14 @@ public class Columns extends AbstractCollection<ColumnDefinition> implements Col
 
     private static int findFirstComplexIdx(Object[] tree)
     {
-        // have fast path for common no-complex case
+        if (BTree.isEmpty(tree))
+            return 0;
+
         int size = BTree.size(tree);
-        if (!BTree.isEmpty(tree) && BTree.<ColumnDefinition>findByIndex(tree, size - 1).isSimple())
-            return size;
-        return BTree.ceilIndex(tree, Comparator.naturalOrder(), FIRST_COMPLEX);
+        ColumnDefinition last = BTree.findByIndex(tree, size - 1);
+        return last.isSimple()
+             ? size
+             : BTree.ceilIndex(tree, Comparator.naturalOrder(), last.isStatic() ? FIRST_COMPLEX_STATIC : FIRST_COMPLEX_REGULAR);
     }
 
     /**
@@ -448,6 +460,7 @@ public class Columns extends AbstractCollection<ColumnDefinition> implements Col
                     // fail deserialization because of that. So we grab a "fake" ColumnDefinition that ensure proper
                     // deserialization. The column will be ignore later on anyway.
                     column = metadata.getDroppedColumnDefinition(name);
+
                     if (column == null)
                         throw new RuntimeException("Unknown column " + UTF8Type.instance.getString(name) + " during deserialization");
                 }
@@ -533,6 +546,8 @@ public class Columns extends AbstractCollection<ColumnDefinition> implements Col
                     }
                     encoded >>>= 1;
                 }
+                if (encoded != 0)
+                    throw new IOException("Invalid Columns subset bytes; too many bits set:" + Long.toBinaryString(encoded));
                 return new Columns(builder.build(), firstComplexIdx);
             }
         }

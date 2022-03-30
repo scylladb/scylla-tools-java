@@ -62,7 +62,8 @@ public class SSTableMetadataViewer
         MA(),
         MB(),
         MC(),
-        MD();
+        MD(),
+        ME();
 
         public static SSTableFormat fromString(String sstableVersion) {
             if(sstableVersion.equals("jb")) {
@@ -81,6 +82,8 @@ public class SSTableMetadataViewer
                 return MC;
             } else if (sstableVersion.equals("md")) {
                 return MD;
+            } else if (sstableVersion.equals("me")) {
+                return ME;
             } else {
                 throw new InvalidParameterException("SSTable Format: '" + sstableVersion + "' is unsupported.");
             }

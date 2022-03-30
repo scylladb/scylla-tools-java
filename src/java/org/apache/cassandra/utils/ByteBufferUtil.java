@@ -450,6 +450,39 @@ public class ByteBufferUtil
         return bytes.getDouble(bytes.position());
     }
 
+    public static ByteBuffer objectToBytes(Object obj)
+    {
+        if (obj instanceof Integer)
+            return ByteBufferUtil.bytes((int) obj);
+        else if (obj instanceof Byte)
+            return ByteBufferUtil.bytes((byte) obj);
+        else if (obj instanceof Short)
+            return ByteBufferUtil.bytes((short) obj);
+        else if (obj instanceof Long)
+            return ByteBufferUtil.bytes((long) obj);
+        else if (obj instanceof Float)
+            return ByteBufferUtil.bytes((float) obj);
+        else if (obj instanceof Double)
+            return ByteBufferUtil.bytes((double) obj);
+        else if (obj instanceof UUID)
+            return ByteBufferUtil.bytes((UUID) obj);
+        else if (obj instanceof InetAddress)
+            return ByteBufferUtil.bytes((InetAddress) obj);
+        else if (obj instanceof String)
+            return ByteBufferUtil.bytes((String) obj);
+        else if (obj instanceof ByteBuffer)
+            return (ByteBuffer) obj;
+        else
+            throw new IllegalArgumentException(String.format("Cannot convert value %s of type %s",
+                                                             obj,
+                                                             obj.getClass()));
+    }
+
+    public static ByteBuffer bytes(byte b)
+    {
+        return ByteBuffer.allocate(1).put(0, b);
+    }
+
     public static ByteBuffer bytes(short s)
     {
         return ByteBuffer.allocate(2).putShort(0, s);
@@ -586,10 +619,33 @@ public class ByteBufferUtil
         return prefix.equals(value.duplicate().limit(value.remaining() - diff));
     }
 
+    public static boolean canMinimize(ByteBuffer buf)
+    {
+        return buf != null && (buf.capacity() > buf.remaining() || !buf.hasArray());
+    }
+
     /** trims size of bytebuffer to exactly number of bytes in it, to do not hold too much memory */
     public static ByteBuffer minimalBufferFor(ByteBuffer buf)
     {
         return buf.capacity() > buf.remaining() || !buf.hasArray() ? ByteBuffer.wrap(getArray(buf)) : buf;
+    }
+
+    public static ByteBuffer[] minimizeBuffers(ByteBuffer[] src)
+    {
+        ByteBuffer[] dst = new ByteBuffer[src.length];
+        for (int i=0; i<src.length; i++)
+            dst[i] = src[i] != null ? minimalBufferFor(src[i]) : null;
+        return dst;
+    }
+
+    public static boolean canMinimize(ByteBuffer[] src)
+    {
+        for (ByteBuffer buffer : src)
+        {
+            if (canMinimize(buffer))
+                return true;
+        }
+        return false;
     }
 
     // Doesn't change bb position

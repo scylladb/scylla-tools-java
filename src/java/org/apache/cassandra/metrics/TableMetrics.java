@@ -24,9 +24,13 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 
 import com.google.common.collect.Maps;
+import com.google.common.annotations.VisibleForTesting;
+
+import org.apache.commons.lang3.ArrayUtils;
 
 import com.codahale.metrics.*;
 import com.codahale.metrics.Timer;
+
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.db.ColumnFamilyStore;
@@ -47,9 +51,6 @@ import static org.apache.cassandra.metrics.CassandraMetricsRegistry.Metrics;
  */
 public class TableMetrics
 {
-
-    public static final long[] EMPTY = new long[0];
-
     /** Total amount of data stored in the memtable that resides on-heap, including column related overhead and partitions overwritten. */
     public final Gauge<Long> memtableOnHeapSize;
     /** Total amount of data stored in the memtable that resides off-heap, including column related overhead and partitions overwritten. */
@@ -203,6 +204,16 @@ public class TableMetrics
 
     public final Meter readRepairRequests;
     public final Meter shortReadProtectionRequests;
+    
+    public final Meter replicaFilteringProtectionRequests;
+    
+    /**
+     * This histogram records the maximum number of rows {@link org.apache.cassandra.service.ReplicaFilteringProtection}
+     * caches at a point in time per query. With no replica divergence, this is equivalent to the maximum number of
+     * cached rows in a single partition during a query. It can be helpful when choosing appropriate values for the
+     * replica_filtering_protection thresholds in cassandra.yaml. 
+     */
+    public final Histogram rfpRowsCachedPerQuery;
 
     public final Map<Sampler, TopKSampler<ByteBuffer>> samplers;
     /**
@@ -225,34 +236,32 @@ public class TableMetrics
         Iterator<SSTableReader> iterator = sstables.iterator();
         if (!iterator.hasNext())
         {
-            return EMPTY;
+            return ArrayUtils.EMPTY_LONG_ARRAY;
         }
         long[] firstBucket = getHistogram.getHistogram(iterator.next()).getBuckets(false);
-        long[] values = new long[firstBucket.length];
-        System.arraycopy(firstBucket, 0, values, 0, values.length);
+        long[] values = Arrays.copyOf(firstBucket, firstBucket.length);
 
         while (iterator.hasNext())
         {
             long[] nextBucket = getHistogram.getHistogram(iterator.next()).getBuckets(false);
-            if (nextBucket.length > values.length)
-            {
-                long[] newValues = new long[nextBucket.length];
-                System.arraycopy(firstBucket, 0, newValues, 0, firstBucket.length);
-                for (int i = 0; i < newValues.length; i++)
-                {
-                    newValues[i] += nextBucket[i];
-                }
-                values = newValues;
-            }
-            else
-            {
-                for (int i = 0; i < values.length; i++)
-                {
-                    values[i] += nextBucket[i];
-                }
-            }
+            values = addHistogram(values, nextBucket);
         }
         return values;
+    }
+
+    @VisibleForTesting
+    public static long[] addHistogram(long[] sums, long[] buckets)
+    {
+        if (buckets.length > sums.length)
+        {
+            sums = Arrays.copyOf(sums, buckets.length);
+        }
+
+        for (int i = 0; i < buckets.length; i++)
+        {
+            sums[i] += buckets[i];
+        }
+        return sums;
     }
 
     /**
@@ -531,68 +540,76 @@ public class TableMetrics
         {
             public Double getValue()
             {
-                long falseCount = 0L;
-                long trueCount = 0L;
+                long falsePositiveCount = 0L;
+                long truePositiveCount = 0L;
+                long trueNegativeCount = 0L;
                 for (SSTableReader sstable : cfs.getSSTables(SSTableSet.LIVE))
                 {
-                    falseCount += sstable.getBloomFilterFalsePositiveCount();
-                    trueCount += sstable.getBloomFilterTruePositiveCount();
+                    falsePositiveCount += sstable.getBloomFilterFalsePositiveCount();
+                    truePositiveCount += sstable.getBloomFilterTruePositiveCount();
+                    trueNegativeCount += sstable.getBloomFilterTrueNegativeCount();
                 }
-                if (falseCount == 0L && trueCount == 0L)
+                if (falsePositiveCount == 0L && truePositiveCount == 0L)
                     return 0d;
-                return (double) falseCount / (trueCount + falseCount);
+                return (double) falsePositiveCount / (truePositiveCount + falsePositiveCount + trueNegativeCount);
             }
         }, new Gauge<Double>() // global gauge
         {
             public Double getValue()
             {
-                long falseCount = 0L;
-                long trueCount = 0L;
+                long falsePositiveCount = 0L;
+                long truePositiveCount = 0L;
+                long trueNegativeCount = 0L;
                 for (Keyspace keyspace : Keyspace.all())
                 {
                     for (SSTableReader sstable : keyspace.getAllSSTables(SSTableSet.LIVE))
                     {
-                        falseCount += sstable.getBloomFilterFalsePositiveCount();
-                        trueCount += sstable.getBloomFilterTruePositiveCount();
+                        falsePositiveCount += sstable.getBloomFilterFalsePositiveCount();
+                        truePositiveCount += sstable.getBloomFilterTruePositiveCount();
+                        trueNegativeCount += sstable.getBloomFilterTrueNegativeCount();
                     }
                 }
-                if (falseCount == 0L && trueCount == 0L)
+                if (falsePositiveCount == 0L && truePositiveCount == 0L)
                     return 0d;
-                return (double) falseCount / (trueCount + falseCount);
+                return (double) falsePositiveCount / (truePositiveCount + falsePositiveCount + trueNegativeCount);
             }
         });
         recentBloomFilterFalseRatio = createTableGauge("RecentBloomFilterFalseRatio", new Gauge<Double>()
         {
             public Double getValue()
             {
-                long falseCount = 0L;
-                long trueCount = 0L;
+                long falsePositiveCount = 0L;
+                long truePositiveCount = 0L;
+                long trueNegativeCount = 0L;
                 for (SSTableReader sstable: cfs.getSSTables(SSTableSet.LIVE))
                 {
-                    falseCount += sstable.getRecentBloomFilterFalsePositiveCount();
-                    trueCount += sstable.getRecentBloomFilterTruePositiveCount();
+                    falsePositiveCount += sstable.getRecentBloomFilterFalsePositiveCount();
+                    truePositiveCount += sstable.getRecentBloomFilterTruePositiveCount();
+                    trueNegativeCount += sstable.getRecentBloomFilterTrueNegativeCount();
                 }
-                if (falseCount == 0L && trueCount == 0L)
+                if (falsePositiveCount == 0L && truePositiveCount == 0L)
                     return 0d;
-                return (double) falseCount / (trueCount + falseCount);
+                return (double) falsePositiveCount / (truePositiveCount + falsePositiveCount + trueNegativeCount);
             }
         }, new Gauge<Double>() // global gauge
         {
             public Double getValue()
             {
-                long falseCount = 0L;
-                long trueCount = 0L;
+                long falsePositiveCount = 0L;
+                long truePositiveCount = 0L;
+                long trueNegativeCount = 0L;
                 for (Keyspace keyspace : Keyspace.all())
                 {
                     for (SSTableReader sstable : keyspace.getAllSSTables(SSTableSet.LIVE))
                     {
-                        falseCount += sstable.getRecentBloomFilterFalsePositiveCount();
-                        trueCount += sstable.getRecentBloomFilterTruePositiveCount();
+                        falsePositiveCount += sstable.getRecentBloomFilterFalsePositiveCount();
+                        truePositiveCount += sstable.getRecentBloomFilterTruePositiveCount();
+                        trueNegativeCount += sstable.getRecentBloomFilterTrueNegativeCount();
                     }
                 }
-                if (falseCount == 0L && trueCount == 0L)
+                if (falsePositiveCount == 0L && truePositiveCount == 0L)
                     return 0d;
-                return (double) falseCount / (trueCount + falseCount);
+                return (double) falsePositiveCount / (truePositiveCount + falsePositiveCount + trueNegativeCount);
             }
         });
         bloomFilterDiskSpaceUsed = createTableGauge("BloomFilterDiskSpaceUsed", new Gauge<Long>()
@@ -698,8 +715,10 @@ public class TableMetrics
         casPropose = new LatencyMetrics(factory, "CasPropose", cfs.keyspace.metric.casPropose);
         casCommit = new LatencyMetrics(factory, "CasCommit", cfs.keyspace.metric.casCommit);
 
-        readRepairRequests = Metrics.meter(factory.createMetricName("ReadRepairRequests"));
-        shortReadProtectionRequests = Metrics.meter(factory.createMetricName("ShortReadProtectionRequests"));
+        readRepairRequests = createTableMeter("ReadRepairRequests");
+        shortReadProtectionRequests = createTableMeter("ShortReadProtectionRequests");
+        replicaFilteringProtectionRequests = createTableMeter("ReplicaFilteringProtectionRequests");
+        rfpRowsCachedPerQuery = createHistogram("ReplicaFilteringProtectionRowsCachedPerQuery", true);
     }
 
     public void updateSSTableIterated(int count)
@@ -805,6 +824,25 @@ public class TableMetrics
             });
         }
         return cfCounter;
+    }
+
+    private Meter createTableMeter(final String name)
+    {
+        return createTableMeter(name, name);
+    }
+
+    private Meter createTableMeter(final String name, final String alias)
+    {
+        Meter tableMeter = Metrics.meter(factory.createMetricName(name), aliasFactory.createMetricName(alias));
+        register(name, alias, tableMeter);
+        return tableMeter;
+    }
+    
+    private Histogram createHistogram(String name, boolean considerZeroes)
+    {
+        Histogram histogram = Metrics.histogram(factory.createMetricName(name), aliasFactory.createMetricName(name), considerZeroes);
+        register(name, name, histogram);
+        return histogram;
     }
 
     /**

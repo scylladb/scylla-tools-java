@@ -27,7 +27,15 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.auth.*;
+import org.apache.cassandra.auth.AuthenticatedUser;
+import org.apache.cassandra.auth.CassandraAuthorizer;
+import org.apache.cassandra.auth.CassandraRoleManager;
+import org.apache.cassandra.auth.DataResource;
+import org.apache.cassandra.auth.FunctionResource;
+import org.apache.cassandra.auth.IResource;
+import org.apache.cassandra.auth.PasswordAuthenticator;
+import org.apache.cassandra.auth.Permission;
+import org.apache.cassandra.auth.Resources;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
@@ -38,12 +46,15 @@ import org.apache.cassandra.cql3.functions.Function;
 import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.exceptions.AuthenticationException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.exceptions.RequestExecutionException;
 import org.apache.cassandra.exceptions.UnauthorizedException;
-import org.apache.cassandra.schema.SchemaKeyspace;
+import org.apache.cassandra.schema.SchemaKeyspaceTables;
 import org.apache.cassandra.thrift.ThriftValidation;
+import org.apache.cassandra.utils.CassandraVersion;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.CassandraVersion;
+import org.apache.cassandra.utils.MD5Digest;
 
 /**
  * State related to a client connection.
@@ -63,7 +74,7 @@ public class ClientState
         for (String cf : Arrays.asList(SystemKeyspace.LOCAL, SystemKeyspace.PEERS))
             READABLE_SYSTEM_RESOURCES.add(DataResource.table(SchemaConstants.SYSTEM_KEYSPACE_NAME, cf));
 
-        SchemaKeyspace.ALL.forEach(table -> READABLE_SYSTEM_RESOURCES.add(DataResource.table(SchemaConstants.SCHEMA_KEYSPACE_NAME, table)));
+        SchemaKeyspaceTables.ALL.forEach(table -> READABLE_SYSTEM_RESOURCES.add(DataResource.table(SchemaConstants.SCHEMA_KEYSPACE_NAME, table)));
 
         // neither clients nor tools need authentication/authorization
         if (DatabaseDescriptor.isDaemonInitialized())
@@ -81,6 +92,7 @@ public class ClientState
     // Current user for the session
     private volatile AuthenticatedUser user;
     private volatile String keyspace;
+    private volatile boolean issuedPreparedStatementsUseWarning;
 
     /**
      * Force Compact Tables to be represented as CQL ones for the current client session (simulates
@@ -102,8 +114,8 @@ public class ClientState
             }
             catch (Exception e)
             {
-                JVMStabilityInspector.inspectThrowable(e);
-                logger.info("Cannot use class {} as query handler ({}), ignoring by defaulting on normal query handling", customHandlerClass, e.getMessage());
+                logger.error("Cannot use class {} as query handler", customHandlerClass, e);
+                JVMStabilityInspector.killCurrentJVM(e, true);
             }
         }
         cqlQueryHandler = handler;
@@ -278,10 +290,20 @@ public class ClientState
         // Login privilege is not inherited via granted roles, so just
         // verify that the role with the credentials that were actually
         // supplied has it
-        if (user.isAnonymous() || DatabaseDescriptor.getRoleManager().canLogin(user.getPrimaryRole()))
+        if (user.isAnonymous() || canLogin(user))
             this.user = user;
         else
             throw new AuthenticationException(String.format("%s is not permitted to log in", user.getName()));
+    }
+
+    private boolean canLogin(AuthenticatedUser user)
+    {
+        try
+        {
+            return DatabaseDescriptor.getRoleManager().canLogin(user.getPrimaryRole());
+        } catch (RequestExecutionException e) {
+            throw new AuthenticationException("Unable to perform authentication: " + e.getMessage(), e);
+        }
     }
 
     public void hasAllKeyspacesAccess(Permission perm) throws UnauthorizedException
@@ -437,5 +459,17 @@ public class ClientState
     private Set<Permission> authorize(IResource resource)
     {
         return user.getPermissions(resource);
+    }
+
+    public void warnAboutUseWithPreparedStatements(MD5Digest statementId, String preparedKeyspace)
+    {
+        if (!issuedPreparedStatementsUseWarning)
+        {
+            ClientWarn.instance.warn(String.format("`USE <keyspace>` with prepared statements is considered to be an anti-pattern due to ambiguity in non-qualified table names. " +
+                                                   "Please consider removing instances of `Session#setKeyspace(<keyspace>)`, `Session#execute(\"USE <keyspace>\")` and `cluster.newSession(<keyspace>)` from your code, and " +
+                                                   "always use fully qualified table names (e.g. <keyspace>.<table>). " +
+                                                   "Keyspace used: %s, statement keyspace: %s, statement id: %s", getRawKeyspace(), preparedKeyspace, statementId));
+            issuedPreparedStatementsUseWarning = true;
+        }
     }
 }

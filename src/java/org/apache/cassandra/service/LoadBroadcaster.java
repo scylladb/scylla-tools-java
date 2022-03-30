@@ -60,14 +60,6 @@ public class LoadBroadcaster implements IEndpointStateChangeSubscriber
             onChange(endpoint, ApplicationState.LOAD, localValue);
         }
     }
-    
-    public void beforeChange(InetAddress endpoint, EndpointState currentState, ApplicationState newStateKey, VersionedValue newValue) {}
-
-    public void onAlive(InetAddress endpoint, EndpointState state) {}
-
-    public void onDead(InetAddress endpoint, EndpointState state) {}
-
-    public void onRestart(InetAddress endpoint, EndpointState state) {}
 
     public void onRemove(InetAddress endpoint)
     {
@@ -87,6 +79,8 @@ public class LoadBroadcaster implements IEndpointStateChangeSubscriber
         {
             public void run()
             {
+                if (!Gossiper.instance.isEnabled())
+                    return;
                 if (logger.isTraceEnabled())
                     logger.trace("Disseminating load info ...");
                 Gossiper.instance.addLocalApplicationState(ApplicationState.LOAD,

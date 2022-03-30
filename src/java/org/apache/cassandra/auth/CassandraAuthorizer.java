@@ -78,26 +78,23 @@ public class CassandraAuthorizer implements IAuthorizer
     // or indirectly via roles granted to the user.
     public Set<Permission> authorize(AuthenticatedUser user, IResource resource)
     {
-        if (user.isSuper())
-            return resource.applicablePermissions();
-
-        Set<Permission> permissions = EnumSet.noneOf(Permission.class);
         try
         {
+            if (user.isSuper())
+                return resource.applicablePermissions();
+
+            Set<Permission> permissions = EnumSet.noneOf(Permission.class);
+
             for (RoleResource role: user.getRoles())
                 addPermissionsForRole(permissions, resource, role);
-        }
-        catch (RequestValidationException e)
-        {
-            throw new AssertionError(e); // not supposed to happen
-        }
-        catch (RequestExecutionException e)
-        {
-            logger.warn("CassandraAuthorizer failed to authorize {} for {}", user, resource);
-            throw new RuntimeException(e);
-        }
 
-        return permissions;
+            return permissions;
+        }
+        catch (RequestExecutionException | RequestValidationException e)
+        {
+            logger.debug("Failed to authorize {} for {}", user, resource);
+            throw new UnauthorizedException("Unable to perform authorization of permissions: " + e.getMessage(), e);
+        }
     }
 
     public void grant(AuthenticatedUser performer, Set<Permission> permissions, IResource resource, RoleResource grantee)
@@ -272,22 +269,26 @@ public class CassandraAuthorizer implements IAuthorizer
                               escape(role.getRoleName())));
     }
 
-    // 'of' can be null - in that case everyone's permissions have been requested. Otherwise only single user's.
-    // If the user requesting 'LIST PERMISSIONS' is not a superuser OR their username doesn't match 'of', we
-    // throw UnauthorizedException. So only a superuser can view everybody's permissions. Regular users are only
-    // allowed to see their own permissions.
+    // 'grantee' can be null - in that case everyone's permissions have been requested. Otherwise, only single user's.
+    // If the 'performer' requesting 'LIST PERMISSIONS' is not a superuser OR their username doesn't match 'grantee' OR
+    // they have no permission to describe all roles OR they have no permission to describe 'grantee', then we throw
+    // UnauthorizedException.
     public Set<PermissionDetails> list(AuthenticatedUser performer,
                                        Set<Permission> permissions,
                                        IResource resource,
                                        RoleResource grantee)
     throws RequestValidationException, RequestExecutionException
     {
-        if (!(performer.isSuper() || performer.isSystem()) && !performer.getRoles().contains(grantee))
+        if (!performer.isSuper()
+            && !performer.isSystem()
+            && !performer.getRoles().contains(grantee)
+            && !performer.getPermissions(RoleResource.root()).contains(Permission.DESCRIBE)
+            && (grantee == null || !performer.getPermissions(grantee).contains(Permission.DESCRIBE)))
             throw new UnauthorizedException(String.format("You are not authorized to view %s's permissions",
                                                           grantee == null ? "everyone" : grantee.getRoleName()));
 
         if (null == grantee)
-            return listPermissionsForRole(permissions, resource, grantee);
+            return listPermissionsForRole(permissions, resource, null);
 
         Set<RoleResource> roles = DatabaseDescriptor.getRoleManager().getRoles(grantee, true);
         Set<PermissionDetails> details = new HashSet<>();

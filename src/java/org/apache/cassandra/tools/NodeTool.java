@@ -23,6 +23,8 @@ import java.net.UnknownHostException;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.Map.Entry;
+import java.util.Scanner;
+import java.util.SortedMap;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Throwables;
@@ -52,10 +54,24 @@ public class NodeTool
 
     private static final String HISTORYFILE = "nodetool.history";
 
+    private final INodeProbeFactory nodeProbeFactory;
+    private final Output output;
+
     public static void main(String... args)
     {
-        List<Class<? extends Runnable>> commands = asList(
-                Help.class,
+        System.exit(new NodeTool(new NodeProbeFactory(), Output.CONSOLE).execute(args));
+    }
+
+    public NodeTool(INodeProbeFactory nodeProbeFactory, Output output)
+    {
+        this.nodeProbeFactory = nodeProbeFactory;
+        this.output = output;
+    }
+
+    public int execute(String... args)
+    {
+        List<Class<? extends NodeToolCmdRunnable>> commands = newArrayList(
+                CassHelp.class,
                 Info.class,
                 Ring.class,
                 NetStats.class,
@@ -158,26 +174,26 @@ public class NodeTool
                 CheckAndRepairCdcStreams.class
         );
 
-        Cli.CliBuilder<Runnable> builder = Cli.builder("nodetool");
+        Cli.CliBuilder<NodeToolCmdRunnable> builder = Cli.builder("nodetool");
 
         builder.withDescription("Manage your Cassandra cluster")
-                 .withDefaultCommand(Help.class)
+                 .withDefaultCommand(CassHelp.class)
                  .withCommands(commands);
 
         // bootstrap commands
         builder.withGroup("bootstrap")
                 .withDescription("Monitor/manage node's bootstrap process")
-                .withDefaultCommand(Help.class)
+                .withDefaultCommand(CassHelp.class)
                 .withCommand(BootstrapResume.class);
 
-        Cli<Runnable> parser = builder.build();
+        Cli<NodeToolCmdRunnable> parser = builder.build();
 
         int status = 0;
         try
         {
-            Runnable parse = parser.parse(args);
+            NodeToolCmdRunnable parse = parser.parse(args);
             printHistory(args);
-            parse.run();
+            parse.run(nodeProbeFactory, output);
         } catch (IllegalArgumentException |
                 IllegalStateException |
                 ParseArgumentsMissingException |
@@ -198,7 +214,7 @@ public class NodeTool
             status = 2;
         }
 
-        System.exit(status);
+        return status;
     }
 
     private static void printHistory(String... args)
@@ -221,22 +237,35 @@ public class NodeTool
         }
     }
 
-    private static void badUse(Exception e)
+    protected void badUse(Exception e)
     {
-        System.out.println("nodetool: " + e.getMessage());
-        System.out.println("See 'nodetool help' or 'nodetool help <command>'.");
+        output.out.println("nodetool: " + e.getMessage());
+        output.out.println("See 'nodetool help' or 'nodetool help <command>'.");
     }
 
-    private static void err(Throwable e)
+    protected void err(Throwable e)
     {
-        System.err.println("error: " + e.getMessage());
-        System.err.println("-- StackTrace --");
-        System.err.println(getStackTraceAsString(e));
+        output.err.println("error: " + e.getMessage());
+        output.err.println("-- StackTrace --");
+        output.err.println(getStackTraceAsString(e));
+    }
+
+    public static class CassHelp extends Help implements NodeToolCmdRunnable
+    {
+        public void run(INodeProbeFactory nodeProbeFactory, Output output)
+        {
+            run();
+        }
+    }
+
+    interface NodeToolCmdRunnable
+    {
+        void run(INodeProbeFactory nodeProbeFactory, Output output);
     }
 
     @SuppressWarnings("serial")
     public static class CommandFailedButNeedNoMoreOutput extends Error {};
-    public static abstract class NodeToolCmd implements Runnable
+    public static abstract class NodeToolCmd implements NodeToolCmdRunnable
     {
 
         @Option(type = OptionType.GLOBAL, name = {"-h", "--host"}, description = "Node hostname or ip address")
@@ -254,8 +283,18 @@ public class NodeTool
         @Option(type = OptionType.GLOBAL, name = {"-pwf", "--password-file"}, description = "Path to the JMX password file")
         private String passwordFilePath = EMPTY;
 
+        private INodeProbeFactory nodeProbeFactory;
+        protected Output output;
+
         @Override
-        public void run()
+        public void run(INodeProbeFactory nodeProbeFactory, Output output)
+        {
+            this.nodeProbeFactory = nodeProbeFactory;
+            this.output = output;
+            runInternal();
+        }
+
+        public void runInternal()
         {
             if (isNotEmpty(username)) {
                 if (isNotEmpty(passwordFilePath))
@@ -325,13 +364,14 @@ public class NodeTool
             try
             {
                 if (username.isEmpty())
-                    nodeClient = new NodeProbe(host, parseInt(port));
+                    nodeClient = nodeProbeFactory.create(host, parseInt(port));
                 else
-                    nodeClient = new NodeProbe(host, parseInt(port), username, password);
+                    nodeClient = nodeProbeFactory.create(host, parseInt(port), username, password);
+                nodeClient.setOutput(output);
             } catch (IOException | SecurityException e)
             {
                 Throwable rootCause = Throwables.getRootCause(e);
-                System.err.println(format("nodetool: Failed to connect to '%s:%s' - %s: '%s'.", host, port, rootCause.getClass().getSimpleName(), rootCause.getMessage()));
+                output.err.println(format("nodetool: Failed to connect to '%s:%s' - %s: '%s'.", host, port, rootCause.getClass().getSimpleName(), rootCause.getMessage()));
                 System.exit(1);
             }
 

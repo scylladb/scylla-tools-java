@@ -21,12 +21,9 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.util.*;
 import java.util.concurrent.*;
-import java.lang.management.ManagementFactory;
-import java.lang.management.RuntimeMXBean;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.CFMetaData;
@@ -46,6 +43,7 @@ import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.schema.SchemaKeyspace;
+import org.apache.cassandra.schema.Tables;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.WrappedRunnable;
 
@@ -54,12 +52,6 @@ public class MigrationManager
     private static final Logger logger = LoggerFactory.getLogger(MigrationManager.class);
 
     public static final MigrationManager instance = new MigrationManager();
-
-    private static final RuntimeMXBean runtimeMXBean = ManagementFactory.getRuntimeMXBean();
-
-    public static final int MIGRATION_DELAY_IN_MS = 60000;
-
-    private static final int MIGRATION_TASK_WAIT_IN_SECONDS = Integer.parseInt(System.getProperty("cassandra.migration_task_wait_in_seconds", "1"));
 
     private final List<MigrationListener> listeners = new CopyOnWriteArrayList<>();
 
@@ -75,129 +67,11 @@ public class MigrationManager
         listeners.remove(listener);
     }
 
-    public static void scheduleSchemaPull(InetAddress endpoint, EndpointState state)
-    {
-        UUID schemaVersion = state.getSchemaVersion();
-        if (!endpoint.equals(FBUtilities.getBroadcastAddress()) && schemaVersion != null)
-            maybeScheduleSchemaPull(schemaVersion, endpoint);
-    }
-
-    /**
-     * If versions differ this node sends request with local migration list to the endpoint
-     * and expecting to receive a list of migrations to apply locally.
-     */
-    private static void maybeScheduleSchemaPull(final UUID theirVersion, final InetAddress endpoint)
-    {
-        if (Schema.instance.getVersion() == null)
-        {
-            logger.debug("Not pulling schema from {}, because local schama version is not known yet",
-                         endpoint);
-            return;
-        }
-        if (Schema.instance.isSameVersion(theirVersion))
-        {
-            logger.debug("Not pulling schema from {}, because schema versions match: " +
-                         "local/real={}, local/compatible={}, remote={}",
-                         endpoint,
-                         Schema.schemaVersionToString(Schema.instance.getRealVersion()),
-                         Schema.schemaVersionToString(Schema.instance.getAltVersion()),
-                         Schema.schemaVersionToString(theirVersion));
-            return;
-        }
-        if (!shouldPullSchemaFrom(endpoint))
-        {
-            logger.debug("Not pulling schema because versions match or shouldPullSchemaFrom returned false");
-            return;
-        }
-
-        if (Schema.instance.isEmpty() || runtimeMXBean.getUptime() < MIGRATION_DELAY_IN_MS)
-        {
-            // If we think we may be bootstrapping or have recently started, submit MigrationTask immediately
-            logger.debug("Immediately submitting migration task for {}, " +
-                         "schema versions: local/real={}, local/compatible={}, remote={}",
-                         endpoint,
-                         Schema.schemaVersionToString(Schema.instance.getRealVersion()),
-                         Schema.schemaVersionToString(Schema.instance.getAltVersion()),
-                         Schema.schemaVersionToString(theirVersion));
-            submitMigrationTask(endpoint);
-        }
-        else
-        {
-            // Include a delay to make sure we have a chance to apply any changes being
-            // pushed out simultaneously. See CASSANDRA-5025
-            Runnable runnable = () ->
-            {
-                // grab the latest version of the schema since it may have changed again since the initial scheduling
-                UUID epSchemaVersion = Gossiper.instance.getSchemaVersion(endpoint);
-                if (epSchemaVersion == null)
-                {
-                    logger.debug("epState vanished for {}, not submitting migration task", endpoint);
-                    return;
-                }
-                if (Schema.instance.isSameVersion(epSchemaVersion))
-                {
-                    logger.debug("Not submitting migration task for {} because our versions match ({})", endpoint, epSchemaVersion);
-                    return;
-                }
-                logger.debug("submitting migration task for {}, schema version mismatch: local/real={}, local/compatible={}, remote={}",
-                             endpoint,
-                             Schema.schemaVersionToString(Schema.instance.getRealVersion()),
-                             Schema.schemaVersionToString(Schema.instance.getAltVersion()),
-                             Schema.schemaVersionToString(epSchemaVersion));
-                submitMigrationTask(endpoint);
-            };
-            ScheduledExecutors.nonPeriodicTasks.schedule(runnable, MIGRATION_DELAY_IN_MS, TimeUnit.MILLISECONDS);
-        }
-    }
-
-    private static Future<?> submitMigrationTask(InetAddress endpoint)
-    {
-        /*
-         * Do not de-ref the future because that causes distributed deadlock (CASSANDRA-3832) because we are
-         * running in the gossip stage.
-         */
-        return StageManager.getStage(Stage.MIGRATION).submit(new MigrationTask(endpoint));
-    }
-
-    public static boolean shouldPullSchemaFrom(InetAddress endpoint)
-    {
-        /*
-         * Don't request schema from nodes with a differnt or unknonw major version (may have incompatible schema)
-         * Don't request schema from fat clients
-         */
-        return MessagingService.instance().knowsVersion(endpoint)
-                && is30Compatible(MessagingService.instance().getRawVersion(endpoint))
-                && !Gossiper.instance.isGossipOnlyMember(endpoint);
-    }
-
     // Since 3.0.14 protocol contains only a CASSANDRA-13004 bugfix, it is safe to accept schema changes
     // from both 3.0 and 3.0.14.
     private static boolean is30Compatible(int version)
     {
         return version == MessagingService.current_version || version == MessagingService.VERSION_3014;
-    }
-
-    public static boolean isReadyForBootstrap()
-    {
-        return MigrationTask.getInflightTasks().isEmpty();
-    }
-
-    public static void waitUntilReadyForBootstrap()
-    {
-        CountDownLatch completionLatch;
-        while ((completionLatch = MigrationTask.getInflightTasks().poll()) != null)
-        {
-            try
-            {
-                if (!completionLatch.await(MIGRATION_TASK_WAIT_IN_SECONDS, TimeUnit.SECONDS))
-                    logger.error("Migration task failed to complete");
-            }
-            catch (InterruptedException e)
-            {
-                Thread.currentThread().interrupt();
-                logger.error("Migration task was interrupted");
-            }
-        }
     }
 
     public void notifyCreateKeyspace(KeyspaceMetadata ksm)
@@ -340,21 +214,6 @@ public class MigrationManager
     public static void announceNewColumnFamily(CFMetaData cfm, boolean announceLocally) throws ConfigurationException
     {
         announceNewColumnFamily(cfm, announceLocally, true);
-    }
-
-    /**
-     * Announces the table even if the definition is already know locally.
-     * This should generally be avoided but is used internally when we want to force the most up to date version of
-     * a system table schema (Note that we don't know if the schema we force _is_ the most recent version or not, we
-     * just rely on idempotency to basically ignore that announce if it's not. That's why we can't use announceUpdateColumnFamily,
-     * it would for instance delete new columns if this is not called with the most up-to-date version)
-     *
-     * Note that this is only safe for system tables where we know the cfId is fixed and will be the same whatever version
-     * of the definition is used.
-     */
-    public static void forceAnnounceNewColumnFamily(CFMetaData cfm) throws ConfigurationException
-    {
-        announceNewColumnFamily(cfm, false, false, 0);
     }
 
     private static void announceNewColumnFamily(CFMetaData cfm, boolean announceLocally, boolean throwOnDuplicate) throws ConfigurationException
@@ -572,6 +431,7 @@ public class MigrationManager
 
     private static void pushSchemaMutation(InetAddress endpoint, Collection<Mutation> schema)
     {
+        logger.debug("Pushing schema to endpoint {}", endpoint);
         MessageOut<Collection<Mutation>> msg = new MessageOut<>(MessagingService.Verb.DEFINITIONS_UPDATE,
                                                                 schema,
                                                                 MigrationsSerializer.instance);
@@ -581,13 +441,7 @@ public class MigrationManager
     // Returns a future on the local application of the schema
     private static Future<?> announce(final Collection<Mutation> schema)
     {
-        Future<?> f = StageManager.getStage(Stage.MIGRATION).submit(new WrappedRunnable()
-        {
-            protected void runMayThrow() throws ConfigurationException
-            {
-                SchemaKeyspace.mergeSchemaAndAnnounceVersion(schema);
-            }
-        });
+        Future<?> f = announceWithoutPush(schema);
 
         for (InetAddress endpoint : Gossiper.instance.getLiveMembers())
         {
@@ -599,6 +453,17 @@ public class MigrationManager
         }
 
         return f;
+    }
+
+    public static Future<?> announceWithoutPush(Collection<Mutation> schema)
+    {
+        return StageManager.getStage(Stage.MIGRATION).submit(new WrappedRunnable()
+        {
+            protected void runMayThrow() throws ConfigurationException
+            {
+                SchemaKeyspace.mergeSchemaAndAnnounceVersion(schema);
+            }
+        });
     }
 
     /**
@@ -635,18 +500,63 @@ public class MigrationManager
         Set<InetAddress> liveEndpoints = Gossiper.instance.getLiveMembers();
         liveEndpoints.remove(FBUtilities.getBroadcastAddress());
 
+        MigrationCoordinator.instance.reset();
+
         // force migration if there are nodes around
         for (InetAddress node : liveEndpoints)
         {
-            if (shouldPullSchemaFrom(node))
-            {
-                logger.debug("Requesting schema from {}", node);
-                FBUtilities.waitOnFuture(submitMigrationTask(node));
-                break;
-            }
+            EndpointState state = Gossiper.instance.getEndpointStateForEndpoint(node);
+            Future<Void> pull = MigrationCoordinator.instance.reportEndpointVersion(node, state);
+            if (pull != null)
+                FBUtilities.waitOnFuture(pull);
         }
 
         logger.info("Local schema reset is complete.");
+    }
+
+    /**
+     * We have a set of non-local, distributed system keyspaces, e.g. system_traces, system_auth, etc.
+     * (see {@link Schema#REPLICATED_SYSTEM_KEYSPACE_NAMES}), that need to be created on cluster initialisation,
+     * and later evolved on major upgrades (sometimes minor too). This method compares the current known definitions
+     * of the tables (if the keyspace exists) to the expected, most modern ones expected by the running version of C*;
+     * if any changes have been detected, a schema Mutation will be created which, when applied, should make
+     * cluster's view of that keyspace aligned with the expected modern definition.
+     *
+     * @param keyspace   the expected modern definition of the keyspace
+     * @param generation timestamp to use for the table changes in the schema mutation
+     *
+     * @return empty Optional if the current definition is up to date, or an Optional with the Mutation that would
+     *         bring the schema in line with the expected definition.
+     */
+    static Optional<Mutation> evolveSystemKeyspace(KeyspaceMetadata keyspace, long generation)
+    {
+        Mutation.SimpleBuilder builder = null;
+
+        KeyspaceMetadata definedKeyspace = Schema.instance.getKSMetaData(keyspace.name);
+        Tables definedTables = null == definedKeyspace ? Tables.none() : definedKeyspace.tables;
+
+        for (CFMetaData table : keyspace.tables)
+        {
+            if (table.equals(definedTables.getNullable(table.cfName)))
+                continue;
+
+            if (null == builder)
+            {
+                // for the keyspace definition itself (name, replication, durability) always use generation 0;
+                // this ensures that any changes made to replication by the user will never be overwritten.
+                builder = SchemaKeyspace.makeCreateKeyspaceMutation(keyspace.name, keyspace.params, 0);
+
+                // now set the timestamp to generation, so the tables have the expected timestamp
+                builder.timestamp(generation);
+            }
+
+            // for table definitions always use the provided generation; these tables, unlike their containing
+            // keyspaces, are *NOT* meant to be altered by the user; if their definitions need to change,
+            // the schema must be updated in code, and the appropriate generation must be bumped.
+            SchemaKeyspace.addTableToSchemaMutation(table, true, builder);
+        }
+
+        return builder == null ? Optional.empty() : Optional.of(builder.build());
     }
 
     public static class MigrationsSerializer implements IVersionedSerializer<Collection<Mutation>>

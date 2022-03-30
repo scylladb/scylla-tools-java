@@ -22,15 +22,11 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.Collectors;
-
-import javax.annotation.Nullable;
 
 import com.google.common.base.Function;
-import com.google.common.collect.Iterables;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,11 +56,10 @@ public class ViewBuilder extends CompactionInfo.Holder
     private final ColumnFamilyStore baseCfs;
     private final View view;
     private final UUID compactionId;
+    private final CountDownLatch completed = new CountDownLatch(1);
     private volatile Token prevToken = null;
 
     private static final Logger logger = LoggerFactory.getLogger(ViewBuilder.class);
-
-    private volatile boolean isStopped = false;
 
     public ViewBuilder(ColumnFamilyStore baseCfs, View view)
     {
@@ -106,7 +101,7 @@ public class ViewBuilder extends CompactionInfo.Holder
     {
         logger.debug("Starting view builder for {}.{}", baseCfs.metadata.ksName, view.name);
         logger.trace("Running view builder for {}.{}", baseCfs.metadata.ksName, view.name);
-        UUID localHostId = SystemKeyspace.getLocalHostId();
+        UUID localHostId = SystemKeyspace.getOrInitializeLocalHostId();
         String ksname = baseCfs.metadata.ksName, viewName = view.name;
 
         if (SystemKeyspace.isViewBuilt(ksname, viewName))
@@ -114,6 +109,8 @@ public class ViewBuilder extends CompactionInfo.Holder
             logger.debug("View already marked built for {}.{}", baseCfs.metadata.ksName, view.name);
             if (!SystemKeyspace.isViewStatusReplicated(ksname, viewName))
                 updateDistributed(ksname, viewName, localHostId);
+
+            completed.countDown();
             return;
         }
 
@@ -148,7 +145,7 @@ public class ViewBuilder extends CompactionInfo.Holder
              ReducingKeyIterator iter = new ReducingKeyIterator(sstables))
         {
             SystemDistributedKeyspace.startViewBuild(ksname, viewName, localHostId);
-            while (!isStopped && iter.hasNext())
+            while (!isStopRequested() && iter.hasNext())
             {
                 DecoratedKey key = iter.next();
                 Token token = key.getToken();
@@ -173,7 +170,7 @@ public class ViewBuilder extends CompactionInfo.Holder
                 }
             }
 
-            if (!isStopped)
+            if (!isStopRequested())
             {
                 logger.debug("Marking view({}.{}) as built covered {} keys ", ksname, viewName, keysBuilt);
                 SystemKeyspace.finishViewBuildStatus(ksname, viewName);
@@ -191,6 +188,7 @@ public class ViewBuilder extends CompactionInfo.Holder
                                                          TimeUnit.MINUTES);
             logger.warn("Materialized View failed to complete, sleeping 5 minutes before restarting", e);
         }
+        completed.countDown();
     }
 
     private void updateDistributed(String ksname, String viewName, UUID localHostId)
@@ -228,8 +226,20 @@ public class ViewBuilder extends CompactionInfo.Holder
          return new CompactionInfo(baseCfs.metadata, OperationType.VIEW_BUILD, rangesCompleted, rangesTotal, Unit.RANGES, compactionId);
     }
 
-    public void stop()
+    public boolean isGlobal()
     {
-        isStopped = true;
+        return false;
+    }
+
+    void waitForCompletion()
+    {
+        try
+        {
+            completed.await();
+        }
+        catch (InterruptedException ie)
+        {
+            throw new AssertionError(ie);
+        }
     }
 }

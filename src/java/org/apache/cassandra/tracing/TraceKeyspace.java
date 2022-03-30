@@ -38,6 +38,22 @@ public final class TraceKeyspace
     {
     }
 
+    /**
+     * Generation is used as a timestamp for automatic table creation on startup.
+     * If you make any changes to the tables below, make sure to increment the
+     * generation and document your change here.
+     *
+     * gen 1577836800000000: (3.0) maps to Jan 1 2020; an arbitrary cut-off date by which we assume no nodes older than 2.0.2
+     *                       will ever start; see the note below for why this is necessary; actual change in 3.0:
+     *                       removed default ttl, reduced bloom filter fp chance from 0.1 to 0.01.
+     * gen 1577836800000001: (pre-)adds coordinator_port column to sessions and source_port column to events in 3.0, 3.11, 4.0
+     *
+     * * Until CASSANDRA-6016 (Oct 13, 2.0.2) and in all of 1.2, we used to create system_traces keyspace and
+     *   tables in the same way that we created the purely local 'system' keyspace - using current time on node bounce
+     *   (+1). For new definitions to take, we need to bump the generation further than that.
+     */
+    public static final long GENERATION = 1577836800000001L;
+
     public static final String SESSIONS = "sessions";
     public static final String EVENTS = "events";
 
@@ -49,6 +65,7 @@ public final class TraceKeyspace
                 + "command text,"
                 + "client inet,"
                 + "coordinator inet,"
+                + "coordinator_port int,"
                 + "duration int,"
                 + "parameters map<text, text>,"
                 + "request text,"
@@ -63,6 +80,7 @@ public final class TraceKeyspace
                 + "event_id timeuuid,"
                 + "activity text,"
                 + "source inet,"
+                + "source_port int,"
                 + "source_elapsed int,"
                 + "thread text,"
                 + "PRIMARY KEY ((session_id), event_id))");

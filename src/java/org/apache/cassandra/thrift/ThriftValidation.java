@@ -266,6 +266,8 @@ public class ThriftValidation
                                                                                                             i, metadata.comparator.size() + 1, metadata.cfName));
                     }
 
+
+
                     // On top of that, if we have a collection component, the (CQL3) column must be a collection
                     if (cname.column != null && cname.collectionElement != null && !cname.column.type.isCollection())
                         throw new org.apache.cassandra.exceptions.InvalidRequestException(String.format("Invalid collection component, %s is not a collection", cname.column.name));
@@ -464,6 +466,9 @@ public class ThriftValidation
         try
         {
             LegacyLayout.LegacyCellName cn = LegacyLayout.decodeCellName(metadata, scName, column.name);
+            if (cn.column.isPrimaryKeyColumn())
+                throw new org.apache.cassandra.exceptions.InvalidRequestException(String.format("Cannot add primary key column %s to partition update", cn.column.name));
+
             cn.column.type.validateCellValue(column.value);
         }
         catch (UnknownColumnException e)

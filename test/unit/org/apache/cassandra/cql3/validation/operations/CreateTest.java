@@ -35,7 +35,7 @@ import org.apache.cassandra.db.partitions.Partition;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.io.util.DataOutputBuffer;
-import org.apache.cassandra.schema.SchemaKeyspace;
+import org.apache.cassandra.schema.SchemaKeyspaceTables;
 import org.apache.cassandra.triggers.ITrigger;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
@@ -44,8 +44,10 @@ import static junit.framework.Assert.assertEquals;
 import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertTrue;
 import static junit.framework.Assert.fail;
-import static org.apache.cassandra.cql3.Duration.*;
-import static org.junit.Assert.assertEquals;
+import static org.apache.cassandra.cql3.Duration.NANOS_PER_HOUR;
+import static org.apache.cassandra.cql3.Duration.NANOS_PER_MICRO;
+import static org.apache.cassandra.cql3.Duration.NANOS_PER_MILLI;
+import static org.apache.cassandra.cql3.Duration.NANOS_PER_MINUTE;
 
 public class CreateTest extends CQLTester
 {
@@ -669,6 +671,19 @@ public class CreateTest extends CQLTester
         assertRows(execute("SELECT * FROM %s WHERE b = ?", 4), row(2, 4));
     }
 
+    /**
+     * Test for CASSANDRA-13917
+     */
+    @Test
+    public void testCreateIndextWithCompactStaticFormat() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int PRIMARY KEY, b int, c int) WITH COMPACT STORAGE");
+        assertInvalidMessage("Undefined column name column1",
+                             "CREATE INDEX column1_index on %s (column1)");
+        assertInvalidMessage("Undefined column name value",
+                             "CREATE INDEX value_index on %s (value)");
+    }
+
     @Test
     // tests CASSANDRA-9565
     public void testDoubleWith() throws Throwable
@@ -687,7 +702,7 @@ public class CreateTest extends CQLTester
 
         assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
                                   SchemaConstants.SCHEMA_KEYSPACE_NAME,
-                                  SchemaKeyspace.TABLES),
+                                  SchemaKeyspaceTables.TABLES),
                            KEYSPACE,
                            currentTable()),
                    row(map("chunk_length_in_kb", "64", "class", "org.apache.cassandra.io.compress.LZ4Compressor")));
@@ -697,7 +712,7 @@ public class CreateTest extends CQLTester
 
         assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
                                   SchemaConstants.SCHEMA_KEYSPACE_NAME,
-                                  SchemaKeyspace.TABLES),
+                                  SchemaKeyspaceTables.TABLES),
                            KEYSPACE,
                            currentTable()),
                    row(map("chunk_length_in_kb", "32", "class", "org.apache.cassandra.io.compress.SnappyCompressor")));
@@ -707,7 +722,7 @@ public class CreateTest extends CQLTester
 
         assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
                                   SchemaConstants.SCHEMA_KEYSPACE_NAME,
-                                  SchemaKeyspace.TABLES),
+                                  SchemaKeyspaceTables.TABLES),
                            KEYSPACE,
                            currentTable()),
                    row(map("chunk_length_in_kb", "32", "class", "org.apache.cassandra.io.compress.SnappyCompressor")));
@@ -717,7 +732,7 @@ public class CreateTest extends CQLTester
 
         assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
                                   SchemaConstants.SCHEMA_KEYSPACE_NAME,
-                                  SchemaKeyspace.TABLES),
+                                  SchemaKeyspaceTables.TABLES),
                            KEYSPACE,
                            currentTable()),
                    row(map("chunk_length_in_kb", "32", "class", "org.apache.cassandra.io.compress.SnappyCompressor")));
@@ -727,7 +742,7 @@ public class CreateTest extends CQLTester
 
         assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
                                   SchemaConstants.SCHEMA_KEYSPACE_NAME,
-                                  SchemaKeyspace.TABLES),
+                                  SchemaKeyspaceTables.TABLES),
                            KEYSPACE,
                            currentTable()),
                    row(map("enabled", "false")));
@@ -737,7 +752,7 @@ public class CreateTest extends CQLTester
 
         assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
                                   SchemaConstants.SCHEMA_KEYSPACE_NAME,
-                                  SchemaKeyspace.TABLES),
+                                  SchemaKeyspaceTables.TABLES),
                            KEYSPACE,
                            currentTable()),
                    row(map("enabled", "false")));

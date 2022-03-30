@@ -27,6 +27,7 @@ import com.google.common.collect.Iterables;
 import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.SerializationHeader;
 import org.apache.cassandra.index.Index;
+import org.apache.cassandra.db.lifecycle.LifecycleNewTracker;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.SSTableMultiWriter;
 import org.apache.cassandra.io.sstable.SimpleSSTableMultiWriter;
@@ -252,20 +253,20 @@ public abstract class AbstractCompactionStrategy
     }
 
     /**
-     * Filters SSTables that are to be blacklisted from the given collection
+     * Filters SSTables that are to be excluded from the given collection
      *
-     * @param originalCandidates The collection to check for blacklisted SSTables
-     * @return list of the SSTables with blacklisted ones filtered out
+     * @param originalCandidates The collection to check for excluded SSTables
+     * @return list of the SSTables with excluded ones filtered out
      */
-    public static Iterable<SSTableReader> filterSuspectSSTables(Iterable<SSTableReader> originalCandidates)
+    public static List<SSTableReader> filterSuspectSSTables(Iterable<SSTableReader> originalCandidates)
     {
-        return Iterables.filter(originalCandidates, new Predicate<SSTableReader>()
+        List<SSTableReader> filtered = new ArrayList<>();
+        for (SSTableReader sstable : originalCandidates)
         {
-            public boolean apply(SSTableReader sstable)
-            {
-                return !sstable.isMarkedSuspect();
-            }
-        });
+            if (!sstable.isMarkedSuspect())
+                filtered.add(sstable);
+        }
+        return filtered;
     }
 
 
@@ -303,32 +304,41 @@ public abstract class AbstractCompactionStrategy
         return new ScannerList(scanners);
     }
 
-    public boolean shouldDefragment()
-    {
-        return false;
-    }
-
     public String getName()
     {
         return getClass().getSimpleName();
     }
 
+    /**
+     * Replaces sstables in the compaction strategy
+     *
+     * Note that implementations must be able to handle duplicate notifications here (that removed are already gone and
+     * added have already been added)
+     * */
     public synchronized void replaceSSTables(Collection<SSTableReader> removed, Collection<SSTableReader> added)
     {
         for (SSTableReader remove : removed)
             removeSSTable(remove);
-        for (SSTableReader add : added)
-            addSSTable(add);
+        addSSTables(added);
     }
 
+    /**
+     * Adds sstable, note that implementations must handle duplicate notifications here (added already being in the compaction strategy)
+     */
     public abstract void addSSTable(SSTableReader added);
 
+    /**
+     * Adds sstables, note that implementations must handle duplicate notifications here (added already being in the compaction strategy)
+     */
     public synchronized void addSSTables(Iterable<SSTableReader> added)
     {
         for (SSTableReader sstable : added)
             addSSTable(sstable);
     }
 
+    /**
+     * Removes sstable from the strategy, implementations must be able to handle the sstable having already been removed.
+     */
     public abstract void removeSSTable(SSTableReader sstable);
 
     public static class ScannerList implements AutoCloseable
@@ -582,9 +592,9 @@ public abstract class AbstractCompactionStrategy
                                                        MetadataCollector meta,
                                                        SerializationHeader header,
                                                        Collection<Index> indexes,
-                                                       LifecycleTransaction txn)
+                                                       LifecycleNewTracker lifecycleNewTracker)
     {
-        return SimpleSSTableMultiWriter.create(descriptor, keyCount, repairedAt, cfs.metadata, meta, header, indexes, txn);
+        return SimpleSSTableMultiWriter.create(descriptor, keyCount, repairedAt, cfs.metadata, meta, header, indexes, lifecycleNewTracker);
     }
 
     public boolean supportsEarlyOpen()

@@ -41,7 +41,7 @@ import org.apache.cassandra.utils.FBUtilities;
  * Unless you have a very good reason not to, every row implementation
  * should probably extend this class.
  */
-public abstract class AbstractRow extends AbstractCollection<ColumnData> implements Row
+public abstract class AbstractRow implements Row
 {
     public Unfiltered.Kind kind()
     {
@@ -88,15 +88,36 @@ public abstract class AbstractRow extends AbstractCollection<ColumnData> impleme
         {
             ByteBuffer value = clustering.get(i);
             if (value != null)
-                metadata.comparator.subtype(i).validate(value);
+            {
+                try
+                {
+                    metadata.comparator.subtype(i).validate(value);
+                }
+                catch (Exception e)
+                {
+                    throw new MarshalException("comparator #" + i + " '" + metadata.comparator.subtype(i) + "' in '" + metadata + "' didn't validate", e);
+                }
+            }
         }
 
         primaryKeyLivenessInfo().validate();
         if (deletion().time().localDeletionTime() < 0)
-            throw new MarshalException("A local deletion time should not be negative");
+            throw new MarshalException("A local deletion time should not be negative in '" + metadata + "'");
 
         for (ColumnData cd : this)
-            cd.validate();
+            try
+            {
+                cd.validate();
+            }
+            catch (Exception e)
+            {
+                throw new MarshalException("data for '" + cd.column.debugString() + "', " + cd + " in '" + metadata + "' didn't validate", e);
+            }
+    }
+
+    public String toString()
+    {
+        return columnData().toString();
     }
 
     public String toString(CFMetaData metadata)
@@ -179,9 +200,7 @@ public abstract class AbstractRow extends AbstractCollection<ColumnData> impleme
                                                  ut.fieldType(fId).getString(cell.value()));
                         };
                     }
-                    if (transform == null) {
-                        transform = cell -> "";
-                    }
+                    transform = transform != null ? transform : cell -> "";
                     sb.append(StreamSupport.stream(complexData.spliterator(), false)
                                            .map(transform)
                                            .collect(Collectors.joining(", ", "{", "}")));

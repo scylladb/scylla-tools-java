@@ -35,7 +35,8 @@ import io.netty.util.concurrent.EventExecutor;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.metrics.AuthMetrics;
 import org.apache.cassandra.metrics.ClientMetrics;
-import org.apache.cassandra.transport.RequestThreadPoolExecutor;
+import org.apache.cassandra.transport.ConfiguredLimit;
+import org.apache.cassandra.transport.Message;
 import org.apache.cassandra.transport.Server;
 
 /**
@@ -50,7 +51,7 @@ public class NativeTransportService
 
     private boolean initialized = false;
     private EventLoopGroup workerGroup;
-    private EventExecutor eventExecutorGroup;
+    private ConfiguredLimit protocolVersionLimit;
 
     /**
      * Creates netty thread pools and event loops.
@@ -60,9 +61,6 @@ public class NativeTransportService
     {
         if (initialized)
             return;
-
-        // prepare netty resources
-        eventExecutorGroup = new RequestThreadPoolExecutor();
 
         if (useEpoll())
         {
@@ -75,13 +73,15 @@ public class NativeTransportService
             logger.info("Netty using Java NIO event loop");
         }
 
+        protocolVersionLimit = ConfiguredLimit.newLimit();
+
         int nativePort = DatabaseDescriptor.getNativeTransportPort();
         int nativePortSSL = DatabaseDescriptor.getNativeTransportPortSSL();
         InetAddress nativeAddr = DatabaseDescriptor.getRpcAddress();
 
         org.apache.cassandra.transport.Server.Builder builder = new org.apache.cassandra.transport.Server.Builder()
-                                                                .withEventExecutor(eventExecutorGroup)
                                                                 .withEventLoopGroup(workerGroup)
+                                                                .withProtocolVersionLimit(protocolVersionLimit)
                                                                 .withHost(nativeAddr);
 
         if (!DatabaseDescriptor.getClientEncryptionOptions().enabled)
@@ -108,13 +108,7 @@ public class NativeTransportService
         }
 
         // register metrics
-        ClientMetrics.instance.addCounter("connectedNativeClients", () ->
-        {
-            int ret = 0;
-            for (Server server : servers)
-                ret += server.getConnectedClients();
-            return ret;
-        });
+        ClientMetrics.instance.init(servers);
 
         AuthMetrics.init();
 
@@ -149,8 +143,21 @@ public class NativeTransportService
         // shutdown executors used by netty for native transport server
         workerGroup.shutdownGracefully(3, 5, TimeUnit.SECONDS).awaitUninterruptibly();
 
-        // shutdownGracefully not implemented yet in RequestThreadPoolExecutor
-        eventExecutorGroup.shutdown();
+        Message.Dispatcher.shutdown();
+    }
+
+    public int getMaxProtocolVersion()
+    {
+        return protocolVersionLimit.getMaxVersion().asInt();
+    }
+
+    public void refreshMaxNegotiableProtocolVersion()
+    {
+        // lowering the max negotiable protocol version is only safe if we haven't already
+        // allowed clients to connect with a higher version. This still allows the max
+        // version to be raised, as that is safe.
+        if (initialized)
+            protocolVersionLimit.updateMaxSupportedVersion();
     }
 
     /**
@@ -176,12 +183,6 @@ public class NativeTransportService
     EventLoopGroup getWorkerGroup()
     {
         return workerGroup;
-    }
-
-    @VisibleForTesting
-    EventExecutor getEventExecutor()
-    {
-        return eventExecutorGroup;
     }
 
     @VisibleForTesting

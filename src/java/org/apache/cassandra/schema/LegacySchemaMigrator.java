@@ -656,9 +656,12 @@ public final class LegacySchemaMigrator
         }
         else
         {
-            // For dense compact tables, we get here if we don't have a compact value column, in which case we should add it
-            // (we use EmptyType to recognize that the compact value was not declared by the use (see CreateTableStatement too))
-            defs.add(ColumnDefinition.regularDef(ksName, cfName, names.defaultCompactValueName(), EmptyType.instance));
+            // For dense compact tables, we get here if we don't have a compact value column, in which case we should add it.
+            // We use EmptyType to recognize that the compact value was not declared by the user (see CreateTableStatement).
+            // If user made any writes to this column, compact value column should be initialized as bytes (see CASSANDRA-15778).
+            AbstractType<?> compactColumnType = Boolean.getBoolean("cassandra.init_dense_table_compact_value_as_bytes")
+                                                ? BytesType.instance : EmptyType.instance;
+            defs.add(ColumnDefinition.regularDef(ksName, cfName, names.defaultCompactValueName(), compactColumnType));
         }
     }
 
@@ -697,7 +700,7 @@ public final class LegacySchemaMigrator
                                  ? collections.get(nameBytes)
                                  : BytesType.instance;
 
-            cfm.getDroppedColumns().put(nameBytes, new CFMetaData.DroppedColumn(name, type, time));
+            cfm.getDroppedColumns().put(nameBytes, new CFMetaData.DroppedColumn(name, null, type, time));
         }
     }
 

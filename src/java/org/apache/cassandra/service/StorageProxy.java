@@ -18,18 +18,16 @@
 package org.apache.cassandra.service;
 
 import java.io.IOException;
-import java.lang.management.ManagementFactory;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-
-import javax.management.MBeanServer;
-import javax.management.ObjectName;
+import java.util.function.Supplier;
 
 import com.google.common.base.Predicate;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.cache.CacheLoader;
 import com.google.common.collect.*;
 import com.google.common.primitives.Ints;
@@ -108,22 +106,26 @@ public class StorageProxy implements StorageProxyMBean
 
     private static final double CONCURRENT_SUBREQUESTS_MARGIN = 0.10;
 
+    /**
+     * Introduce a maximum number of sub-ranges that the coordinator can request in parallel for range queries. Previously
+     * we would request up to the maximum number of ranges but this causes problems if the number of vnodes is large.
+     * By default we pick 10 requests per core, assuming all replicas have the same number of cores. The idea is that we
+     * don't want a burst of range requests that will back up, hurting all other queries. At the same time,
+     * we want to give range queries a chance to run if resources are available.
+     */
+    private static final int MAX_CONCURRENT_RANGE_REQUESTS = Math.max(1, Integer.getInteger("cassandra.max_concurrent_range_requests", FBUtilities.getAvailableProcessors() * 10));
+
+    private static final String DISABLE_SERIAL_READ_LINEARIZABILITY_KEY = "cassandra.unsafe.disable-serial-reads-linearizability";
+    private static final boolean disableSerialReadLinearizability =
+        Boolean.parseBoolean(System.getProperty(DISABLE_SERIAL_READ_LINEARIZABILITY_KEY, "false"));
+
     private StorageProxy()
     {
     }
 
     static
     {
-        MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
-        try
-        {
-            mbs.registerMBean(instance, new ObjectName(MBEAN_NAME));
-        }
-        catch (Exception e)
-        {
-            throw new RuntimeException(e);
-        }
-
+        MBeanWrapper.instance.registerMBean(instance, MBEAN_NAME);
         HintsService.instance.registerMBean();
         HintedHandOffManager.instance.registerMBean();
 
@@ -176,6 +178,16 @@ public class StorageProxy implements StorageProxyMBean
         {
             readMetricsMap.put(level, new ClientRequestMetrics("Read-" + level.name()));
             writeMetricsMap.put(level, new ClientRequestMetrics("Write-" + level.name()));
+        }
+
+        if (disableSerialReadLinearizability)
+        {
+            logger.warn("This node was started with -D{}. SERIAL (and LOCAL_SERIAL) reads coordinated by this node " +
+                        "will not offer linearizability (see CASSANDRA-12126 for details on what this mean) with " +
+                        "respect to other SERIAL operations. Please note that, with this flag, SERIAL reads will be " +
+                        "slower than QUORUM reads, yet offer no more guarantee. This flag should only be used in " +
+                        "the restricted case of upgrading from a pre-CASSANDRA-12126 version, and only if you " +
+                        "understand the tradeoff.", DISABLE_SERIAL_READ_LINEARIZABILITY_KEY);
         }
     }
 
@@ -231,26 +243,12 @@ public class StorageProxy implements StorageProxyMBean
     throws UnavailableException, IsBootstrappingException, RequestFailureException, RequestTimeoutException, InvalidRequestException
     {
         final long startTimeForMetrics = System.nanoTime();
-        int contentions = 0;
         try
         {
-            consistencyForPaxos.validateForCas();
-            consistencyForCommit.validateForCasCommit(keyspaceName);
-
             CFMetaData metadata = Schema.instance.getCFMetaData(keyspaceName, cfName);
 
-            long timeout = TimeUnit.MILLISECONDS.toNanos(DatabaseDescriptor.getCasContentionTimeout());
-            while (System.nanoTime() - queryStartNanoTime < timeout)
+            Supplier<Pair<PartitionUpdate, RowIterator>> updateProposer = () ->
             {
-                // for simplicity, we'll do a single liveness check at the start of each attempt
-                Pair<List<InetAddress>, Integer> p = getPaxosParticipants(metadata, key, consistencyForPaxos);
-                List<InetAddress> liveEndpoints = p.left;
-                int requiredParticipants = p.right;
-
-                final Pair<UUID, Integer> pair = beginAndRepairPaxos(queryStartNanoTime, key, metadata, liveEndpoints, requiredParticipants, consistencyForPaxos, consistencyForCommit, true, state);
-                final UUID ballot = pair.left;
-                contentions += pair.right;
-
                 // read the current values and check they validate the conditions
                 Tracing.trace("Reading existing values for CAS precondition");
                 SinglePartitionReadCommand readCommand = request.readCommand(FBUtilities.nowInSeconds());
@@ -266,11 +264,10 @@ public class StorageProxy implements StorageProxyMBean
                 {
                     Tracing.trace("CAS precondition does not match current values {}", current);
                     casWriteMetrics.conditionNotMet.inc();
-                    return current.rowIterator();
+                    return Pair.create(PartitionUpdate.emptyUpdate(metadata, key), current.rowIterator());
                 }
 
-                // finish the paxos round w/ the desired updates
-                // TODO turn null updates into delete?
+                // Create the desired updates
                 PartitionUpdate updates = request.makeUpdates(current);
 
                 // Apply triggers to cas updates. A consideration here is that
@@ -282,14 +279,136 @@ public class StorageProxy implements StorageProxyMBean
                 // InvalidRequestException) any which aren't.
                 updates = TriggerExecutor.instance.execute(updates);
 
+                return Pair.create(updates, null);
+            };
 
-                Commit proposal = Commit.newProposal(ballot, updates);
+            return doPaxos(metadata,
+                           key,
+                           consistencyForPaxos,
+                           consistencyForCommit,
+                           consistencyForCommit,
+                           state,
+                           queryStartNanoTime,
+                           casWriteMetrics,
+                           updateProposer);
+
+        }
+        catch (WriteTimeoutException | ReadTimeoutException e)
+        {
+            casWriteMetrics.timeouts.mark();
+            writeMetricsMap.get(consistencyForPaxos).timeouts.mark();
+            throw e;
+        }
+        catch (WriteFailureException | ReadFailureException e)
+        {
+            casWriteMetrics.failures.mark();
+            writeMetricsMap.get(consistencyForPaxos).failures.mark();
+            throw e;
+        }
+        catch (UnavailableException e)
+        {
+            casWriteMetrics.unavailables.mark();
+            writeMetricsMap.get(consistencyForPaxos).unavailables.mark();
+            throw e;
+        }
+        finally
+        {
+            final long latency = System.nanoTime() - startTimeForMetrics;
+            casWriteMetrics.addNano(latency);
+            writeMetricsMap.get(consistencyForPaxos).addNano(latency);
+        }
+    }
+
+    private static void recordCasContention(CASClientRequestMetrics casMetrics, int contentions)
+    {
+        if(contentions > 0)
+            casMetrics.contention.update(contentions);
+    }
+
+    /**
+     * Performs the Paxos rounds for a given proposal, retrying when preempted until the timeout.
+     *
+     * <p>The main 'configurable' of this method is the {@code createUpdateProposal} method: it is called by the method
+     * once a ballot has been successfully 'prepared' to generate the update to 'propose' (and commit if the proposal is
+     * successful). That method also generates the result that the whole method will return. Note that due to retrying,
+     * this method may be called multiple times and does not have to return the same results.
+     *
+     * @param metadata the table to update with Paxos.
+     * @param key the partition updated.
+     * @param consistencyForPaxos the serial consistency of the operation (either {@link ConsistencyLevel#SERIAL} or
+     *     {@link ConsistencyLevel#LOCAL_SERIAL}).
+     * @param consistencyForReplayCommits the consistency for the commit phase of "replayed" in-progress operations.
+     * @param consistencyForCommit the consistency for the commit phase of _this_ operation update.
+     * @param state the client state.
+     * @param queryStartNanoTime the nano time for the start of the query this is part of. This is the base time for
+     *     timeouts.
+     * @param casMetrics the metrics to update for this operation.
+     * @param createUpdateProposal method called after a successful 'prepare' phase to obtain 1) the actual update of
+     *     this operation and 2) the result that the whole method should return. This can return {@code null} in the
+     *     special where, after having "prepared" (and thus potentially replayed in-progress upgdates), we don't want
+     *     to propose anything (the whole method then return {@code null}).
+     * @return the second element of the pair returned by {@code createUpdateProposal} (for the last call of that method
+     *     if that method is called multiple times due to retries).
+     */
+    private static RowIterator doPaxos(CFMetaData metadata,
+                                       DecoratedKey key,
+                                       ConsistencyLevel consistencyForPaxos,
+                                       ConsistencyLevel consistencyForReplayCommits,
+                                       ConsistencyLevel consistencyForCommit,
+                                       ClientState state,
+                                       long queryStartNanoTime,
+                                       CASClientRequestMetrics casMetrics,
+                                       Supplier<Pair<PartitionUpdate, RowIterator>> createUpdateProposal)
+    throws UnavailableException, IsBootstrappingException, RequestFailureException, RequestTimeoutException, InvalidRequestException
+    {
+        int contentions = 0;
+        try
+        {
+            consistencyForPaxos.validateForCas();
+            consistencyForReplayCommits.validateForCasCommit(metadata.ksName);
+            consistencyForCommit.validateForCasCommit(metadata.ksName);
+
+            long timeout = TimeUnit.MILLISECONDS.toNanos(DatabaseDescriptor.getCasContentionTimeout());
+            while (System.nanoTime() - queryStartNanoTime < timeout)
+            {
+                // for simplicity, we'll do a single liveness check at the start of each attempt
+                Pair<List<InetAddress>, Integer> p = getPaxosParticipants(metadata, key, consistencyForPaxos);
+                List<InetAddress> liveEndpoints = p.left;
+                int requiredParticipants = p.right;
+
+                final Pair<UUID, Integer> pair = beginAndRepairPaxos(queryStartNanoTime,
+                                                                     key,
+                                                                     metadata,
+                                                                     liveEndpoints,
+                                                                     requiredParticipants,
+                                                                     consistencyForPaxos,
+                                                                     consistencyForReplayCommits,
+                                                                     casMetrics,
+                                                                     state);
+                final UUID ballot = pair.left;
+                contentions += pair.right;
+
+                Pair<PartitionUpdate, RowIterator> proposalPair = createUpdateProposal.get();
+                // See method javadoc: null here is code for "stop here and return null".
+                if (proposalPair == null)
+                    return null;
+
+                Commit proposal = Commit.newProposal(ballot, proposalPair.left);
                 Tracing.trace("CAS precondition is met; proposing client-requested updates for {}", ballot);
                 if (proposePaxos(proposal, liveEndpoints, requiredParticipants, true, consistencyForPaxos, queryStartNanoTime))
                 {
-                    commitPaxos(proposal, consistencyForCommit, true, queryStartNanoTime);
-                    Tracing.trace("CAS successful");
-                    return null;
+                    // We skip committing accepted updates when they are empty. This is an optimization which works
+                    // because we also skip replaying those same empty update in beginAndRepairPaxos (see the longer
+                    // comment there). As empty update are somewhat common (serial reads and non-applying CAS propose
+                    // them), this is worth bothering.
+                    if (!proposal.update.isEmpty())
+                        commitPaxos(proposal, consistencyForCommit, true, queryStartNanoTime);
+                    RowIterator result = proposalPair.right;
+                    if (result != null)
+                        Tracing.trace("CAS did not apply");
+                    else
+                        Tracing.trace("CAS applied successfully");
+                    return result;
                 }
 
                 Tracing.trace("Paxos proposal not accepted (pre-empted by a higher ballot)");
@@ -298,39 +417,13 @@ public class StorageProxy implements StorageProxyMBean
                 // continue to retry
             }
 
-            throw new WriteTimeoutException(WriteType.CAS, consistencyForPaxos, 0, consistencyForPaxos.blockFor(Keyspace.open(keyspaceName)));
-        }
-        catch (WriteTimeoutException|ReadTimeoutException e)
-        {
-            casWriteMetrics.timeouts.mark();
-            writeMetricsMap.get(consistencyForPaxos).timeouts.mark();
-            throw e;
-        }
-        catch (WriteFailureException|ReadFailureException e)
-        {
-            casWriteMetrics.failures.mark();
-            writeMetricsMap.get(consistencyForPaxos).failures.mark();
-            throw e;
-        }
-        catch(UnavailableException e)
-        {
-            casWriteMetrics.unavailables.mark();
-            writeMetricsMap.get(consistencyForPaxos).unavailables.mark();
-            throw e;
+            throw new WriteTimeoutException(WriteType.CAS, consistencyForPaxos, 0, consistencyForPaxos.blockFor(Keyspace.open(metadata.ksName)));
         }
         finally
         {
-            recordCasContention(contentions);
-            final long latency = System.nanoTime() - startTimeForMetrics;
-            casWriteMetrics.addNano(latency);
-            writeMetricsMap.get(consistencyForPaxos).addNano(latency);
+            if(contentions > 0)
+                casMetrics.contention.update(contentions);
         }
-    }
-
-    private static void recordCasContention(int contentions)
-    {
-        if(contentions > 0)
-            casWriteMetrics.contention.update(contentions);
     }
 
     private static Predicate<InetAddress> sameDCPredicateFor(final String dc)
@@ -389,7 +482,7 @@ public class StorageProxy implements StorageProxyMBean
                                                            int requiredParticipants,
                                                            ConsistencyLevel consistencyForPaxos,
                                                            ConsistencyLevel consistencyForCommit,
-                                                           final boolean isWrite,
+                                                           CASClientRequestMetrics casMetrics,
                                                            ClientState state)
     throws WriteTimeoutException, WriteFailureException
     {
@@ -422,18 +515,31 @@ public class StorageProxy implements StorageProxyMBean
                 continue;
             }
 
-            Commit inProgress = summary.mostRecentInProgressCommitWithUpdate;
+            Commit inProgress = summary.mostRecentInProgressCommit;
             Commit mostRecent = summary.mostRecentCommit;
 
             // If we have an in-progress ballot greater than the MRC we know, then it's an in-progress round that
             // needs to be completed, so do it.
+            // One special case we make is for update that are empty (which are proposed by serial reads and
+            // non-applying CAS). While we could handle those as any other updates, we can optimize this somewhat by
+            // neither committing those empty updates, nor replaying in-progress ones. The reasoning is this: as the
+            // update is empty, we have nothing to apply to storage in the commit phase, so the only reason to commit
+            // would be to update the MRC. However, if we skip replaying those empty updates, then we don't need to
+            // update the MRC for following updates to make progress (that is, if we didn't had the empty update skip
+            // below _but_ skipped updating the MRC on empty updates, then we'd be stuck always proposing that same
+            // empty update). And the reason skipping that replay is safe is that when an operation tries to propose
+            // an empty value, there can be only 2 cases:
+            //  1) the propose succeed, meaning a quorum of nodes accept it, in which case we are guaranteed no earlier
+            //     pending operation can ever be replayed (which is what we want to guarantee with the empty update).
+            //  2) the propose does not succeed. But then the operation proposing the empty update will not succeed
+            //     either (it will retry or ultimately timeout), and we're actually ok if earlier pending operation gets
+            //     replayed in that case.
+            // Tl;dr, it is safe to skip committing empty updates _as long as_ we also skip replying them below. And
+            // doing is more efficient, so we do so.
             if (!inProgress.update.isEmpty() && inProgress.isAfter(mostRecent))
             {
                 Tracing.trace("Finishing incomplete paxos round {}", inProgress);
-                if(isWrite)
-                    casWriteMetrics.unfinishedCommit.inc();
-                else
-                    casReadMetrics.unfinishedCommit.inc();
+                casMetrics.unfinishedCommit.inc();
                 Commit refreshedInProgress = Commit.newProposal(ballot, inProgress.update);
                 if (proposePaxos(refreshedInProgress, liveEndpoints, requiredParticipants, false, consistencyForPaxos, queryStartNanoTime))
                 {
@@ -443,7 +549,7 @@ public class StorageProxy implements StorageProxyMBean
                     }
                     catch (WriteTimeoutException e)
                     {
-                        recordCasContention(contentions);
+                        recordCasContention(casMetrics, contentions);
                         // We're still doing preparation for the paxos rounds, so we want to use the CAS (see CASSANDRA-8672)
                         throw new WriteTimeoutException(WriteType.CAS, e.consistency, e.received, e.blockFor);
                     }
@@ -478,7 +584,7 @@ public class StorageProxy implements StorageProxyMBean
             return Pair.create(ballot, contentions);
         }
 
-        recordCasContention(contentions);
+        recordCasContention(casMetrics, contentions);
         throw new WriteTimeoutException(WriteType.CAS, consistencyForPaxos, 0, consistencyForPaxos.blockFor(Keyspace.open(metadata.ksName)));
     }
 
@@ -805,11 +911,13 @@ public class StorageProxy implements StorageProxyMBean
                         {
                             mutation.apply(writeCommitLog);
                             nonLocalMutations.remove(mutation);
-                            cleanup.ackMutation();
+                            // won't trigger cleanup
+                            cleanup.decrement();
                         }
                         catch (Exception exc)
                         {
-                            logger.error("Error applying local view update to keyspace {}: {}", mutation.getKeyspaceName(), mutation);
+                            logger.error("Error applying local view update: Mutation (keyspace {}, tables {}, partition key {})",
+                                         mutation.getKeyspaceName(), mutation.getColumnFamilyIds(), mutation.key());
                             throw exc;
                         }
                     }
@@ -1414,7 +1522,7 @@ public class StorageProxy implements StorageProxyMBean
                 catch (Exception ex)
                 {
                     if (!(ex instanceof WriteTimeoutException))
-                        logger.error("Failed to apply mutation locally : {}", ex);
+                        logger.error("Failed to apply mutation locally : ", ex);
                     handler.onFailure(FBUtilities.getBroadcastAddress(), RequestFailureReason.UNKNOWN);
                 }
             }
@@ -1614,21 +1722,31 @@ public class StorageProxy implements StorageProxyMBean
         PartitionIterator result = null;
         try
         {
-            // make sure any in-progress paxos writes are done (i.e., committed to a majority of replicas), before performing a quorum read
-            Pair<List<InetAddress>, Integer> p = getPaxosParticipants(metadata, key, consistencyLevel);
-            List<InetAddress> liveEndpoints = p.left;
-            int requiredParticipants = p.right;
-
-            // does the work of applying in-progress writes; throws UAE or timeout if it can't
-            final ConsistencyLevel consistencyForCommitOrFetch = consistencyLevel == ConsistencyLevel.LOCAL_SERIAL
-                                                                                   ? ConsistencyLevel.LOCAL_QUORUM
-                                                                                   : ConsistencyLevel.QUORUM;
+            final ConsistencyLevel consistencyForReplayCommitsOrFetch = consistencyLevel == ConsistencyLevel.LOCAL_SERIAL
+                                                                        ? ConsistencyLevel.LOCAL_QUORUM
+                                                                        : ConsistencyLevel.QUORUM;
 
             try
             {
-                final Pair<UUID, Integer> pair = beginAndRepairPaxos(start, key, metadata, liveEndpoints, requiredParticipants, consistencyLevel, consistencyForCommitOrFetch, false, state);
-                if (pair.right > 0)
-                    casReadMetrics.contention.update(pair.right);
+                // Commit an empty update to make sure all in-progress updates that should be finished first is, _and_
+                // that no other in-progress can get resurrected.
+                Supplier<Pair<PartitionUpdate, RowIterator>> updateProposer =
+                    disableSerialReadLinearizability
+                    ? () -> null
+                    : () -> Pair.create(PartitionUpdate.emptyUpdate(metadata, key), null);
+                // When replaying, we commit at quorum/local quorum, as we want to be sure the following read (done at
+                // quorum/local_quorum) sees any replayed updates. Our own update is however empty, and those don't even
+                // get committed due to an optimiation described in doPaxos/beingRepairAndPaxos, so the commit
+                // consistency is irrelevant (we use ANY just to emphasis that we don't wait on our commit).
+                doPaxos(metadata,
+                        key,
+                        consistencyLevel,
+                        consistencyForReplayCommitsOrFetch,
+                        ConsistencyLevel.ANY,
+                        state,
+                        start,
+                        casReadMetrics,
+                        updateProposer);
             }
             catch (WriteTimeoutException e)
             {
@@ -1639,7 +1757,7 @@ public class StorageProxy implements StorageProxyMBean
                 throw new ReadFailureException(consistencyLevel, e.received, e.blockFor, false, e.failureReasonByEndpoint);
             }
 
-            result = fetchRows(group.commands, consistencyForCommitOrFetch, queryStartNanoTime);
+            result = fetchRows(group.commands, consistencyForReplayCommitsOrFetch, queryStartNanoTime);
         }
         catch (UnavailableException e)
         {
@@ -1958,21 +2076,33 @@ public class StorageProxy implements StorageProxyMBean
         return (maxExpectedResults / DatabaseDescriptor.getNumTokens()) / keyspace.getReplicationStrategy().getReplicationFactor();
     }
 
-    private static class RangeForQuery
+    @VisibleForTesting
+    public static class RangeForQuery
     {
         public final AbstractBounds<PartitionPosition> range;
         public final List<InetAddress> liveEndpoints;
         public final List<InetAddress> filteredEndpoints;
+        public final int vnodeCount;
 
-        public RangeForQuery(AbstractBounds<PartitionPosition> range, List<InetAddress> liveEndpoints, List<InetAddress> filteredEndpoints)
+        public RangeForQuery(AbstractBounds<PartitionPosition> range,
+                             List<InetAddress> liveEndpoints,
+                             List<InetAddress> filteredEndpoints,
+                             int vnodeCount)
         {
             this.range = range;
             this.liveEndpoints = liveEndpoints;
             this.filteredEndpoints = filteredEndpoints;
+            this.vnodeCount = vnodeCount;
+        }
+
+        public int vnodeCount()
+        {
+            return vnodeCount;
         }
     }
 
-    private static class RangeIterator extends AbstractIterator<RangeForQuery>
+    @VisibleForTesting
+    public static class RangeIterator extends AbstractIterator<RangeForQuery>
     {
         private final Keyspace keyspace;
         private final ConsistencyLevel consistency;
@@ -2005,17 +2135,19 @@ public class StorageProxy implements StorageProxyMBean
             List<InetAddress> liveEndpoints = getLiveSortedEndpoints(keyspace, range.right);
             return new RangeForQuery(range,
                                      liveEndpoints,
-                                     consistency.filterForQuery(keyspace, liveEndpoints));
+                                     consistency.filterForQuery(keyspace, liveEndpoints),
+                                     1);
         }
     }
 
-    private static class RangeMerger extends AbstractIterator<RangeForQuery>
+    @VisibleForTesting
+    public static class RangeMerger extends AbstractIterator<RangeForQuery>
     {
         private final Keyspace keyspace;
         private final ConsistencyLevel consistency;
         private final PeekingIterator<RangeForQuery> ranges;
 
-        private RangeMerger(Iterator<RangeForQuery> iterator, Keyspace keyspace, ConsistencyLevel consistency)
+        public RangeMerger(Iterator<RangeForQuery> iterator, Keyspace keyspace, ConsistencyLevel consistency)
         {
             this.keyspace = keyspace;
             this.consistency = consistency;
@@ -2057,7 +2189,8 @@ public class StorageProxy implements StorageProxyMBean
                     break;
 
                 // If we get there, merge this range and the next one
-                current = new RangeForQuery(current.range.withNewRight(next.range.right), merged, filteredMerged);
+                int vnodeCount = current.vnodeCount + next.vnodeCount;
+                current = new RangeForQuery(current.range.withNewRight(next.range.right), merged, filteredMerged, vnodeCount);
                 ranges.next(); // consume the range we just merged since we've only peeked so far
             }
             return current;
@@ -2102,7 +2235,7 @@ public class StorageProxy implements StorageProxyMBean
         }
     }
 
-    private static class RangeCommandIterator extends AbstractIterator<RowIterator> implements PartitionIterator
+    public static class RangeCommandIterator extends AbstractIterator<RowIterator> implements PartitionIterator
     {
         private final Iterator<RangeForQuery> ranges;
         private final int totalRangeCount;
@@ -2116,19 +2249,29 @@ public class StorageProxy implements StorageProxyMBean
         private DataLimits.Counter counter;
         private PartitionIterator sentQueryIterator;
 
+        private final int maxConcurrencyFactor;
         private int concurrencyFactor;
         // The two following "metric" are maintained to improve the concurrencyFactor
         // when it was not good enough initially.
         private int liveReturned;
         private int rangesQueried;
+        private int batchesRequested = 0;
 
-        public RangeCommandIterator(RangeIterator ranges, PartitionRangeReadCommand command, int concurrencyFactor, Keyspace keyspace, ConsistencyLevel consistency, long queryStartNanoTime)
+        public RangeCommandIterator(Iterator<RangeForQuery> ranges,
+                                    PartitionRangeReadCommand command,
+                                    int concurrencyFactor,
+                                    int maxConcurrencyFactor,
+                                    int totalRangeCount,
+                                    Keyspace keyspace,
+                                    ConsistencyLevel consistency,
+                                    long queryStartNanoTime)
         {
             this.command = command;
             this.concurrencyFactor = concurrencyFactor;
+            this.maxConcurrencyFactor = maxConcurrencyFactor;
             this.startTime = System.nanoTime();
-            this.ranges = new RangeMerger(ranges, keyspace, consistency);
-            this.totalRangeCount = ranges.rangeCount();
+            this.ranges = ranges;
+            this.totalRangeCount = totalRangeCount;
             this.consistency = consistency;
             this.keyspace = keyspace;
             this.queryStartNanoTime = queryStartNanoTime;
@@ -2148,7 +2291,6 @@ public class StorageProxy implements StorageProxyMBean
                     // else, sends the next batch of concurrent queries (after having close the previous iterator)
                     if (sentQueryIterator != null)
                     {
-                        liveReturned += counter.counted();
                         sentQueryIterator.close();
 
                         // It's not the first batch of queries and we're not done, so we we can use what has been
@@ -2179,20 +2321,30 @@ public class StorageProxy implements StorageProxyMBean
 
         private void updateConcurrencyFactor()
         {
+            liveReturned += counter.counted();
+
+            concurrencyFactor = computeConcurrencyFactor(totalRangeCount, rangesQueried, maxConcurrencyFactor, command.limits().count(), liveReturned);
+        }
+
+        @VisibleForTesting
+        public static int computeConcurrencyFactor(int totalRangeCount, int rangesQueried, int maxConcurrencyFactor, int limit, int liveReturned)
+        {
+            maxConcurrencyFactor = Math.max(1, Math.min(maxConcurrencyFactor, totalRangeCount - rangesQueried));
             if (liveReturned == 0)
             {
-                // we haven't actually gotten any results, so query all remaining ranges at once
-                concurrencyFactor = totalRangeCount - rangesQueried;
-                return;
+                // we haven't actually gotten any results, so query up to the limit if not results so far
+                Tracing.trace("Didn't get any response rows; new concurrent requests: {}", maxConcurrencyFactor);
+                return maxConcurrencyFactor;
             }
 
             // Otherwise, compute how many rows per range we got on average and pick a concurrency factor
             // that should allow us to fetch all remaining rows with the next batch of (concurrent) queries.
-            int remainingRows = command.limits().count() - liveReturned;
+            int remainingRows = limit - liveReturned;
             float rowsPerRange = (float)liveReturned / (float)rangesQueried;
-            concurrencyFactor = Math.max(1, Math.min(totalRangeCount - rangesQueried, Math.round(remainingRows / rowsPerRange)));
+            int concurrencyFactor = Math.max(1, Math.min(maxConcurrencyFactor, Math.round(remainingRows / rowsPerRange)));
             logger.trace("Didn't get enough response rows; actual rows per range: {}; remaining rows: {}, new concurrent requests: {}",
                          rowsPerRange, remainingRows, concurrencyFactor);
+            return concurrencyFactor;
         }
 
         /**
@@ -2237,11 +2389,14 @@ public class StorageProxy implements StorageProxyMBean
         private PartitionIterator sendNextRequests()
         {
             List<PartitionIterator> concurrentQueries = new ArrayList<>(concurrencyFactor);
-            for (int i = 0; i < concurrencyFactor && ranges.hasNext(); i++)
+            for (int i = 0; i < concurrencyFactor && ranges.hasNext();)
             {
-                concurrentQueries.add(query(ranges.next(), i == 0));
-                ++rangesQueried;
+                RangeForQuery range = ranges.next();
+                concurrentQueries.add(query(range, i == 0));
+                rangesQueried += range.vnodeCount();
+                i += range.vnodeCount();
             }
+            batchesRequested++;
 
             Tracing.trace("Submitted {} concurrent range requests", concurrentQueries.size());
             // We want to count the results for the sake of updating the concurrency factor (see updateConcurrencyFactor) but we don't want to
@@ -2264,6 +2419,18 @@ public class StorageProxy implements StorageProxyMBean
                 Keyspace.openAndGetStore(command.metadata()).metric.coordinatorScanLatency.update(latency, TimeUnit.NANOSECONDS);
             }
         }
+
+        @VisibleForTesting
+        public int rangesQueried()
+        {
+            return rangesQueried;
+        }
+
+        @VisibleForTesting
+        public int batchesRequested()
+        {
+            return batchesRequested;
+        }
     }
 
     @SuppressWarnings("resource")
@@ -2279,16 +2446,25 @@ public class StorageProxy implements StorageProxyMBean
         // underestimate how many rows we will get per-range in order to increase the likelihood that we'll
         // fetch enough rows in the first round
         resultsPerRange -= resultsPerRange * CONCURRENT_SUBREQUESTS_MARGIN;
+        int maxConcurrencyFactor = Math.min(ranges.rangeCount(), MAX_CONCURRENT_RANGE_REQUESTS);
         int concurrencyFactor = resultsPerRange == 0.0
                               ? 1
-                              : Math.max(1, Math.min(ranges.rangeCount(), (int) Math.ceil(command.limits().count() / resultsPerRange)));
+                              : Math.max(1, Math.min(maxConcurrencyFactor, (int) Math.ceil(command.limits().count() / resultsPerRange)));
         logger.trace("Estimated result rows per range: {}; requested rows: {}, ranges.size(): {}; concurrent range requests: {}",
                      resultsPerRange, command.limits().count(), ranges.rangeCount(), concurrencyFactor);
         Tracing.trace("Submitting range requests on {} ranges with a concurrency of {} ({} rows per range expected)", ranges.rangeCount(), concurrencyFactor, resultsPerRange);
 
         // Note that in general, a RangeCommandIterator will honor the command limit for each range, but will not enforce it globally.
-
-        return command.limits().filter(command.postReconciliationProcessing(new RangeCommandIterator(ranges, command, concurrencyFactor, keyspace, consistencyLevel, queryStartNanoTime)),
+        RangeMerger mergedRanges = new RangeMerger(ranges, keyspace, consistencyLevel);
+        RangeCommandIterator rangeCommandIterator = new RangeCommandIterator(mergedRanges,
+                                                                             command,
+                                                                             concurrencyFactor,
+                                                                             maxConcurrencyFactor,
+                                                                             ranges.rangeCount(),
+                                                                             keyspace,
+                                                                             consistencyLevel,
+                                                                             queryStartNanoTime);
+        return command.limits().filter(command.postReconciliationProcessing(rangeCommandIterator),
                                        command.nowInSec(),
                                        command.selectsFullPartition(),
                                        command.metadata().enforceStrictLiveness());
@@ -2832,5 +3008,59 @@ public class StorageProxy implements StorageProxyMBean
 
     public void setOtcBacklogExpirationInterval(int intervalInMillis) {
         DatabaseDescriptor.setOtcBacklogExpirationInterval(intervalInMillis);
+    }
+
+    @Override
+    public boolean getSnapshotOnDuplicateRowDetectionEnabled()
+    {
+        return DatabaseDescriptor.snapshotOnDuplicateRowDetection();
+    }
+
+    @Override
+    public void enableSnapshotOnDuplicateRowDetection()
+    {
+        DatabaseDescriptor.setSnapshotOnDuplicateRowDetection(true);
+    }
+
+    @Override
+    public void disableSnapshotOnDuplicateRowDetection()
+    {
+        DatabaseDescriptor.setSnapshotOnDuplicateRowDetection(false);
+    }
+
+    @Override
+    public boolean getCheckForDuplicateRowsDuringReads()
+    {
+        return DatabaseDescriptor.checkForDuplicateRowsDuringReads();
+    }
+
+    @Override
+    public void enableCheckForDuplicateRowsDuringReads()
+    {
+        DatabaseDescriptor.setCheckForDuplicateRowsDuringReads(true);
+    }
+
+    @Override
+    public void disableCheckForDuplicateRowsDuringReads()
+    {
+        DatabaseDescriptor.setCheckForDuplicateRowsDuringReads(false);
+    }
+
+    @Override
+    public boolean getCheckForDuplicateRowsDuringCompaction()
+    {
+        return DatabaseDescriptor.checkForDuplicateRowsDuringCompaction();
+    }
+
+    @Override
+    public void enableCheckForDuplicateRowsDuringCompaction()
+    {
+        DatabaseDescriptor.setCheckForDuplicateRowsDuringCompaction(true);
+    }
+
+    @Override
+    public void disableCheckForDuplicateRowsDuringCompaction()
+    {
+        DatabaseDescriptor.setCheckForDuplicateRowsDuringCompaction(false);
     }
 }

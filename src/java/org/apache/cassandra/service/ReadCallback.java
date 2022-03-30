@@ -35,6 +35,7 @@ import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.partitions.PartitionIterator;
 import org.apache.cassandra.exceptions.RequestFailureReason;
+import org.apache.cassandra.db.transform.DuplicateRowChecker;
 import org.apache.cassandra.exceptions.ReadFailureException;
 import org.apache.cassandra.exceptions.ReadTimeoutException;
 import org.apache.cassandra.exceptions.UnavailableException;
@@ -138,6 +139,7 @@ public class ReadCallback implements IAsyncCallbackWithFailure<ReadResponse>
             : new ReadTimeoutException(consistencyLevel, received, blockfor, resolver.isDataPresent());
     }
 
+
     public PartitionIterator get() throws ReadFailureException, ReadTimeoutException, DigestMismatchException
     {
         awaitResults();
@@ -145,7 +147,7 @@ public class ReadCallback implements IAsyncCallbackWithFailure<ReadResponse>
         PartitionIterator result = blockfor == 1 ? resolver.getData() : resolver.resolve();
         if (logger.isTraceEnabled())
             logger.trace("Read: {} ms.", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - queryStartNanoTime));
-        return result;
+        return DuplicateRowChecker.duringRead(result, endpoints);
     }
 
     public int blockFor()
@@ -159,7 +161,14 @@ public class ReadCallback implements IAsyncCallbackWithFailure<ReadResponse>
         int n = waitingFor(message.from)
               ? recievedUpdater.incrementAndGet(this)
               : received;
-        if (n >= blockfor && resolver.isDataPresent())
+
+        /*
+         * Ensure that data is present and the response accumulator has properly published the
+         * responses it has received. This may result in not signaling immediately when we receive
+         * the minimum number of required results, but it guarantees at least the minimum will
+         * be accessible when we do signal. (see CASSANDRA-16883)
+         */
+        if (n >= blockfor && resolver.responses.size() >= blockfor && resolver.isDataPresent())
         {
             condition.signalAll();
             // kick off a background digest comparison if this is a result that (may have) arrived after
@@ -179,9 +188,7 @@ public class ReadCallback implements IAsyncCallbackWithFailure<ReadResponse>
      */
     private boolean waitingFor(InetAddress from)
     {
-        return consistencyLevel.isDatacenterLocal()
-             ? DatabaseDescriptor.getLocalDataCenter().equals(DatabaseDescriptor.getEndpointSnitch().getDatacenter(from))
-             : true;
+        return !consistencyLevel.isDatacenterLocal() || DatabaseDescriptor.getLocalDataCenter().equals(DatabaseDescriptor.getEndpointSnitch().getDatacenter(from));
     }
 
     /**
@@ -238,8 +245,6 @@ public class ReadCallback implements IAsyncCallbackWithFailure<ReadResponse>
 
                 if (traceState != null)
                     traceState.trace("Digest mismatch: {}", e.toString());
-                if (logger.isDebugEnabled())
-                    logger.debug("Digest mismatch:", e);
 
                 ReadRepairMetrics.repairedBackground.mark();
 

@@ -221,6 +221,9 @@ public class SSTableMetadataTest
         {
             assertEquals(ByteBufferUtil.string(sstable.getSSTableMetadata().minClusteringValues.get(0)), "0col100");
             assertEquals(ByteBufferUtil.string(sstable.getSSTableMetadata().maxClusteringValues.get(0)), "7col149");
+            // make sure the clustering values are minimised
+            assertTrue(sstable.getSSTableMetadata().minClusteringValues.get(0).capacity() < 50);
+            assertTrue(sstable.getSSTableMetadata().maxClusteringValues.get(0).capacity() < 50);
         }
         String key = "row2";
 
@@ -240,55 +243,9 @@ public class SSTableMetadataTest
         {
             assertEquals(ByteBufferUtil.string(sstable.getSSTableMetadata().minClusteringValues.get(0)), "0col100");
             assertEquals(ByteBufferUtil.string(sstable.getSSTableMetadata().maxClusteringValues.get(0)), "9col298");
-        }
-    }
-
-    @Test
-    public void testMaxMinComposites() throws CharacterCodingException, ExecutionException, InterruptedException
-    {
-        /*
-        creates two sstables, columns like this:
-        ---------------------
-        k   |a0:9|a1:8|..|a9:0
-        ---------------------
-        and
-        ---------------------
-        k2  |b0:9|b1:8|..|b9:0
-        ---------------------
-        meaning max columns are b9 and 9, min is a0 and 0
-         */
-        Keyspace keyspace = Keyspace.open(KEYSPACE1);
-
-        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore("StandardComposite2");
-
-        for (int i = 0; i < 10; i++)
-        {
-            new RowUpdateBuilder(cfs.metadata, 0, "k")
-                .clustering("a" + (9 - i), getBytes(i))
-                .add("val", ByteBufferUtil.EMPTY_BYTE_BUFFER)
-                .build()
-                .applyUnsafe();
-
-        }
-        cfs.forceBlockingFlush();
-
-        for (int i = 0; i < 10; i++)
-        {
-            new RowUpdateBuilder(cfs.metadata, 0, "k2")
-            .clustering("b" + (9 - i), getBytes(i))
-            .add("val", ByteBufferUtil.EMPTY_BYTE_BUFFER)
-            .build()
-            .applyUnsafe();
-        }
-        cfs.forceBlockingFlush();
-        cfs.forceMajorCompaction();
-        assertEquals(cfs.getLiveSSTables().size(), 1);
-        for (SSTableReader sstable : cfs.getLiveSSTables())
-        {
-            assertEquals("b9", ByteBufferUtil.string(sstable.getSSTableMetadata().maxClusteringValues.get(0)));
-            assertEquals(9, ByteBufferUtil.toInt(sstable.getSSTableMetadata().maxClusteringValues.get(1)));
-            assertEquals("a0", ByteBufferUtil.string(sstable.getSSTableMetadata().minClusteringValues.get(0)));
-            assertEquals(0, ByteBufferUtil.toInt(sstable.getSSTableMetadata().minClusteringValues.get(1)));
+            // and make sure the clustering values are still minimised after compaction
+            assertTrue(sstable.getSSTableMetadata().minClusteringValues.get(0).capacity() < 50);
+            assertTrue(sstable.getSSTableMetadata().maxClusteringValues.get(0).capacity() < 50);
         }
     }
 

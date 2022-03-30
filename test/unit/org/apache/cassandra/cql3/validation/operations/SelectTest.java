@@ -1190,166 +1190,7 @@ public class SelectTest extends CQLTester
     }
 
     /**
-     * Migrated from cql_tests.py:TestCQL.select_distinct_test()
-     */
-    @Test
-    public void testSelectDistinct() throws Throwable
-    {
-        // Test a regular(CQL3) table.
-        createTable("CREATE TABLE %s (pk0 int, pk1 int, ck0 int, val int, PRIMARY KEY((pk0, pk1), ck0))");
-
-        for (int i = 0; i < 3; i++)
-        {
-            execute("INSERT INTO %s (pk0, pk1, ck0, val) VALUES (?, ?, 0, 0)", i, i);
-            execute("INSERT INTO %s (pk0, pk1, ck0, val) VALUES (?, ?, 1, 1)", i, i);
-        }
-
-        assertRows(execute("SELECT DISTINCT pk0, pk1 FROM %s LIMIT 1"),
-                   row(0, 0));
-
-        assertRows(execute("SELECT DISTINCT pk0, pk1 FROM %s LIMIT 3"),
-                   row(0, 0),
-                   row(2, 2),
-                   row(1, 1));
-
-        // Test selection validation.
-        assertInvalidMessage("queries must request all the partition key columns", "SELECT DISTINCT pk0 FROM %s");
-        assertInvalidMessage("queries must only request partition key columns", "SELECT DISTINCT pk0, pk1, ck0 FROM %s");
-
-        //Test a 'compact storage' table.
-        createTable("CREATE TABLE %s (pk0 int, pk1 int, val int, PRIMARY KEY((pk0, pk1))) WITH COMPACT STORAGE");
-
-        for (int i = 0; i < 3; i++)
-            execute("INSERT INTO %s (pk0, pk1, val) VALUES (?, ?, ?)", i, i, i);
-
-        assertRows(execute("SELECT DISTINCT pk0, pk1 FROM %s LIMIT 1"),
-                   row(0, 0));
-
-        assertRows(execute("SELECT DISTINCT pk0, pk1 FROM %s LIMIT 3"),
-                   row(0, 0),
-                   row(2, 2),
-                   row(1, 1));
-
-        // Test a 'wide row' thrift table.
-        createTable("CREATE TABLE %s (pk int, name text, val int, PRIMARY KEY(pk, name)) WITH COMPACT STORAGE");
-
-        for (int i = 0; i < 3; i++)
-        {
-            execute("INSERT INTO %s (pk, name, val) VALUES (?, 'name0', 0)", i);
-            execute("INSERT INTO %s (pk, name, val) VALUES (?, 'name1', 1)", i);
-        }
-
-        assertRows(execute("SELECT DISTINCT pk FROM %s LIMIT 1"),
-                   row(1));
-
-        assertRows(execute("SELECT DISTINCT pk FROM %s LIMIT 3"),
-                   row(1),
-                   row(0),
-                   row(2));
-    }
-
-    /**
-     * Migrated from cql_tests.py:TestCQL.select_distinct_with_deletions_test()
-     */
-    @Test
-    public void testSelectDistinctWithDeletions() throws Throwable
-    {
-        createTable("CREATE TABLE %s (k int PRIMARY KEY, c int, v int)");
-
-        for (int i = 0; i < 10; i++)
-            execute("INSERT INTO %s (k, c, v) VALUES (?, ?, ?)", i, i, i);
-
-        Object[][] rows = getRows(execute("SELECT DISTINCT k FROM %s"));
-        Assert.assertEquals(10, rows.length);
-        Object key_to_delete = rows[3][0];
-
-        execute("DELETE FROM %s WHERE k=?", key_to_delete);
-
-        rows = getRows(execute("SELECT DISTINCT k FROM %s"));
-        Assert.assertEquals(9, rows.length);
-
-        rows = getRows(execute("SELECT DISTINCT k FROM %s LIMIT 5"));
-        Assert.assertEquals(5, rows.length);
-
-        rows = getRows(execute("SELECT DISTINCT k FROM %s"));
-        Assert.assertEquals(9, rows.length);
-    }
-
-    @Test
-    public void testSelectDistinctWithWhereClause() throws Throwable {
-        createTable("CREATE TABLE %s (k int, a int, b int, PRIMARY KEY (k, a))");
-        createIndex("CREATE INDEX ON %s (b)");
-
-        for (int i = 0; i < 10; i++)
-        {
-            execute("INSERT INTO %s (k, a, b) VALUES (?, ?, ?)", i, i, i);
-            execute("INSERT INTO %s (k, a, b) VALUES (?, ?, ?)", i, i * 10, i * 10);
-        }
-
-        String distinctQueryErrorMsg = "SELECT DISTINCT with WHERE clause only supports restriction by partition key and/or static columns.";
-        assertInvalidMessage(distinctQueryErrorMsg,
-                             "SELECT DISTINCT k FROM %s WHERE a >= 80 ALLOW FILTERING");
-
-        assertInvalidMessage(distinctQueryErrorMsg,
-                             "SELECT DISTINCT k FROM %s WHERE k IN (1, 2, 3) AND a = 10");
-
-        assertInvalidMessage(distinctQueryErrorMsg,
-                             "SELECT DISTINCT k FROM %s WHERE b = 5");
-
-        assertRows(execute("SELECT DISTINCT k FROM %s WHERE k = 1"),
-                   row(1));
-        assertRows(execute("SELECT DISTINCT k FROM %s WHERE k IN (5, 6, 7)"),
-                   row(5),
-                   row(6),
-                   row(7));
-
-        // With static columns
-        createTable("CREATE TABLE %s (k int, a int, s int static, b int, PRIMARY KEY (k, a))");
-        createIndex("CREATE INDEX ON %s (b)");
-        for (int i = 0; i < 10; i++)
-        {
-            execute("INSERT INTO %s (k, a, b, s) VALUES (?, ?, ?, ?)", i, i, i, i);
-            execute("INSERT INTO %s (k, a, b, s) VALUES (?, ?, ?, ?)", i, i * 10, i * 10, i * 10);
-        }
-
-        assertRows(execute("SELECT DISTINCT s FROM %s WHERE k = 5"),
-                   row(50));
-        assertRows(execute("SELECT DISTINCT s FROM %s WHERE k IN (5, 6, 7)"),
-                   row(50),
-                   row(60),
-                   row(70));
-    }
-
-    @Test
-    public void testSelectDistinctWithWhereClauseOnStaticColumn() throws Throwable
-    {
-        createTable("CREATE TABLE %s (k int, a int, s int static, s1 int static, b int, PRIMARY KEY (k, a))");
-
-        for (int i = 0; i < 10; i++)
-        {
-            execute("INSERT INTO %s (k, a, b, s, s1) VALUES (?, ?, ?, ?, ?)", i, i, i, i, i);
-            execute("INSERT INTO %s (k, a, b, s, s1) VALUES (?, ?, ?, ?, ?)", i, i * 10, i * 10, i * 10, i * 10);
-        }
-
-        execute("INSERT INTO %s (k, a, b, s, s1) VALUES (?, ?, ?, ?, ?)", 2, 10, 10, 10, 10);
-
-        beforeAndAfterFlush(() -> {
-            assertRows(execute("SELECT DISTINCT k, s, s1 FROM %s WHERE s = 90 AND s1 = 90 ALLOW FILTERING"),
-                       row(9, 90, 90));
-
-            assertRows(execute("SELECT DISTINCT k, s, s1 FROM %s WHERE s = 90 AND s1 = 90 ALLOW FILTERING"),
-                       row(9, 90, 90));
-
-            assertRows(execute("SELECT DISTINCT k, s, s1 FROM %s WHERE s = 10 AND s1 = 10 ALLOW FILTERING"),
-                       row(1, 10, 10),
-                       row(2, 10, 10));
-
-            assertRows(execute("SELECT DISTINCT k, s, s1 FROM %s WHERE k = 1 AND s = 10 AND s1 = 10 ALLOW FILTERING"),
-                       row(1, 10, 10));
-        });
-    }
-
-    /**
+>>>>>>> cassandra-3.0
      * Migrated from cql_tests.py:TestCQL.bug_6327_test()
      */
     @Test
@@ -4794,5 +4635,85 @@ public class SelectTest extends CQLTester
 
             i++;
         }
+    }
+
+    /**
+     * Test for CASSANDRA-13917
+     */
+    @Test
+    public void testWithCompactStaticFormat() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int PRIMARY KEY, b int, c int) WITH COMPACT STORAGE");
+        execute("INSERT INTO %s (a, b, c) VALUES (1, 1, 1)");
+        execute("INSERT INTO %s (a, b, c) VALUES (2, 1, 1)");
+        assertRows(execute("SELECT a, b, c FROM %s"),
+                   row(1, 1, 1),
+                   row(2, 1, 1));
+        testWithCompactFormat();
+
+        // if column column1 is present, hidden column is called column2
+        createTable("CREATE TABLE %s (a int PRIMARY KEY, b int, c int, column1 int) WITH COMPACT STORAGE");
+        execute("INSERT INTO %s (a, b, c, column1) VALUES (1, 1, 1, 1)");
+        execute("INSERT INTO %s (a, b, c, column1) VALUES (2, 1, 1, 2)");
+        assertRows(execute("SELECT a, b, c, column1 FROM %s"),
+                   row(1, 1, 1, 1),
+                   row(2, 1, 1, 2));
+        assertInvalidMessage("Undefined column name column2",
+                             "SELECT a, column2, value FROM %s");
+
+        // if column value is present, hidden column is called value1
+        createTable("CREATE TABLE %s (a int PRIMARY KEY, b int, c int, value int) WITH COMPACT STORAGE");
+        execute("INSERT INTO %s (a, b, c, value) VALUES (1, 1, 1, 1)");
+        execute("INSERT INTO %s (a, b, c, value) VALUES (2, 1, 1, 2)");
+        assertRows(execute("SELECT a, b, c, value FROM %s"),
+                   row(1, 1, 1, 1),
+                   row(2, 1, 1, 2));
+        assertInvalidMessage("Undefined column name value1",
+                             "SELECT a, value1, value FROM %s");
+    }
+
+    /**
+     * Test for CASSANDRA-13917
+    */
+    @Test
+    public void testWithCompactNonStaticFormat() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int, b int, PRIMARY KEY (a, b)) WITH COMPACT STORAGE");
+        execute("INSERT INTO %s (a, b) VALUES (1, 1)");
+        execute("INSERT INTO %s (a, b) VALUES (2, 1)");
+        assertRows(execute("SELECT a, b FROM %s"),
+                   row(1, 1),
+                   row(2, 1));
+        testWithCompactFormat();
+
+        createTable("CREATE TABLE %s (a int, b int, v int, PRIMARY KEY (a, b)) WITH COMPACT STORAGE");
+        execute("INSERT INTO %s (a, b, v) VALUES (1, 1, 3)");
+        execute("INSERT INTO %s (a, b, v) VALUES (2, 1, 4)");
+        assertRows(execute("SELECT a, b, v FROM %s"),
+                   row(1, 1, 3),
+                   row(2, 1, 4));
+        testWithCompactFormat();
+    }
+
+    private void testWithCompactFormat() throws Throwable
+    {
+        assertInvalidMessage("Undefined column name value",
+                             "SELECT * FROM %s WHERE a IN (1,2,3) ORDER BY value ASC");
+        assertInvalidMessage("Undefined column name column1",
+                             "SELECT * FROM %s WHERE a IN (1,2,3) ORDER BY column1 ASC");
+        assertInvalidMessage("Undefined column name column1",
+                             "SELECT column1 FROM %s");
+        assertInvalidMessage("Undefined column name value",
+                             "SELECT value FROM %s");
+        assertInvalidMessage("Undefined column name value",
+                             "SELECT value, column1 FROM %s");
+        assertInvalid("Undefined column name column1",
+                      "SELECT * FROM %s WHERE column1 = null ALLOW FILTERING");
+        assertInvalid("Undefined column name value",
+                      "SELECT * FROM %s WHERE value = null ALLOW FILTERING");
+        assertInvalidMessage("Undefined column name column1",
+                             "SELECT WRITETIME(column1) FROM %s");
+        assertInvalidMessage("Undefined column name value",
+                             "SELECT WRITETIME(value) FROM %s");
     }
 }

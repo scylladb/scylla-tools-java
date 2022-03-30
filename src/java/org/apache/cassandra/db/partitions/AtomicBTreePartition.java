@@ -113,12 +113,7 @@ public final class AtomicBTreePartition extends AtomicBTreePartitionBase
         boolean monitorOwned = false;
         try
         {
-            if (usePessimisticLocking())
-            {
-                acquireLock();
-                monitorOwned = true;
-            }
-
+            monitorOwned = maybeLock(writeOp);
             indexer.start();
 
             while (true)
@@ -162,16 +157,7 @@ public final class AtomicBTreePartition extends AtomicBTreePartitionBase
                 }
                 else if (!monitorOwned)
                 {
-                    boolean shouldLock = usePessimisticLocking();
-                    if (!shouldLock)
-                    {
-                        shouldLock = updateWastedAllocationTracker(updater.heapSize);
-                    }
-                    if (shouldLock)
-                    {
-                        acquireLock();
-                        monitorOwned = true;
-                    }
+                    monitorOwned = maybeLock(updater.heapSize, writeOp);
                 }
             }
         }
@@ -243,7 +229,36 @@ public final class AtomicBTreePartition extends AtomicBTreePartitionBase
         return allocator.ensureOnHeap().applyToPartition(super.iterator());
     }
 
-    public boolean usePessimisticLocking()
+    private boolean maybeLock(OpOrder.Group writeOp)
+    {
+        if (!useLock())
+            return false;
+
+        return lockIfOldest(writeOp);
+    }
+
+    private boolean maybeLock(long addWaste, OpOrder.Group writeOp)
+    {
+        if (!updateWastedAllocationTracker(addWaste))
+            return false;
+
+        return lockIfOldest(writeOp);
+    }
+
+    private boolean lockIfOldest(OpOrder.Group writeOp)
+    {
+        if (!writeOp.isOldestLiveGroup())
+        {
+            Thread.yield();
+            if (!writeOp.isOldestLiveGroup())
+                return false;
+        }
+
+        acquireLock();
+        return true;
+    }
+
+    public boolean useLock()
     {
         return wasteTracker == TRACKER_PESSIMISTIC_LOCKING;
     }

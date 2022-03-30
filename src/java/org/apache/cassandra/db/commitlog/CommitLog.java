@@ -18,12 +18,9 @@
 package org.apache.cassandra.db.commitlog;
 
 import java.io.*;
-import java.lang.management.ManagementFactory;
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.zip.CRC32;
-import javax.management.MBeanServer;
-import javax.management.ObjectName;
 
 import com.google.common.annotations.VisibleForTesting;
 import org.apache.commons.lang3.StringUtils;
@@ -48,6 +45,7 @@ import org.apache.cassandra.security.EncryptionContext;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.JVMStabilityInspector;
+import org.apache.cassandra.utils.MBeanWrapper;
 
 import static org.apache.cassandra.db.commitlog.CommitLogSegment.Allocation;
 import static org.apache.cassandra.db.commitlog.CommitLogSegment.CommitLogSegmentFileComparator;
@@ -81,15 +79,7 @@ public class CommitLog implements CommitLogMBean
     {
         CommitLog log = new CommitLog(CommitLogArchiver.construct());
 
-        MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
-        try
-        {
-            mbs.registerMBean(log, new ObjectName("org.apache.cassandra.db:type=Commitlog"));
-        }
-        catch (Exception e)
-        {
-            throw new RuntimeException(e);
-        }
+        MBeanWrapper.instance.registerMBean(log, "org.apache.cassandra.db:type=Commitlog");
         return log.start();
     }
 
@@ -173,16 +163,21 @@ public class CommitLog implements CommitLogMBean
      */
     public int recoverFiles(File... clogs) throws IOException
     {
-        CommitLogReplayer replayer = CommitLogReplayer.construct(this);
+        CommitLogReplayer replayer = CommitLogReplayer.construct(this, getLocalHostId());
         replayer.replayFiles(clogs);
         return replayer.blockForWrites();
     }
 
     public void recoverPath(String path) throws IOException
     {
-        CommitLogReplayer replayer = CommitLogReplayer.construct(this);
+        CommitLogReplayer replayer = CommitLogReplayer.construct(this, getLocalHostId());
         replayer.replayPath(new File(path), false);
         replayer.blockForWrites();
+    }
+
+    private static UUID getLocalHostId()
+    {
+        return Optional.ofNullable(StorageService.instance.getLocalHostUUID()).orElseGet(SystemKeyspace::getLocalHostId);
     }
 
     /**
@@ -400,6 +395,7 @@ public class CommitLog implements CommitLogMBean
 
     /**
      * Shuts down the threads used by the commit log, blocking until completion.
+     * TODO this should accept a timeout, and throw TimeoutException
      */
     public void shutdownBlocking() throws InterruptedException
     {
@@ -458,6 +454,11 @@ public class CommitLog implements CommitLogMBean
         return start().recoverSegmentsOnDisk();
     }
 
+    public static long freeDiskSpace()
+    {
+        return FileUtils.getFreeSpace(new File(DatabaseDescriptor.getCommitLogLocation()));
+    }
+
     @VisibleForTesting
     public static boolean handleCommitError(String message, Throwable t)
     {
@@ -470,14 +471,34 @@ public class CommitLog implements CommitLogMBean
                 StorageService.instance.stopTransports();
                 //$FALL-THROUGH$
             case stop_commit:
-                logger.error(String.format("%s. Commit disk failure policy is %s; terminating thread", message, DatabaseDescriptor.getCommitFailurePolicy()), t);
+                String errorMsg = String.format("%s. Commit disk failure policy is %s; terminating thread.", message, DatabaseDescriptor.getCommitFailurePolicy());
+                logger.error(addAdditionalInformationIfPossible(errorMsg), t);
                 return false;
             case ignore:
-                logger.error(message, t);
+                logger.error(addAdditionalInformationIfPossible(message), t);
                 return true;
             default:
                 throw new AssertionError(DatabaseDescriptor.getCommitFailurePolicy());
         }
+    }
+
+    /**
+     * Add additional information to the error message if the commit directory does not have enough free space.
+     *
+     * @param msg the original error message
+     * @return the message with additional information if possible
+     */
+    private static String addAdditionalInformationIfPossible(String msg)
+    {
+        long unallocatedSpace = freeDiskSpace();
+        int segmentSize = DatabaseDescriptor.getCommitLogSegmentSize();
+
+        if (unallocatedSpace < segmentSize)
+        {
+            return String.format("%s. %d bytes required for next commitlog segment but only %d bytes available. Check %s to see if not enough free space is the reason for this error.",
+                                 msg, segmentSize, unallocatedSpace, DatabaseDescriptor.getCommitLogLocation());
+        }
+        return msg;
     }
 
     public static final class Configuration

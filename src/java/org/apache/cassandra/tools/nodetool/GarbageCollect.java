@@ -41,8 +41,10 @@ public class GarbageCollect extends NodeToolCmd
 
     @Option(title = "jobs",
             name = {"-j", "--jobs"},
-            description = "Number of sstables to cleanup simultanously, set to 0 to use all available compaction threads")
-    private int jobs = 2;
+            description = "Number of sstables to cleanup simultanously, set to 0 to use all available compaction " +
+                          "threads. Defaults to 1 so that collections of newer tables can see the data is deleted " +
+                          "and also remove tombstones.")
+    private int jobs = 1;
 
     @Override
     public void execute(NodeProbe probe)
@@ -54,7 +56,7 @@ public class GarbageCollect extends NodeToolCmd
         {
             try
             {
-                probe.garbageCollect(System.out, tombstoneOption, jobs, keyspace, tableNames);
+                probe.garbageCollect(probe.output().out, tombstoneOption, jobs, keyspace, tableNames);
             } catch (Exception e)
             {
                 throw new RuntimeException("Error occurred during garbage collection", e);

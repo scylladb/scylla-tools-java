@@ -19,7 +19,6 @@ package org.apache.cassandra.db.rows;
 
 import java.io.IOException;
 
-import com.google.common.collect.Collections2;
 
 import net.nicoulaj.compilecommand.annotations.Inline;
 import org.apache.cassandra.config.ColumnDefinition;
@@ -158,7 +157,7 @@ public class UnfilteredSerializer
         LivenessInfo pkLiveness = row.primaryKeyLivenessInfo();
         Row.Deletion deletion = row.deletion();
         boolean hasComplexDeletion = row.hasComplexDeletion();
-        boolean hasAllColumns = (row.size() == headerColumns.size());
+        boolean hasAllColumns = row.columnCount() == headerColumns.size();
         boolean hasExtendedFlags = hasExtendedFlags(row);
 
         if (isStatic)
@@ -229,7 +228,7 @@ public class UnfilteredSerializer
             header.writeDeletionTime(deletion.time(), out);
 
         if ((flags & HAS_ALL_COLUMNS) == 0)
-            Columns.serializer.serializeSubset(Collections2.transform(row, ColumnData::column), headerColumns, out);
+            Columns.serializer.serializeSubset(row.columns(), headerColumns, out);
 
         SearchIterator<ColumnDefinition, ColumnDefinition> si = headerColumns.iterator();
 
@@ -242,7 +241,7 @@ public class UnfilteredSerializer
                 // with. So we use the ColumnDefinition from the "header" which is "current". Also see #11810 for what
                 // happens if we don't do that.
                 ColumnDefinition column = si.next(cd.column());
-                assert column != null : cd.column.toString();
+                assert column != null;
 
                 try
                 {
@@ -339,7 +338,7 @@ public class UnfilteredSerializer
         LivenessInfo pkLiveness = row.primaryKeyLivenessInfo();
         Row.Deletion deletion = row.deletion();
         boolean hasComplexDeletion = row.hasComplexDeletion();
-        boolean hasAllColumns = (row.size() == headerColumns.size());
+        boolean hasAllColumns = row.columnCount() == headerColumns.size();
 
         if (!pkLiveness.isEmpty())
             size += header.timestampSerializedSize(pkLiveness.timestamp());
@@ -352,13 +351,14 @@ public class UnfilteredSerializer
             size += header.deletionTimeSerializedSize(deletion.time());
 
         if (!hasAllColumns)
-            size += Columns.serializer.serializedSubsetSize(Collections2.transform(row, ColumnData::column), header.columns(isStatic));
+            size += Columns.serializer.serializedSubsetSize(row.columns(), header.columns(isStatic));
 
         SearchIterator<ColumnDefinition, ColumnDefinition> si = headerColumns.iterator();
         for (ColumnData data : row)
         {
             ColumnDefinition column = si.next(data.column());
-            assert column != null;
+            if (column == null)
+                continue;
 
             if (data.column.isSimple())
                 size += Cell.serializer.serializedSize((Cell) data, column, pkLiveness, header);

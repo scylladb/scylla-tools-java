@@ -39,7 +39,8 @@ import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.service.ClientState;
-import org.apache.cassandra.transport.*;
+import org.apache.cassandra.transport.Event.SchemaChange.Change;
+import org.apache.cassandra.transport.Event.SchemaChange.Target;
 import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.transport.messages.ResultMessage;
 
@@ -71,45 +72,59 @@ public class UFTest extends CQLTester
     @Test
     public void testSchemaChange() throws Throwable
     {
-        String f = createFunction(KEYSPACE,
-                                  "double, double",
-                                  "CREATE OR REPLACE FUNCTION %s(state double, val double) " +
-                                  "RETURNS NULL ON NULL INPUT " +
-                                  "RETURNS double " +
-                                  "LANGUAGE javascript " +
-                                  "AS '\"string\";';");
+        String f = createFunctionName(KEYSPACE);
+        String functionName = shortFunctionName(f);
+        registerFunction(f, "double, double");
 
-        assertLastSchemaChange(Event.SchemaChange.Change.CREATED, Event.SchemaChange.Target.FUNCTION,
-                               KEYSPACE, parseFunctionName(f).name,
-                               "double", "double");
+        assertSchemaChange("CREATE OR REPLACE FUNCTION " + f + "(state double, val double) " +
+                           "RETURNS NULL ON NULL INPUT " +
+                           "RETURNS double " +
+                           "LANGUAGE javascript " +
+                           "AS '\"string\";';",
+                           Change.CREATED,
+                           Target.FUNCTION,
+                           KEYSPACE, functionName,
+                           "double", "double");
 
-        createFunctionOverload(f,
-                               "double, double",
-                               "CREATE OR REPLACE FUNCTION %s(state int, val int) " +
-                               "RETURNS NULL ON NULL INPUT " +
-                               "RETURNS int " +
-                               "LANGUAGE javascript " +
-                               "AS '\"string\";';");
+        registerFunction(f, "int, int");
 
-        assertLastSchemaChange(Event.SchemaChange.Change.CREATED, Event.SchemaChange.Target.FUNCTION,
-                               KEYSPACE, parseFunctionName(f).name,
-                               "int", "int");
+        assertSchemaChange("CREATE OR REPLACE FUNCTION " + f + "(state int, val int) " +
+                           "RETURNS NULL ON NULL INPUT " +
+                           "RETURNS int " +
+                           "LANGUAGE javascript " +
+                           "AS '\"string\";';",
+                           Change.CREATED,
+                           Target.FUNCTION,
+                           KEYSPACE, functionName,
+                           "int", "int");
 
-        schemaChange("CREATE OR REPLACE FUNCTION " + f + "(state int, val int) " +
-                     "RETURNS NULL ON NULL INPUT " +
-                     "RETURNS int " +
-                     "LANGUAGE javascript " +
-                     "AS '\"string\";';");
+        assertSchemaChange("CREATE OR REPLACE FUNCTION " + f + "(state int, val int) " +
+                           "RETURNS NULL ON NULL INPUT " +
+                           "RETURNS int " +
+                           "LANGUAGE javascript " +
+                           "AS '\"string1\";';",
+                           Change.UPDATED,
+                           Target.FUNCTION,
+                           KEYSPACE, functionName,
+                           "int", "int");
 
-        assertLastSchemaChange(Event.SchemaChange.Change.UPDATED, Event.SchemaChange.Target.FUNCTION,
-                               KEYSPACE, parseFunctionName(f).name,
-                               "int", "int");
+        assertSchemaChange("DROP FUNCTION " + f + "(double, double)",
+                           Change.DROPPED, Target.FUNCTION,
+                           KEYSPACE, functionName,
+                           "double", "double");
 
-        schemaChange("DROP FUNCTION " + f + "(double, double)");
+        // The function with nested tuple should be created without throwing InvalidRequestException. See CASSANDRA-15857
+        String fl = createFunctionName(KEYSPACE);
+        registerFunction(fl, "list<tuple<int, int>>, double");
 
-        assertLastSchemaChange(Event.SchemaChange.Change.DROPPED, Event.SchemaChange.Target.FUNCTION,
-                               KEYSPACE, parseFunctionName(f).name,
-                               "double", "double");
+        assertSchemaChange("CREATE OR REPLACE FUNCTION " + fl + "(state list<tuple<int, int>>, val double) " +
+                           "RETURNS NULL ON NULL INPUT " +
+                           "RETURNS double " +
+                           "LANGUAGE javascript " +
+                           "AS '\"string\";';",
+                           Change.CREATED, Target.FUNCTION,
+                           KEYSPACE, shortFunctionName(fl),
+                           "list<frozen<tuple<int, int>>>", "double");
     }
 
     @Test
@@ -156,16 +171,16 @@ public class UFTest extends CQLTester
         // drop it those statements should be removed from the cache in QueryProcessor. The other statements
         // should be unaffected.
 
-        ResultMessage.Prepared preparedSelect1 = QueryProcessor.prepare(
+        ResultMessage.Prepared preparedSelect1 = QueryProcessor.instance.prepare(
                                                                        String.format("SELECT key, %s(d) FROM %s.%s", fSin, KEYSPACE, currentTable()),
                                                                        ClientState.forInternalCalls(), false);
-        ResultMessage.Prepared preparedSelect2 = QueryProcessor.prepare(
+        ResultMessage.Prepared preparedSelect2 = QueryProcessor.instance.prepare(
                                                     String.format("SELECT key FROM %s.%s", KEYSPACE, currentTable()),
                                                     ClientState.forInternalCalls(), false);
-        ResultMessage.Prepared preparedInsert1 = QueryProcessor.prepare(
+        ResultMessage.Prepared preparedInsert1 = QueryProcessor.instance.prepare(
                                                       String.format("INSERT INTO %s.%s (key, d) VALUES (?, %s(?))", KEYSPACE, currentTable(), fSin),
                                                       ClientState.forInternalCalls(), false);
-        ResultMessage.Prepared preparedInsert2 = QueryProcessor.prepare(
+        ResultMessage.Prepared preparedInsert2 = QueryProcessor.instance.prepare(
                                                       String.format("INSERT INTO %s.%s (key, d) VALUES (?, ?)", KEYSPACE, currentTable()),
                                                       ClientState.forInternalCalls(), false);
 
@@ -190,10 +205,10 @@ public class UFTest extends CQLTester
 
         Assert.assertEquals(1, Schema.instance.getFunctions(fSinName).size());
 
-        preparedSelect1= QueryProcessor.prepare(
+        preparedSelect1= QueryProcessor.instance.prepare(
                                          String.format("SELECT key, %s(d) FROM %s.%s", fSin, KEYSPACE, currentTable()),
                                          ClientState.forInternalCalls(), false);
-        preparedInsert1 = QueryProcessor.prepare(
+        preparedInsert1 = QueryProcessor.instance.prepare(
                                          String.format("INSERT INTO %s.%s (key, d) VALUES (?, %s(?))", KEYSPACE, currentTable(), fSin),
                                          ClientState.forInternalCalls(), false);
         Assert.assertNotNull(QueryProcessor.instance.getPrepared(preparedSelect1.statementId));
@@ -256,7 +271,7 @@ public class UFTest extends CQLTester
                     " key int PRIMARY KEY," +
                     " val " + collectionType + ')');
 
-        ResultMessage.Prepared prepared = QueryProcessor.prepare(
+        ResultMessage.Prepared prepared = QueryProcessor.instance.prepare(
                                                                 String.format("INSERT INTO %s.%s (key, val) VALUES (?, %s)",
                                                                              KEYSPACE,
                                                                              currentTable(),
@@ -272,7 +287,7 @@ public class UFTest extends CQLTester
                     " key int PRIMARY KEY," +
                     " val tuple<double> )");
 
-        ResultMessage.Prepared prepared = QueryProcessor.prepare(
+        ResultMessage.Prepared prepared = QueryProcessor.instance.prepare(
                                                                 String.format("INSERT INTO %s.%s (key, val) VALUES (?, (%s(0.0)))",
                                                                              KEYSPACE,
                                                                              currentTable(),
@@ -288,7 +303,7 @@ public class UFTest extends CQLTester
         createTable("CREATE TABLE %s (" +
                     " key int PRIMARY KEY," +
                     " val double)");
-        ResultMessage.Prepared control = QueryProcessor.prepare(
+        ResultMessage.Prepared control = QueryProcessor.instance.prepare(
                                                                String.format("INSERT INTO %s.%s (key, val) VALUES (?, ?)",
                                                                             KEYSPACE,
                                                                             currentTable()),
@@ -739,8 +754,8 @@ public class UFTest extends CQLTester
 
         Assert.assertEquals(1, Schema.instance.getFunctions(fNameName).size());
 
-        ResultMessage.Prepared prepared = QueryProcessor.prepare(String.format("SELECT key, %s(udt) FROM %s.%s", fName, KEYSPACE, currentTable()),
-                                                                 ClientState.forInternalCalls(), false);
+        ResultMessage.Prepared prepared = QueryProcessor.instance.prepare(String.format("SELECT key, %s(udt) FROM %s.%s", fName, KEYSPACE, currentTable()),
+                                                                          ClientState.forInternalCalls(), false);
         Assert.assertNotNull(QueryProcessor.instance.getPrepared(prepared.statementId));
 
         // UT still referenced by table

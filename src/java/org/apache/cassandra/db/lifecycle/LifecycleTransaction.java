@@ -36,6 +36,7 @@ import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.sstable.format.SSTableReader.UniqueIdentifier;
+import org.apache.cassandra.utils.Throwables;
 import org.apache.cassandra.utils.concurrent.Transactional;
 
 import static com.google.common.base.Functions.compose;
@@ -56,7 +57,7 @@ import static org.apache.cassandra.utils.concurrent.Refs.selfRefs;
  * action to occur at the beginning of the commit phase, but also *requires* that the prepareToCommit() phase only take
  * actions that can be rolled back.
  */
-public class LifecycleTransaction extends Transactional.AbstractTransactional
+public class LifecycleTransaction extends Transactional.AbstractTransactional implements ILifecycleTransaction
 {
     private static final Logger logger = LoggerFactory.getLogger(LifecycleTransaction.class);
 
@@ -124,6 +125,10 @@ public class LifecycleTransaction extends Transactional.AbstractTransactional
     // the tidier and their readers, to be used for marking readers obsoleted during a commit
     private List<LogTransaction.Obsoletion> obsoletions;
 
+    // commit/rollback hooks
+    private List<Runnable> commitHooks = new ArrayList<>();
+    private List<Runnable> abortHooks = new ArrayList<>();
+
     /**
      * construct a Transaction for use in an offline operation
      */
@@ -177,6 +182,7 @@ public class LifecycleTransaction extends Transactional.AbstractTransactional
         return log;
     }
 
+    @Override //LifecycleNewTracker
     public OperationType opType()
     {
         return log.type();
@@ -223,11 +229,13 @@ public class LifecycleTransaction extends Transactional.AbstractTransactional
 
         accumulate = markObsolete(obsoletions, accumulate);
         accumulate = tracker.updateSizeTracking(logged.obsolete, logged.update, accumulate);
+        accumulate = runOnCommitHooks(accumulate);
         accumulate = release(selfRefs(logged.obsolete), accumulate);
         accumulate = tracker.notifySSTablesChanged(originals, logged.update, log.type(), accumulate);
 
         return accumulate;
     }
+
 
     /**
      * undo all of the changes made by this transaction, resetting the state to its original form
@@ -259,6 +267,7 @@ public class LifecycleTransaction extends Transactional.AbstractTransactional
         accumulate = tracker.notifySSTablesChanged(invalid, restored, OperationType.COMPACTION, accumulate);
         // setReplaced immediately preceding versions that have not been obsoleted
         accumulate = setReplaced(logged.update, accumulate);
+        accumulate = runOnAbortooks(accumulate);
         // we have replaced all of logged.update and never made visible staged.update,
         // and the files we have logged as obsolete we clone fresh versions of, so they are no longer needed either
         // any _staged_ obsoletes should either be in staged.update already, and dealt with there,
@@ -267,6 +276,32 @@ public class LifecycleTransaction extends Transactional.AbstractTransactional
 
         logged.clear();
         staged.clear();
+        return accumulate;
+    }
+
+    private Throwable runOnCommitHooks(Throwable accumulate)
+    {
+        return runHooks(commitHooks, accumulate);
+    }
+
+    private Throwable runOnAbortooks(Throwable accumulate)
+    {
+        return runHooks(abortHooks, accumulate);
+    }
+
+    private static Throwable runHooks(Iterable<Runnable> hooks, Throwable accumulate)
+    {
+        for (Runnable hook : hooks)
+        {
+            try
+            {
+                hook.run();
+            }
+            catch (Exception e)
+            {
+                accumulate = Throwables.merge(accumulate, e);
+            }
+        }
         return accumulate;
     }
 
@@ -280,11 +315,6 @@ public class LifecycleTransaction extends Transactional.AbstractTransactional
     public boolean isOffline()
     {
         return tracker.isDummy();
-    }
-
-    public void permitRedundantTransitions()
-    {
-        super.permitRedundantTransitions();
     }
 
     /**
@@ -369,6 +399,16 @@ public class LifecycleTransaction extends Transactional.AbstractTransactional
         assert !staged.update.contains(reader) : "may not obsolete a reader that has a staged update (must checkpoint first): " + reader;
         assert current(reader) == reader : "may only obsolete the latest version of the reader: " + reader;
         staged.obsolete.add(reader);
+    }
+
+    public void runOnCommit(Runnable fn)
+    {
+        commitHooks.add(fn);
+    }
+
+    public void runOnAbort(Runnable fn)
+    {
+        abortHooks.add(fn);
     }
 
     /**
@@ -524,11 +564,15 @@ public class LifecycleTransaction extends Transactional.AbstractTransactional
         return getFirst(originals, null);
     }
 
+    // LifecycleNewTracker
+
+    @Override
     public void trackNew(SSTable table)
     {
         log.trackNew(table);
     }
 
+    @Override
     public void untrackNew(SSTable table)
     {
         log.untrackNew(table);

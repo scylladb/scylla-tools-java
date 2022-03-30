@@ -34,9 +34,13 @@ import junit.framework.Assert;
 import org.apache.cassandra.concurrent.SEPExecutor;
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
+import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.ColumnFamilyStoreCQLHelper;
+import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.serializers.SimpleDateSerializer;
 import org.apache.cassandra.serializers.TimeSerializer;
@@ -48,6 +52,8 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 
 import com.datastax.driver.core.exceptions.InvalidQueryException;
+
+import static org.junit.Assert.assertTrue;
 
 
 public class ViewSchemaTest extends CQLTester
@@ -698,5 +704,93 @@ public class ViewSchemaTest extends CQLTester
                              "CREATE MATERIALIZED VIEW " + keyspace() + ".mv AS SELECT * FROM %s "
                                      + "WHERE b IS NOT NULL AND c IS NOT NULL AND a IS NOT NULL "
                                      + "AND d = 1 PRIMARY KEY (c, b, a)");
+    }
+
+    @Test
+    public void testViewTokenRestrictions() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int, b int, c int, d int, PRIMARY KEY(a))");
+
+        execute("USE " + keyspace());
+        executeNet(protocolVersion, "USE " + keyspace());
+
+        execute("INSERT into %s (a,b,c,d) VALUES (?,?,?,?)", 1, 2, 3, 4);
+
+        assertInvalidThrowMessage("Cannot use token relation when defining a materialized view", InvalidRequestException.class,
+                                  "CREATE MATERIALIZED VIEW mv_test AS SELECT a,b,c FROM %s WHERE a IS NOT NULL and b IS NOT NULL and token(a) = token(1) PRIMARY KEY(b,a)");
+    }
+
+    @Test
+    public void testViewMetadataCQLNotIncludeAllColumn() throws Throwable
+    {
+        String createBase = "CREATE TABLE IF NOT EXISTS %s (" +
+                            "pk1 int," +
+                            "pk2 int," +
+                            "ck1 int," +
+                            "ck2 int," +
+                            "reg1 int," +
+                            "reg2 list<int>," +
+                            "reg3 int," +
+                            "PRIMARY KEY ((pk1, pk2), ck1, ck2)) WITH " +
+                            "CLUSTERING ORDER BY (ck1 ASC, ck2 DESC);";
+
+        String createView = "CREATE MATERIALIZED VIEW IF NOT EXISTS %s AS SELECT pk1,pk2,ck1,ck2,reg1,reg2 FROM %%s "
+                            + "WHERE pk2 IS NOT NULL AND pk1 IS NOT NULL AND ck2 IS NOT NULL AND ck1 IS NOT NULL PRIMARY KEY((pk2, pk1), ck2, ck1)";
+
+        String expectedViewSnapshot = "CREATE MATERIALIZED VIEW IF NOT EXISTS %s.%s AS SELECT ck1, ck2, pk1, pk2, reg1, reg2 FROM %s.%s\n" +
+                                      "\tWHERE pk2 IS NOT NULL AND pk1 IS NOT NULL AND ck2 IS NOT NULL AND ck1 IS NOT NULL\n" +
+                                      "\tPRIMARY KEY ((pk2, pk1), ck2, ck1)\n" +
+                                      "\tWITH ID = %s\n" +
+                                      "\tAND CLUSTERING ORDER BY (ck2 DESC, ck1 ASC)";
+
+        testViewMetadataCQL(createBase,
+                            createView,
+                            expectedViewSnapshot);
+    }
+
+    @Test
+    public void testViewMetadataCQLIncludeAllColumn() throws Throwable
+    {
+        String createBase = "CREATE TABLE IF NOT EXISTS %s (" +
+                            "pk1 int," +
+                            "pk2 int," +
+                            "ck1 int," +
+                            "ck2 int," +
+                            "reg1 int," +
+                            "reg2 list<int>," +
+                            "reg3 int," +
+                            "PRIMARY KEY ((pk1, pk2), ck1, ck2)) WITH " +
+                            "CLUSTERING ORDER BY (ck1 ASC, ck2 DESC);";
+
+        String createView = "CREATE MATERIALIZED VIEW IF NOT EXISTS %s AS SELECT * FROM %%s "
+                            + "WHERE pk2 IS NOT NULL AND pk1 IS NOT NULL AND ck2 IS NOT NULL AND ck1 IS NOT NULL PRIMARY KEY((pk2, pk1), ck2, ck1)";
+
+        String expectedViewSnapshot = "CREATE MATERIALIZED VIEW IF NOT EXISTS %s.%s AS SELECT * FROM %s.%s\n" +
+                                      "\tWHERE pk2 IS NOT NULL AND pk1 IS NOT NULL AND ck2 IS NOT NULL AND ck1 IS NOT NULL\n" +
+                                      "\tPRIMARY KEY ((pk2, pk1), ck2, ck1)\n" +
+                                      "\tWITH ID = %s\n" +
+                                      "\tAND CLUSTERING ORDER BY (ck2 DESC, ck1 ASC)";
+
+        testViewMetadataCQL(createBase,
+                            createView,
+                            expectedViewSnapshot);
+    }
+
+    private void testViewMetadataCQL(String createBase, String createView, String viewSnapshotSchema) throws Throwable
+    {
+        String base = createTable(createBase);
+
+        String view = "mv";
+        createView(view, createView);
+
+        ColumnFamilyStore mv = Keyspace.open(keyspace()).getColumnFamilyStore(view);
+
+        assertTrue(ColumnFamilyStoreCQLHelper.getCFMetadataAsCQL(mv.metadata, true)
+                                             .startsWith(String.format(viewSnapshotSchema,
+                                                                       keyspace(),
+                                                                       view,
+                                                                       keyspace(),
+                                                                       base,
+                                                                       mv.metadata.cfId)));
     }
 }

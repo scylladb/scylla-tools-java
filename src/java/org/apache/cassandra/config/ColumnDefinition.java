@@ -141,6 +141,11 @@ public class ColumnDefinition extends ColumnSpecification implements Selectable,
         return new ColumnDefinition(cfm, name, type, NO_POSITION, Kind.STATIC);
     }
 
+    public static ColumnDefinition staticDef(String ksName, String cfName, String name, AbstractType<?> type)
+    {
+        return new ColumnDefinition(ksName, cfName, ColumnIdentifier.getInterned(name, true), type, NO_POSITION, Kind.STATIC);
+    }
+
     public ColumnDefinition(CFMetaData cfm, ByteBuffer name, AbstractType<?> type, int position, Kind kind)
     {
         this(cfm.ksName,
@@ -161,7 +166,6 @@ public class ColumnDefinition extends ColumnSpecification implements Selectable,
     {
         super(ksName, cfName, name, type);
         assert name != null && type != null && kind != null;
-        assert name.isInterned();
         assert (position == NO_POSITION) == !kind.isPrimaryKeyKind(); // The position really only make sense for partition and clustering columns (and those must have one),
                                                                       // so make sure we don't sneak it for something else since it'd breaks equals()
         this.kind = kind;
@@ -595,7 +599,7 @@ public class ColumnDefinition extends ColumnSpecification implements Selectable,
 
             private ColumnDefinition find(ByteBuffer id, CFMetaData cfm)
             {
-                ColumnDefinition def = cfm.getColumnDefinition(id);
+                ColumnDefinition def = cfm.getColumnDefinitionForCQL(id);
                 if (def == null)
                     throw new InvalidRequestException(String.format("Undefined column name %s", toString()));
                 return def;

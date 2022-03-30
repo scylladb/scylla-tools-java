@@ -27,6 +27,8 @@ import org.junit.Test;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.io.FSReadError;
+import org.apache.cassandra.io.FSWriteError;
+import org.apache.cassandra.io.sstable.CorruptSSTableException;
 
 import static java.util.Arrays.asList;
 import static org.junit.Assert.assertFalse;
@@ -58,6 +60,18 @@ public class JVMStabilityInspectorTest
             DatabaseDescriptor.setDiskFailurePolicy(Config.DiskFailurePolicy.die);
             killerForTests.reset();
             JVMStabilityInspector.inspectThrowable(new FSReadError(new IOException(), "blah"));
+            assertTrue(killerForTests.wasKilled());
+
+            killerForTests.reset();
+            JVMStabilityInspector.inspectThrowable(new FSWriteError(new IOException(), "blah"));
+            assertTrue(killerForTests.wasKilled());
+
+            killerForTests.reset();
+            JVMStabilityInspector.inspectThrowable(new CorruptSSTableException(new IOException(), "blah"));
+            assertTrue(killerForTests.wasKilled());
+
+            killerForTests.reset();
+            JVMStabilityInspector.inspectThrowable(new RuntimeException(new CorruptSSTableException(new IOException(), "blah")));
             assertTrue(killerForTests.wasKilled());
 
             DatabaseDescriptor.setCommitFailurePolicy(Config.CommitFailurePolicy.die);
@@ -111,12 +125,21 @@ public class JVMStabilityInspectorTest
             assertFalse(killerForTests.wasKilled());
 
             killerForTests.reset();
+            JVMStabilityInspector.inspectThrowable(new SocketException());
+            assertFalse(killerForTests.wasKilled());
+
+            killerForTests.reset();
+            JVMStabilityInspector.inspectThrowable(new FileNotFoundException());
+            assertFalse(killerForTests.wasKilled());
+
+            killerForTests.reset();
             JVMStabilityInspector.inspectThrowable(new SocketException("Too many open files"));
             assertTrue(killerForTests.wasKilled());
 
             killerForTests.reset();
             JVMStabilityInspector.inspectCommitLogThrowable(new FileNotFoundException("Too many open files"));
             assertTrue(killerForTests.wasKilled());
+
         }
         finally
         {

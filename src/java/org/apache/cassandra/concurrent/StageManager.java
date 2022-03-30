@@ -20,10 +20,12 @@ package org.apache.cassandra.concurrent;
 import java.util.EnumMap;
 import java.util.concurrent.*;
 
+import com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.utils.ExecutorUtils;
 import org.apache.cassandra.utils.FBUtilities;
 
 import static org.apache.cassandra.config.DatabaseDescriptor.*;
@@ -89,7 +91,7 @@ public class StageManager
 
     private static LocalAwareExecutorService multiThreadedLowSignalStage(Stage stage, int numThreads)
     {
-        return SharedExecutorPool.SHARED.newExecutor(numThreads, Integer.MAX_VALUE, stage.getJmxType(), stage.getJmxName());
+        return SharedExecutorPool.SHARED.newExecutor(numThreads, stage.getJmxType(), stage.getJmxName());
     }
 
     /**
@@ -110,6 +112,12 @@ public class StageManager
         {
             StageManager.stages.get(stage).shutdownNow();
         }
+    }
+
+    @VisibleForTesting
+    public static void shutdownAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
+    {
+        ExecutorUtils.shutdownNowAndWait(timeout, unit, StageManager.stages.values());
     }
 
     /**

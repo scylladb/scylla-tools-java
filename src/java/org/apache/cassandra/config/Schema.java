@@ -212,10 +212,8 @@ public class Schema
      */
     public void storeKeyspaceInstance(Keyspace keyspace)
     {
-        if (keyspaceInstances.containsKey(keyspace.getName()))
+        if (keyspaceInstances.putIfAbsent(keyspace.getName(), keyspace) != null)
             throw new IllegalArgumentException(String.format("Keyspace %s was already initialized.", keyspace.getName()));
-
-        keyspaceInstances.put(keyspace.getName(), keyspace);
     }
 
     /**
@@ -660,9 +658,11 @@ public class Schema
             droppedCfs.add(cfm.cfId);
         }
 
-        // remove the keyspace from the static instances.
-        Keyspace.clear(ksm.name);
-        clearKeyspaceMetadata(ksm);
+        synchronized (Keyspace.class) {
+            // Remove the keyspace from the static instances.
+            Keyspace.clear(ksm.name);
+            clearKeyspaceMetadata(ksm);
+        }
 
         Keyspace.writeOrder.awaitNewBarrier();
 
@@ -763,6 +763,11 @@ public class Schema
         // make sure all the indexes are dropped, or else.
         cfs.indexManager.markAllIndexesRemoved();
 
+        CompactionManager.instance.interruptCompactionFor(Collections.singleton(cfs.metadata), true);
+
+        if (DatabaseDescriptor.isAutoSnapshot())
+            cfs.snapshot(Keyspace.getTimestampedSnapshotName(cfs.name));
+
         // reinitialize the keyspace.
         ViewDefinition view = oldKsm.views.get(viewName).get();
         KeyspaceMetadata newKsm = oldKsm.withSwapped(oldKsm.views.without(viewName));
@@ -770,10 +775,6 @@ public class Schema
         unload(view);
         setKeyspaceMetadata(newKsm);
 
-        CompactionManager.instance.interruptCompactionFor(Collections.singleton(view.metadata), true);
-
-        if (DatabaseDescriptor.isAutoSnapshot())
-            cfs.snapshot(Keyspace.getTimestampedSnapshotName(cfs.name));
         Keyspace.open(ksName).dropCf(view.metadata.cfId);
         Keyspace.open(ksName).viewManager.reload();
         MigrationManager.instance.notifyDropView(view);

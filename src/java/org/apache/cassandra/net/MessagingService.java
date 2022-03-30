@@ -18,7 +18,6 @@
 package org.apache.cassandra.net;
 
 import java.io.*;
-import java.lang.management.ManagementFactory;
 import java.net.*;
 import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.ClosedChannelException;
@@ -31,8 +30,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
-import javax.management.MBeanServer;
-import javax.management.ObjectName;
 import javax.net.ssl.SSLHandshakeException;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -560,15 +557,7 @@ public final class MessagingService implements MessagingServiceMBean
 
         if (!testOnly)
         {
-            MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
-            try
-            {
-                mbs.registerMBean(this, new ObjectName(MBEAN_NAME));
-            }
-            catch (Exception e)
-            {
-                throw new RuntimeException(e);
-            }
+            MBeanWrapper.instance.registerMBean(this, MBEAN_NAME);
         }
     }
 
@@ -989,18 +978,27 @@ public final class MessagingService implements MessagingServiceMBean
      */
     public void shutdown()
     {
+        shutdown(true);
+    }
+    public void shutdown(boolean gracefully)
+    {
         logger.info("Waiting for messaging service to quiesce");
         // We may need to schedule hints on the mutation stage, so it's erroneous to shut down the mutation stage first
         assert !StageManager.getStage(Stage.MUTATION).isShutdown();
 
         // the important part
+        if (!gracefully)
+            callbacks.reset();
+
         if (!callbacks.shutdownBlocking())
             logger.warn("Failed to wait for messaging service callbacks shutdown");
 
         // attempt to humor tests that try to stop and restart MS
         try
         {
+            clearMessageSinks();
             for (SocketThread th : socketThreads)
+            {
                 try
                 {
                     th.close();
@@ -1010,6 +1008,8 @@ public final class MessagingService implements MessagingServiceMBean
                     // see https://issues.apache.org/jira/browse/CASSANDRA-10545
                     handleIOExceptionOnClose(e);
                 }
+            }
+            connectionManagers.values().forEach(OutboundTcpConnectionPool::close);
         }
         catch (IOException e)
         {
@@ -1383,6 +1383,8 @@ public final class MessagingService implements MessagingServiceMBean
             {
                 case "Unknown error: 316":
                 case "No such file or directory":
+                case "Bad file descriptor":
+                case "Thread signal failed":
                     return;
             }
         }

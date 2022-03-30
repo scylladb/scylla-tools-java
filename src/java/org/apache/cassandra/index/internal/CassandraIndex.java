@@ -270,7 +270,26 @@ public abstract class CassandraIndex implements Index
 
     public long getEstimatedResultRows()
     {
-        return indexCfs.getMeanColumns();
+        long totalRows = 0;
+        long totalPartitions = 0;
+        for (SSTableReader sstable : indexCfs.getSSTables(SSTableSet.CANONICAL))
+        {
+            if (sstable.descriptor.version.storeRows())
+            {
+                totalPartitions += sstable.getEstimatedPartitionSize().count();
+                totalRows += sstable.getTotalRows();
+            } else
+            {
+                // for legacy sstables we don't have a total row count so we approximate it
+                // using estimated column count (which is the same logic as pre-3.0
+                // see CASSANDRA-15259
+                long colCount = sstable.getEstimatedColumnCount().count();
+                totalPartitions += colCount;
+                totalRows += sstable.getEstimatedColumnCount().mean() * colCount;
+            }
+        }
+
+        return totalPartitions > 0 ? (int) (totalRows / totalPartitions) : 0;
     }
 
     /**
@@ -408,7 +427,7 @@ public abstract class CassandraIndex implements Index
 
                 if (isPrimaryKeyIndex())
                     indexPrimaryKey(newRow.clustering(),
-                                    newRow.primaryKeyLivenessInfo(),
+                                    getPrimaryKeyIndexLiveness(newRow),
                                     newRow.deletion());
 
                 if (indexedColumn.isComplex())
@@ -486,10 +505,7 @@ public abstract class CassandraIndex implements Index
                     if (cell.isLive(nowInSec))
                     {
                         if (cellTimestamp > timestamp)
-                        {
                             timestamp = cellTimestamp;
-                            ttl = cell.ttl();
-                        }
                     }
                 }
                 return LivenessInfo.create(timestamp, ttl, nowInSec);

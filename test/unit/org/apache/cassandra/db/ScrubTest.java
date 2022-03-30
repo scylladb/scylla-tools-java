@@ -26,6 +26,7 @@ import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
 
+import org.apache.cassandra.db.lifecycle.LifecycleNewTracker;
 import org.apache.commons.lang3.StringUtils;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -42,7 +43,7 @@ import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.db.compaction.Scrubber;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
-import org.apache.cassandra.db.marshal.LongType;
+import org.apache.cassandra.db.marshal.Int32Type;
 import org.apache.cassandra.db.marshal.UUIDType;
 import org.apache.cassandra.db.partitions.Partition;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
@@ -169,20 +170,20 @@ public class ScrubTest
         boolean compression = Boolean.parseBoolean(System.getProperty("cassandra.test.compression", "false"));
         if (compression)
         {
-            assertEquals(0, scrubResult.emptyRows);
-            assertEquals(numPartitions, scrubResult.badRows + scrubResult.goodRows);
+            assertEquals(0, scrubResult.emptyPartitions);
+            assertEquals(numPartitions, scrubResult.badPartitions + scrubResult.goodPartitions);
             //because we only corrupted 1 chunk and we chose enough partitions to cover at least 3 chunks
-            assertTrue(scrubResult.goodRows >= scrubResult.badRows * 2);
+            assertTrue(scrubResult.goodPartitions >= scrubResult.badPartitions * 2);
         }
         else
         {
-            assertEquals(0, scrubResult.emptyRows);
-            assertEquals(1, scrubResult.badRows);
-            assertEquals(numPartitions-1, scrubResult.goodRows);
+            assertEquals(0, scrubResult.emptyPartitions);
+            assertEquals(1, scrubResult.badPartitions);
+            assertEquals(numPartitions-1, scrubResult.goodPartitions);
         }
         assertEquals(1, cfs.getLiveSSTables().size());
 
-        assertOrderedAll(cfs, scrubResult.goodRows);
+        assertOrderedAll(cfs, scrubResult.goodPartitions);
     }
 
     @Test
@@ -511,7 +512,7 @@ public class ScrubTest
         QueryProcessor.process("CREATE TABLE \"Keyspace1\".test_scrub_validation (a text primary key, b int)", ConsistencyLevel.ONE);
         ColumnFamilyStore cfs2 = keyspace.getColumnFamilyStore("test_scrub_validation");
 
-        new Mutation(UpdateBuilder.create(cfs2.metadata, "key").newRow().add("b", LongType.instance.decompose(1L)).build()).apply();
+        new Mutation(UpdateBuilder.create(cfs2.metadata, "key").newRow().add("b", Int32Type.instance.decompose(1)).build()).apply();
         cfs2.forceBlockingFlush();
 
         CompactionManager.instance.performScrub(cfs2, false, false, 2);
@@ -644,9 +645,9 @@ public class ScrubTest
 
     private static class TestMultiWriter extends SimpleSSTableMultiWriter
     {
-        TestMultiWriter(SSTableWriter writer, LifecycleTransaction txn)
+        TestMultiWriter(SSTableWriter writer, LifecycleNewTracker lifecycleNewTracker)
         {
-            super(writer, txn);
+            super(writer, lifecycleNewTracker);
         }
     }
 

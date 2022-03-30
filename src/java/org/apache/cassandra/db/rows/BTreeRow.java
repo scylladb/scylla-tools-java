@@ -193,7 +193,12 @@ public class BTreeRow extends AbstractRow
 
     public Collection<ColumnDefinition> columns()
     {
-        return Collections2.transform(this, ColumnData::column);
+        return Collections2.transform(columnData(), ColumnData::column);
+    }
+
+    public int columnCount()
+    {
+        return BTree.size(btree);
     }
 
     public LivenessInfo primaryKeyLivenessInfo()
@@ -234,9 +239,14 @@ public class BTreeRow extends AbstractRow
         return (ComplexColumnData) BTree.<Object>find(btree, ColumnDefinition.asymmetricColumnDataComparator, c);
     }
 
-    public int size()
+    @Override
+    public Collection<ColumnData> columnData()
     {
-        return BTree.size(btree);
+        return new AbstractCollection<ColumnData>()
+        {
+            @Override public Iterator<ColumnData> iterator() { return BTreeRow.this.iterator(); }
+            @Override public int size() { return BTree.size(btree); }
+        };
     }
 
     public Iterator<ColumnData> iterator()
@@ -301,8 +311,14 @@ public class BTreeRow extends AbstractRow
             // is lower than the row timestamp (see #10657 or SerializationHelper.includes() for details).
             boolean isForDropped = dropped != null && cell.timestamp() <= dropped.droppedTime;
             boolean isShadowed = mayHaveShadowed && activeDeletion.deletes(cell);
-            boolean isSkippable = !queriedByUserTester.test(column) && cell.timestamp() < rowLiveness.timestamp();
-            return isForDropped || isShadowed || isSkippable ? null : cell;
+            boolean isSkippable = !queriedByUserTester.test(column);
+
+            if (isForDropped || isShadowed || (isSkippable && cell.timestamp() < rowLiveness.timestamp()))
+                return null;
+
+            // We should apply the same "optimization" as in Cell.deserialize to avoid discrepances
+            // between sstables and memtables data, i.e resulting in a digest mismatch.
+            return isSkippable ? cell.withSkippedValue() : cell;
         });
     }
 

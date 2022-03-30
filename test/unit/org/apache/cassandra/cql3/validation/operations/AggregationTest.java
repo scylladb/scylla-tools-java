@@ -38,6 +38,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.joran.ReconfigureOnChangeTask;
 import ch.qos.logback.classic.spi.TurboFilterList;
 import ch.qos.logback.classic.turbo.ReconfigureOnChangeFilter;
 import ch.qos.logback.classic.turbo.TurboFilter;
@@ -55,9 +56,12 @@ import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.transport.Event;
+import org.apache.cassandra.transport.Event.SchemaChange.Change;
+import org.apache.cassandra.transport.Event.SchemaChange.Target;
 import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.transport.messages.ResultMessage;
 
+import static ch.qos.logback.core.CoreConstants.RECONFIGURE_ON_CHANGE_TASK;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -423,42 +427,60 @@ public class AggregationTest extends CQLTester
                                "LANGUAGE javascript " +
                                "AS '\"string\";';");
 
-        String a = createAggregate(KEYSPACE,
-                                   "double",
-                                   "CREATE OR REPLACE AGGREGATE %s(double) " +
-                                   "SFUNC " + shortFunctionName(f) + " " +
-                                   "STYPE double " +
-                                   "INITCOND 0");
+        String a = createAggregateName(KEYSPACE);
+        String aggregateName = shortFunctionName(a);
+        registerAggregate(a, "double");
 
-        assertLastSchemaChange(Event.SchemaChange.Change.CREATED, Event.SchemaChange.Target.AGGREGATE,
-                               KEYSPACE, parseFunctionName(a).name,
-                               "double");
+        assertSchemaChange("CREATE OR REPLACE AGGREGATE " + a + "(double) " +
+                           "SFUNC " + shortFunctionName(f) + " " +
+                           "STYPE double " +
+                           "INITCOND 0",
+                           Change.CREATED, Target.AGGREGATE,
+                           KEYSPACE, aggregateName,
+                           "double");
 
-        schemaChange("CREATE OR REPLACE AGGREGATE " + a + "(double) " +
-                     "SFUNC " + shortFunctionName(f) + " " +
-                     "STYPE double " +
-                     "INITCOND 0");
+        assertSchemaChange("CREATE OR REPLACE AGGREGATE " + a + "(double) " +
+                           "SFUNC " + shortFunctionName(f) + " " +
+                           "STYPE double " +
+                           "INITCOND 1",
+                           Change.UPDATED, Target.AGGREGATE,
+                           KEYSPACE, aggregateName,
+                           "double");
 
-        assertLastSchemaChange(Event.SchemaChange.Change.UPDATED, Event.SchemaChange.Target.AGGREGATE,
-                               KEYSPACE, parseFunctionName(a).name,
-                               "double");
+        registerAggregate(a, "int");
 
-        createAggregateOverload(a,
-                                "int",
-                                "CREATE OR REPLACE AGGREGATE %s(int) " +
-                                "SFUNC " + shortFunctionName(f) + " " +
-                                "STYPE int " +
-                                "INITCOND 0");
+        assertSchemaChange("CREATE OR REPLACE AGGREGATE " + a + "(int) " +
+                           "SFUNC " + shortFunctionName(f) + " " +
+                           "STYPE int " +
+                           "INITCOND 0",
+                           Change.CREATED, Target.AGGREGATE,
+                           KEYSPACE, aggregateName,
+                           "int");
 
-        assertLastSchemaChange(Event.SchemaChange.Change.CREATED, Event.SchemaChange.Target.AGGREGATE,
-                               KEYSPACE, parseFunctionName(a).name,
-                               "int");
+        assertSchemaChange("DROP AGGREGATE " + a + "(double)",
+                           Change.DROPPED, Target.AGGREGATE,
+                           KEYSPACE, aggregateName,
+                           "double");
 
-        schemaChange("DROP AGGREGATE " + a + "(double)");
+        // The aggregate with nested tuple should be created without throwing InvalidRequestException. See CASSANDRA-15857
+        String f1 = createFunction(KEYSPACE,
+                                   "double, double",
+                                   "CREATE OR REPLACE FUNCTION %s(state double, val list<tuple<int, int>>) " +
+                                   "RETURNS NULL ON NULL INPUT " +
+                                   "RETURNS double " +
+                                   "LANGUAGE javascript " +
+                                   "AS '\"string\";';");
 
-        assertLastSchemaChange(Event.SchemaChange.Change.DROPPED, Event.SchemaChange.Target.AGGREGATE,
-                               KEYSPACE, parseFunctionName(a).name,
-                               "double");
+        String a1 = createAggregateName(KEYSPACE);
+        registerAggregate(a1, "list<tuple<int, int>>");
+
+        assertSchemaChange("CREATE OR REPLACE AGGREGATE " + a1 + "(list<tuple<int, int>>) " +
+                           "SFUNC " + shortFunctionName(f1) + " " +
+                           "STYPE double " +
+                           "INITCOND 0",
+                           Event.SchemaChange.Change.CREATED, Event.SchemaChange.Target.AGGREGATE,
+                           KEYSPACE, parseFunctionName(a1).name,
+                           "list<frozen<tuple<int, int>>>"); // CASSANDRA-14825: remove frozen from param
     }
 
     @Test
@@ -1119,7 +1141,7 @@ public class AggregationTest extends CQLTester
                                        "SFUNC " + shortFunctionName(fState) + " " +
                                        "STYPE int");
 
-            ResultMessage.Prepared prepared = QueryProcessor.prepare("SELECT " + a + "(b) FROM " + otherKS + ".jsdp", ClientState.forInternalCalls(), false);
+            ResultMessage.Prepared prepared = QueryProcessor.instance.prepare("SELECT " + a + "(b) FROM " + otherKS + ".jsdp", ClientState.forInternalCalls(), false);
             assertNotNull(QueryProcessor.instance.getPrepared(prepared.statementId));
 
             execute("DROP AGGREGATE " + a + "(int)");
@@ -1131,7 +1153,7 @@ public class AggregationTest extends CQLTester
                     "SFUNC " + shortFunctionName(fState) + " " +
                     "STYPE int");
 
-            prepared = QueryProcessor.prepare("SELECT " + a + "(b) FROM " + otherKS + ".jsdp", ClientState.forInternalCalls(), false);
+            prepared = QueryProcessor.instance.prepare("SELECT " + a + "(b) FROM " + otherKS + ".jsdp", ClientState.forInternalCalls(), false);
             assertNotNull(QueryProcessor.instance.getPrepared(prepared.statementId));
 
             execute("DROP KEYSPACE " + otherKS + ";");
@@ -1618,12 +1640,20 @@ public class AggregationTest extends CQLTester
                                        "LANGUAGE java " +
                                        "AS 'return state;'");
 
-        assertInvalidMessage("The function state type should not be frozen",
-                             "CREATE AGGREGATE %s(tuple<int, int>) " +
-                             "SFUNC " + parseFunctionName(fState).name + ' ' +
-                             "STYPE frozen<tuple<int, int>> " +
-                             "FINALFUNC " + parseFunctionName(fFinal).name + ' ' +
-                             "INITCOND null");
+        // Tuples are always frozen. Both 'tuple' and 'frozen tuple' have the same effect.
+        // So allows to create aggregate with explicit frozen tuples as argument and state types.
+        String toDrop = createAggregate(KEYSPACE,
+                                        "frozen<tuple<int, int>>",
+                                        "CREATE AGGREGATE %s(frozen<tuple<int, int>>) " +
+                                        "SFUNC " + parseFunctionName(fState).name + ' ' +
+                                        "STYPE frozen<tuple<int, int>> " +
+                                        "FINALFUNC " + parseFunctionName(fFinal).name + ' ' +
+                                        "INITCOND null");
+        // Same as above, dropping a function with explicity frozen tuple should be allowed.
+        assertSchemaChange("DROP AGGREGATE " + toDrop + "(frozen<tuple<int, int>>);",
+                           Change.DROPPED, Target.AGGREGATE,
+                           KEYSPACE, shortFunctionName(toDrop),
+                           "frozen<tuple<int, int>>");
 
         String aggregation = createAggregate(KEYSPACE,
                                              "tuple<int, int>",
@@ -1636,8 +1666,10 @@ public class AggregationTest extends CQLTester
         assertRows(execute("SELECT " + aggregation + "(b) FROM %s"),
                    row(tuple(7, 8)));
 
-        assertInvalidMessage("The function arguments should not be frozen",
-                             "DROP AGGREGATE %s (frozen<tuple<int, int>>);");
+        assertSchemaChange("DROP AGGREGATE " + aggregation + "(frozen<tuple<int, int>>);",
+                           Change.DROPPED, Target.AGGREGATE,
+                           KEYSPACE, shortFunctionName(aggregation),
+                           "frozen<tuple<int, int>>");
     }
 
     @Test
@@ -1869,6 +1901,16 @@ public class AggregationTest extends CQLTester
                 break;
             }
         }
+
+        ReconfigureOnChangeTask roct = (ReconfigureOnChangeTask) ctx.getObject(RECONFIGURE_ON_CHANGE_TASK);
+        if (roct != null)
+        {
+            // New functionality in logback - they replaced ReconfigureOnChangeFilter (which runs in the logging code)
+            // with an async ReconfigureOnChangeTask - i.e. in a thread that does not become sandboxed.
+            // Let the test run anyway, just we cannot reconfigure it (and it is pointless to reconfigure).
+            return;
+        }
+
         assertTrue("ReconfigureOnChangeFilter not in logback's turbo-filter list - do that by adding scan=\"true\" to logback-test.xml's configuration element", done);
     }
 

@@ -37,6 +37,7 @@ import org.apache.cassandra.db.partitions.*;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.transform.RTBoundCloser;
 import org.apache.cassandra.db.transform.RTBoundValidator;
+import org.apache.cassandra.db.transform.RTBoundValidator.Stage;
 import org.apache.cassandra.db.transform.StoppingTransformation;
 import org.apache.cassandra.db.transform.Transformation;
 import org.apache.cassandra.dht.AbstractBounds;
@@ -341,12 +342,19 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
 
     protected abstract int oldestUnrepairedTombstone();
 
+    /**
+     * Whether the underlying {@code ClusteringIndexFilter} is reversed or not.
+     *
+     * @return whether the underlying {@code ClusteringIndexFilter} is reversed or not.
+     */
+    public abstract boolean isReversed();
+
     @SuppressWarnings("resource")
     public ReadResponse createResponse(UnfilteredPartitionIterator iterator)
     {
         // validate that the sequence of RT markers is correct: open is followed by close, deletion times for both
         // ends equal, and there are no dangling RT bound in any partition.
-        iterator = Transformation.apply(iterator, new RTBoundValidator(true));
+        iterator = RTBoundValidator.validate(iterator, Stage.PROCESSED, true);
 
         return isDigestQuery()
              ? ReadResponse.createDigestResponse(iterator, this)
@@ -421,11 +429,12 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
         }
 
         UnfilteredPartitionIterator iterator = (null == searcher) ? queryStorage(cfs, executionController) : searcher.search(executionController);
+        iterator = RTBoundValidator.validate(iterator, Stage.MERGED, false);
 
         try
         {
             iterator = withStateTracking(iterator);
-            iterator = withoutPurgeableTombstones(iterator, cfs);
+            iterator = RTBoundValidator.validate(withoutPurgeableTombstones(iterator, cfs), Stage.PURGED, false);
             iterator = withMetricsRecording(iterator, cfs.metric, startTimeNanos);
 
             // If we've used a 2ndary index, we know the result already satisfy the primary expression used, so
@@ -445,9 +454,7 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
             iterator = limits().filter(iterator, nowInSec(), selectsFullPartition());
 
             // because of the above, we need to append an aritifical end bound if the source iterator was stopped short by a counter.
-            iterator = Transformation.apply(iterator, new RTBoundCloser());
-
-            return iterator;
+            return RTBoundCloser.close(iterator);
         }
         catch (RuntimeException | Error e)
         {
@@ -564,8 +571,8 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
                 if (warnTombstones)
                 {
                     String msg = String.format(
-                            "Read %d live rows and %d tombstone cells for query %1.512s (see tombstone_warn_threshold)",
-                            liveRows, tombstones, ReadCommand.this.toCQLString());
+                            "Read %d live rows and %d tombstone cells for query %1.512s; token %s (see tombstone_warn_threshold)",
+                            liveRows, tombstones, ReadCommand.this.toCQLString(), currentKey.getToken());
                     ClientWarn.instance.warn(msg);
                     logger.warn(msg);
                 }
@@ -574,7 +581,7 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
                         liveRows, tombstones,
                         (warnTombstones ? " (see tombstone_warn_threshold)" : ""));
             }
-        };
+        }
 
         return Transformation.apply(iter, new MetricRecording());
     }
@@ -680,8 +687,8 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
     public String toCQLString()
     {
         StringBuilder sb = new StringBuilder();
-        sb.append("SELECT ").append(columnFilter());
-        sb.append(" FROM ").append(metadata().ksName).append('.').append(metadata.cfName);
+        sb.append("SELECT ").append(columnFilter().toCQLString());
+        sb.append(" FROM ").append(metadata().ksName).append('.').append(metadata().cfName);
         appendCQLWhereClause(sb);
 
         if (limits() != DataLimits.NONE)
@@ -954,6 +961,8 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
                 limits = DataLimits.distinctLimits(maxResults);
             else if (compositesToGroup == -1)
                 limits = DataLimits.thriftLimits(maxResults, perPartitionLimit);
+            else if (metadata.isStaticCompactTable())
+                limits = DataLimits.legacyCompactStaticCqlLimits(maxResults);
             else
                 limits = DataLimits.cqlLimits(maxResults);
 
@@ -1188,7 +1197,7 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
             int compositesToGroup = in.readInt();
 
             // command-level Composite "start" and "stop"
-            LegacyLayout.LegacyBound startBound = LegacyLayout.decodeBound(metadata, ByteBufferUtil.readWithShortLength(in), true);
+            LegacyLayout.LegacyBound startBound = LegacyLayout.decodeSliceBound(metadata, ByteBufferUtil.readWithShortLength(in), true);
 
             ByteBufferUtil.readWithShortLength(in);  // the composite "stop", which isn't actually needed
 
@@ -1343,6 +1352,7 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
             long size = 1;  // message type (single byte)
             size += TypeSizes.sizeof(command.isDigestQuery());
             size += TypeSizes.sizeof(metadata.ksName);
+            size += TypeSizes.sizeof(metadata.cfName);
             size += TypeSizes.sizeof((short) keySize) + keySize;
             size += TypeSizes.sizeof((long) command.nowInSec());
 
@@ -1681,8 +1691,8 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
             Slices.Builder slicesBuilder = new Slices.Builder(metadata.comparator);
             for (int i = 0; i < numSlices; i++)
             {
-                LegacyLayout.LegacyBound start = LegacyLayout.decodeBound(metadata, startBuffers[i], true);
-                LegacyLayout.LegacyBound finish = LegacyLayout.decodeBound(metadata, finishBuffers[i], false);
+                LegacyLayout.LegacyBound start = LegacyLayout.decodeSliceBound(metadata, startBuffers[i], true);
+                LegacyLayout.LegacyBound finish = LegacyLayout.decodeSliceBound(metadata, finishBuffers[i], false);
 
                 if (start.isStatic)
                 {

@@ -26,6 +26,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -153,7 +154,7 @@ public abstract class AbstractType<T> implements Comparator<ByteBuffer>, Assignm
      */
     public String toJSONString(ByteBuffer buffer, ProtocolVersion protocolVersion)
     {
-        return '"' + getSerializer().deserialize(buffer).toString() + '"';
+        return '"' + Objects.toString(getSerializer().deserialize(buffer), "") + '"';
     }
 
     /* validate that the byte array is a valid sequence for the type we are supposed to be comparing */
@@ -403,11 +404,23 @@ public abstract class AbstractType<T> implements Comparator<ByteBuffer>, Assignm
         return -1;
     }
 
+    public void validateIfFixedSize(ByteBuffer value)
+    {
+        if (valueLengthIfFixed() < 0)
+            return;
+
+        validate(value);
+    }
+
     // This assumes that no empty values are passed
     public void writeValue(ByteBuffer value, DataOutputPlus out) throws IOException
     {
         assert value.hasRemaining();
-        if (valueLengthIfFixed() >= 0)
+        int valueLengthIfFixed = valueLengthIfFixed();
+        assert valueLengthIfFixed < 0 || value.remaining() == valueLengthIfFixed : String.format("Expected exactly %d bytes, but was %d",
+                                                                                                 valueLengthIfFixed, value.remaining());
+
+        if (valueLengthIfFixed >= 0)
             out.write(value);
         else
             ByteBufferUtil.writeWithVIntLength(value, out);
@@ -416,7 +429,11 @@ public abstract class AbstractType<T> implements Comparator<ByteBuffer>, Assignm
     public long writtenLength(ByteBuffer value)
     {
         assert value.hasRemaining();
-        return valueLengthIfFixed() >= 0
+        int valueLengthIfFixed = valueLengthIfFixed();
+        assert valueLengthIfFixed < 0 || value.remaining() == valueLengthIfFixed : String.format("Expected exactly %d bytes, but was %d",
+                                                                                                 valueLengthIfFixed, value.remaining());
+
+        return valueLengthIfFixed >= 0
              ? value.remaining()
              : TypeSizes.sizeofWithVIntLength(value);
     }

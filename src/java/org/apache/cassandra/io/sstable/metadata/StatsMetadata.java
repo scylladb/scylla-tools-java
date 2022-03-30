@@ -21,19 +21,25 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 import org.apache.cassandra.io.ISerializer;
 import org.apache.cassandra.io.sstable.format.Version;
 import org.apache.commons.lang3.builder.EqualsBuilder;
 import org.apache.commons.lang3.builder.HashCodeBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
 import org.apache.cassandra.db.commitlog.IntervalSet;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
+import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.EstimatedHistogram;
 import org.apache.cassandra.utils.StreamingHistogram;
+import org.apache.cassandra.utils.UUIDSerializer;
 
 /**
  * SSTable metadata that always stay on heap.
@@ -61,6 +67,7 @@ public class StatsMetadata extends MetadataComponent
     public final long repairedAt;
     public final long totalColumnsSet;
     public final long totalRows;
+    public final UUID originatingHostId;
 
     public StatsMetadata(EstimatedHistogram estimatedPartitionSize,
                          EstimatedHistogram estimatedColumnCount,
@@ -79,7 +86,8 @@ public class StatsMetadata extends MetadataComponent
                          boolean hasLegacyCounterShards,
                          long repairedAt,
                          long totalColumnsSet,
-                         long totalRows)
+                         long totalRows,
+                         UUID originatingHostId)
     {
         this.estimatedPartitionSize = estimatedPartitionSize;
         this.estimatedColumnCount = estimatedColumnCount;
@@ -99,6 +107,7 @@ public class StatsMetadata extends MetadataComponent
         this.repairedAt = repairedAt;
         this.totalColumnsSet = totalColumnsSet;
         this.totalRows = totalRows;
+        this.originatingHostId = originatingHostId;
     }
 
     public MetadataType getType()
@@ -149,7 +158,8 @@ public class StatsMetadata extends MetadataComponent
                                  hasLegacyCounterShards,
                                  repairedAt,
                                  totalColumnsSet,
-                                 totalRows);
+                                 totalRows,
+                                 originatingHostId);
     }
 
     public StatsMetadata mutateRepairedAt(long newRepairedAt)
@@ -171,7 +181,8 @@ public class StatsMetadata extends MetadataComponent
                                  hasLegacyCounterShards,
                                  newRepairedAt,
                                  totalColumnsSet,
-                                 totalRows);
+                                 totalRows,
+                                 originatingHostId);
     }
 
     @Override
@@ -200,6 +211,7 @@ public class StatsMetadata extends MetadataComponent
                        .append(hasLegacyCounterShards, that.hasLegacyCounterShards)
                        .append(totalColumnsSet, that.totalColumnsSet)
                        .append(totalRows, that.totalRows)
+                       .append(originatingHostId, that.originatingHostId)
                        .build();
     }
 
@@ -225,11 +237,14 @@ public class StatsMetadata extends MetadataComponent
                        .append(hasLegacyCounterShards)
                        .append(totalColumnsSet)
                        .append(totalRows)
+                       .append(originatingHostId)
                        .build();
     }
 
     public static class StatsMetadataSerializer implements IMetadataComponentSerializer<StatsMetadata>
     {
+        private static final Logger logger = LoggerFactory.getLogger(StatsMetadataSerializer.class);
+
         public int serializedSize(Version version, StatsMetadata component) throws IOException
         {
             int size = 0;
@@ -257,6 +272,12 @@ public class StatsMetadata extends MetadataComponent
                 size += CommitLogPosition.serializer.serializedSize(component.commitLogIntervals.lowerBound().orElse(CommitLogPosition.NONE));
             if (version.hasCommitLogIntervals())
                 size += commitLogPositionSetSerializer.serializedSize(component.commitLogIntervals);
+            if (version.hasOriginatingHostId())
+            {
+                size += 1; // boolean: is originatingHostId present
+                if (component.originatingHostId != null)
+                    size += UUIDSerializer.serializer.serializedSize(component.originatingHostId, version.correspondingMessagingVersion());
+            }
             return size;
         }
 
@@ -297,14 +318,46 @@ public class StatsMetadata extends MetadataComponent
                 CommitLogPosition.serializer.serialize(component.commitLogIntervals.lowerBound().orElse(CommitLogPosition.NONE), out);
             if (version.hasCommitLogIntervals())
                 commitLogPositionSetSerializer.serialize(component.commitLogIntervals, out);
+            if (version.hasOriginatingHostId())
+            {
+                if (component.originatingHostId != null)
+                {
+                    out.writeByte(1);
+                    UUIDSerializer.serializer.serialize(component.originatingHostId, out, 0);
+                }
+                else
+                {
+                    out.writeByte(0);
+                }
+            }
         }
 
         public StatsMetadata deserialize(Version version, DataInputPlus in) throws IOException
         {
             EstimatedHistogram partitionSizes = EstimatedHistogram.serializer.deserialize(in);
+
+            if (partitionSizes.isOverflowed())
+            {
+                logger.warn("Deserialized partition size histogram with {} values greater than the maximum of {}. " +
+                            "Clearing the overflow bucket to allow for degraded mean and percentile calculations...",
+                            partitionSizes.overflowCount(), partitionSizes.getLargestBucketOffset());
+
+                partitionSizes.clearOverflow();
+            }
+
             EstimatedHistogram columnCounts = EstimatedHistogram.serializer.deserialize(in);
+            if (columnCounts.isOverflowed())
+            {
+                logger.warn("Deserialized partition cell count histogram with {} values greater than the maximum of {}. " +
+                            "Clearing the overflow bucket to allow for degraded mean and percentile calculations...",
+                            columnCounts.overflowCount(), columnCounts.getLargestBucketOffset());
+
+                columnCounts.clearOverflow();
+            }
+
             CommitLogPosition commitLogLowerBound = CommitLogPosition.NONE, commitLogUpperBound;
             commitLogUpperBound = CommitLogPosition.serializer.deserialize(in);
+
             long minTimestamp = in.readLong();
             long maxTimestamp = in.readLong();
             // We use MAX_VALUE as that's the default value for "no deletion time"
@@ -319,15 +372,25 @@ public class StatsMetadata extends MetadataComponent
             if (version.hasRepairedAt())
                 repairedAt = in.readLong();
 
+            // for legacy sstables, we skip deserializing the min and max clustering value
+            // to prevent erroneously excluding sstables from reads (see CASSANDRA-14861)
             int colCount = in.readInt();
             List<ByteBuffer> minClusteringValues = new ArrayList<>(colCount);
             for (int i = 0; i < colCount; i++)
-                minClusteringValues.add(ByteBufferUtil.readWithShortLength(in));
+            {
+                ByteBuffer val = ByteBufferUtil.readWithShortLength(in);
+                if (version.hasAccurateMinMax())
+                    minClusteringValues.add(val);
+            }
 
             colCount = in.readInt();
             List<ByteBuffer> maxClusteringValues = new ArrayList<>(colCount);
             for (int i = 0; i < colCount; i++)
-                maxClusteringValues.add(ByteBufferUtil.readWithShortLength(in));
+            {
+                ByteBuffer val = ByteBufferUtil.readWithShortLength(in);
+                if (version.hasAccurateMinMax())
+                    maxClusteringValues.add(val);
+            }
 
             boolean hasLegacyCounterShards = true;
             if (version.tracksLegacyCounterShards())
@@ -343,6 +406,10 @@ public class StatsMetadata extends MetadataComponent
                 commitLogIntervals = commitLogPositionSetSerializer.deserialize(in);
             else
                 commitLogIntervals = new IntervalSet<CommitLogPosition>(commitLogLowerBound, commitLogUpperBound);
+
+            UUID originatingHostId = null;
+            if (version.hasOriginatingHostId() && in.readByte() != 0)
+                originatingHostId = UUIDSerializer.serializer.deserialize(in, 0);
 
             return new StatsMetadata(partitionSizes,
                                      columnCounts,
@@ -361,7 +428,8 @@ public class StatsMetadata extends MetadataComponent
                                      hasLegacyCounterShards,
                                      repairedAt,
                                      totalColumnsSet,
-                                     totalRows);
+                                     totalRows,
+                                     originatingHostId);
         }
     }
 }

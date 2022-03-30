@@ -762,6 +762,18 @@ public final class SystemKeyspace
         return executorService.submit((Runnable) () -> executeInternal(String.format(req, PEERS, columnName), ep, value));
     }
 
+    public static void updatePeerReleaseVersion(final InetAddress ep, final Object value, Runnable postUpdateTask, ExecutorService executorService)
+    {
+        if (ep.equals(FBUtilities.getBroadcastAddress()))
+            return;
+
+        String req = "INSERT INTO system.%s (peer, release_version) VALUES (?, ?)";
+        executorService.execute(() -> {
+            executeInternal(String.format(req, PEERS), ep, value);
+            postUpdateTask.run();
+        });
+    }
+
     public static synchronized void updateHintsDropped(InetAddress ep, UUID timePeriod, int value)
     {
         // with 30 day TTL
@@ -855,6 +867,37 @@ public final class SystemKeyspace
             }
         }
         return hostIdMap;
+    }
+
+    /**
+     * Return a map of IP address to C* version. If an invalid version string, or no version
+     * at all is stored for a given peer IP, then NULL_VERSION will be reported for that peer
+     */
+    public static Map<InetAddress, CassandraVersion> loadPeerVersions()
+    {
+        Map<InetAddress, CassandraVersion> releaseVersionMap = new HashMap<>();
+        for (UntypedResultSet.Row row : executeInternal("SELECT peer, release_version FROM system." + PEERS))
+        {
+            InetAddress peer = row.getInetAddress("peer");
+            if (row.has("release_version"))
+            {
+                try
+                {
+                    releaseVersionMap.put(peer, new CassandraVersion(row.getString("release_version")));
+                }
+                catch (IllegalArgumentException e)
+                {
+                    logger.info("Invalid version string found for {}", peer);
+                    releaseVersionMap.put(peer, NULL_VERSION);
+                }
+            }
+            else
+            {
+                logger.info("No version string found for {}", peer);
+                releaseVersionMap.put(peer, NULL_VERSION);
+            }
+        }
+        return releaseVersionMap;
     }
 
     /**
@@ -1075,8 +1118,7 @@ public final class SystemKeyspace
     }
 
     /**
-     * Read the host ID from the system keyspace, creating (and storing) one if
-     * none exists.
+     * Read the host ID from the system keyspace.
      */
     public static UUID getLocalHostId()
     {
@@ -1084,11 +1126,24 @@ public final class SystemKeyspace
         UntypedResultSet result = executeInternal(String.format(req, LOCAL, LOCAL));
 
         // Look up the Host UUID (return it if found)
-        if (!result.isEmpty() && result.one().has("host_id"))
+        if (result != null && !result.isEmpty() && result.one().has("host_id"))
             return result.one().getUUID("host_id");
 
+        return null;
+    }
+
+    /**
+     * Read the host ID from the system keyspace, creating (and storing) one if
+     * none exists.
+     */
+    public static synchronized UUID getOrInitializeLocalHostId()
+    {
+        UUID hostId = getLocalHostId();
+        if (hostId != null)
+            return hostId;
+
         // ID not found, generate a new one, persist, and then return it.
-        UUID hostId = UUID.randomUUID();
+        hostId = UUID.randomUUID();
         logger.warn("No host ID found, created {} (Note: This should happen exactly once per node).", hostId);
         return setLocalHostId(hostId);
     }
@@ -1096,7 +1151,7 @@ public final class SystemKeyspace
     /**
      * Sets the local host ID explicitly.  Should only be called outside of SystemTable when replacing a node.
      */
-    public static UUID setLocalHostId(UUID hostId)
+    public static synchronized UUID setLocalHostId(UUID hostId)
     {
         String req = "INSERT INTO system.%s (key, host_id) VALUES ('%s', ?)";
         executeInternal(String.format(req, LOCAL, LOCAL), hostId);
@@ -1282,6 +1337,32 @@ public final class SystemKeyspace
         executeInternal(cql, keyspace, table);
     }
 
+    /**
+     * Clears size estimates for a keyspace (used to manually clean when we miss a keyspace drop)
+     */
+    public static void clearSizeEstimates(String keyspace)
+    {
+        String cql = String.format("DELETE FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SYSTEM_KEYSPACE_NAME, SIZE_ESTIMATES);
+        executeInternal(cql, keyspace);
+    }
+
+    /**
+     * @return A multimap from keyspace to table for all tables with entries in size estimates
+     */
+
+    public static synchronized SetMultimap<String, String> getTablesWithSizeEstimates()
+    {
+        SetMultimap<String, String> keyspaceTableMap = HashMultimap.create();
+        String cql = String.format("SELECT keyspace_name, table_name FROM %s.%s", SchemaConstants.SYSTEM_KEYSPACE_NAME, SIZE_ESTIMATES);
+        UntypedResultSet rs = executeInternal(cql);
+        for (UntypedResultSet.Row row : rs)
+        {
+            keyspaceTableMap.put(row.getString("keyspace_name"), row.getString("table_name"));
+        }
+
+        return keyspaceTableMap;
+    }
+
     public static synchronized void updateAvailableRanges(String keyspace, Collection<Range<Token>> completedRanges)
     {
         String cql = "UPDATE system.%s SET ranges = ranges + ? WHERE keyspace_name = ?";
@@ -1312,7 +1393,7 @@ public final class SystemKeyspace
     public static void resetAvailableRanges()
     {
         ColumnFamilyStore availableRanges = Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(AVAILABLE_RANGES);
-        availableRanges.truncateBlocking();
+        availableRanges.truncateBlockingWithoutSnapshot();
     }
 
     public static synchronized void updateTransferredRanges(String description,
@@ -1359,6 +1440,8 @@ public final class SystemKeyspace
     {
         String previous = getPreviousVersionString();
         String next = FBUtilities.getReleaseVersionString();
+
+        FBUtilities.setPreviousReleaseVersionString(previous);
 
         // if we're restarting after an upgrade, snapshot the system keyspace
         if (!previous.equals(NULL_VERSION.toString()) && !previous.equals(next))
@@ -1499,18 +1582,42 @@ public final class SystemKeyspace
 
     public static void resetPreparedStatements()
     {
-        ColumnFamilyStore availableRanges = Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(PREPARED_STATEMENTS);
-        availableRanges.truncateBlocking();
+        ColumnFamilyStore preparedStatements = Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(PREPARED_STATEMENTS);
+        preparedStatements.truncateBlockingWithoutSnapshot();
     }
 
-    public static List<Pair<String, String>> loadPreparedStatements()
+    public static int loadPreparedStatements(TriFunction<MD5Digest, String, String, Boolean> onLoaded)
     {
-        String query = String.format("SELECT logged_keyspace, query_string FROM %s.%s", SchemaConstants.SYSTEM_KEYSPACE_NAME, PREPARED_STATEMENTS);
+        String query = String.format("SELECT prepared_id, logged_keyspace, query_string FROM %s.%s", SchemaConstants.SYSTEM_KEYSPACE_NAME, PREPARED_STATEMENTS);
         UntypedResultSet resultSet = executeOnceInternal(query);
-        List<Pair<String, String>> r = new ArrayList<>();
+        int counter = 0;
         for (UntypedResultSet.Row row : resultSet)
-            r.add(Pair.create(row.has("logged_keyspace") ? row.getString("logged_keyspace") : null,
-                              row.getString("query_string")));
-        return r;
+        {
+            if (onLoaded.accept(MD5Digest.wrap(row.getByteArray("prepared_id")),
+                                row.getString("query_string"),
+                                row.has("logged_keyspace") ? row.getString("logged_keyspace") : null))
+                counter++;
+        }
+        return counter;
     }
+
+    public static int loadPreparedStatement(MD5Digest digest, TriFunction<MD5Digest, String, String, Boolean> onLoaded)
+    {
+        String query = String.format("SELECT prepared_id, logged_keyspace, query_string FROM %s.%s WHERE prepared_id = ?", SchemaConstants.SYSTEM_KEYSPACE_NAME, PREPARED_STATEMENTS);
+        UntypedResultSet resultSet = executeOnceInternal(query, digest.byteBuffer());
+        int counter = 0;
+        for (UntypedResultSet.Row row : resultSet)
+        {
+            if (onLoaded.accept(MD5Digest.wrap(row.getByteArray("prepared_id")),
+                                row.getString("query_string"),
+                                row.has("logged_keyspace") ? row.getString("logged_keyspace") : null))
+                counter++;
+        }
+        return counter;
+    }
+
+    public static interface TriFunction<A, B, C, D> {
+        D accept(A var1, B var2, C var3);
+    }
+
 }

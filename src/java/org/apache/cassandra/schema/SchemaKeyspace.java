@@ -21,37 +21,82 @@ import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.*;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.MapDifference;
 import com.google.common.collect.Maps;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.config.*;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.CFMetaData.DroppedColumn;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.config.ColumnDefinition.ClusteringOrder;
-import org.apache.cassandra.cql3.*;
-import org.apache.cassandra.cql3.functions.*;
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.config.SchemaConstants;
+import org.apache.cassandra.config.ViewDefinition;
+import org.apache.cassandra.cql3.CQL3Type;
+import org.apache.cassandra.cql3.ColumnIdentifier;
+import org.apache.cassandra.cql3.FieldIdentifier;
+import org.apache.cassandra.cql3.QueryProcessor;
+import org.apache.cassandra.cql3.Terms;
+import org.apache.cassandra.cql3.UntypedResultSet;
+import org.apache.cassandra.cql3.functions.AbstractFunction;
+import org.apache.cassandra.cql3.functions.FunctionName;
+import org.apache.cassandra.cql3.functions.UDAggregate;
+import org.apache.cassandra.cql3.functions.UDFunction;
 import org.apache.cassandra.cql3.statements.SelectStatement;
-import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.marshal.*;
-import org.apache.cassandra.db.partitions.*;
-import org.apache.cassandra.db.rows.*;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.db.Mutation;
+import org.apache.cassandra.db.PartitionRangeReadCommand;
+import org.apache.cassandra.db.ReadCommand;
+import org.apache.cassandra.db.ReadExecutionController;
 import org.apache.cassandra.db.filter.ColumnFilter;
+import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.cassandra.db.marshal.BytesType;
+import org.apache.cassandra.db.marshal.CompositeType;
+import org.apache.cassandra.db.marshal.ListType;
+import org.apache.cassandra.db.marshal.MapType;
+import org.apache.cassandra.db.marshal.ReversedType;
+import org.apache.cassandra.db.marshal.SetType;
+import org.apache.cassandra.db.marshal.TupleType;
+import org.apache.cassandra.db.marshal.UTF8Type;
+import org.apache.cassandra.db.marshal.UserType;
+import org.apache.cassandra.db.partitions.PartitionIterator;
+import org.apache.cassandra.db.partitions.PartitionUpdate;
+import org.apache.cassandra.db.partitions.UnfilteredPartitionIterator;
+import org.apache.cassandra.db.rows.Row;
+import org.apache.cassandra.db.rows.RowIterator;
+import org.apache.cassandra.db.rows.RowIterators;
+import org.apache.cassandra.db.rows.UnfilteredRowIterator;
 import org.apache.cassandra.db.view.View;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.locator.LocalStrategy;
+import org.apache.cassandra.service.PendingRangeCalculatorService;
 import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.Pair;
 
 import static java.lang.String.format;
-
 import static java.util.stream.Collectors.toList;
 import static org.apache.cassandra.cql3.QueryProcessor.executeInternal;
 import static org.apache.cassandra.cql3.QueryProcessor.executeOnceInternal;
@@ -59,7 +104,7 @@ import static org.apache.cassandra.schema.CQLTypeParser.parse;
 
 /**
  * system_schema.* tables and methods for manipulating them.
- */
+*/
 public final class SchemaKeyspace
 {
     private SchemaKeyspace()
@@ -71,49 +116,14 @@ public final class SchemaKeyspace
     private static final boolean FLUSH_SCHEMA_TABLES = Boolean.parseBoolean(System.getProperty("cassandra.test.flush_local_schema_changes", "true"));
     private static final boolean IGNORE_CORRUPTED_SCHEMA_TABLES = Boolean.parseBoolean(System.getProperty("cassandra.ignore_corrupted_schema_tables", "false"));
 
-    public static final String KEYSPACES = "keyspaces";
-    public static final String TABLES = "tables";
-    public static final String COLUMNS = "columns";
-    public static final String DROPPED_COLUMNS = "dropped_columns";
-    public static final String TRIGGERS = "triggers";
-    public static final String VIEWS = "views";
-    public static final String TYPES = "types";
-    public static final String FUNCTIONS = "functions";
-    public static final String AGGREGATES = "aggregates";
-    public static final String INDEXES = "indexes";
-
-    /**
-     * The order in this list matters.
-     *
-     * When flushing schema tables, we want to flush them in a way that mitigates the effects of an abrupt shutdown whilst
-     * the tables are being flushed. On startup, we load the schema from disk before replaying the CL, so we need to
-     * try to avoid problems like reading a table without columns or types, for example. So columns and types should be
-     * flushed before tables, which should be flushed before keyspaces.
-     *
-     * When truncating, the order should be reversed. For immutable lists this is an efficient operation that simply
-     * iterates in reverse order.
-     *
-     * See CASSANDRA-12213 for more details.
-     */
-    public static final ImmutableList<String> ALL =
-        ImmutableList.of(COLUMNS, DROPPED_COLUMNS, TRIGGERS, TYPES, FUNCTIONS, AGGREGATES, INDEXES, TABLES, VIEWS, KEYSPACES);
-
     /**
      * The tables to which we added the cdc column. This is used in {@link #makeUpdateForSchema} below to make sure we skip that
      * column is cdc is disabled as the columns breaks pre-cdc to post-cdc upgrades (typically, 3.0 -> 3.X).
      */
-    private static final Set<String> TABLES_WITH_CDC_ADDED = ImmutableSet.of(TABLES, VIEWS);
-
-
-    /**
-     * Until we upgrade the messaging service version, that is version 4.0, we must preserve the old order (before CASSANDRA-12213)
-     * for digest calculations, otherwise the nodes will never agree on the schema during a rolling upgrade, see CASSANDRA-13559.
-     */
-    public static final ImmutableList<String> ALL_FOR_DIGEST =
-        ImmutableList.of(KEYSPACES, TABLES, COLUMNS, TRIGGERS, VIEWS, TYPES, FUNCTIONS, AGGREGATES, INDEXES);
+    private static final Set<String> TABLES_WITH_CDC_ADDED = ImmutableSet.of(SchemaKeyspaceTables.TABLES, SchemaKeyspaceTables.VIEWS);
 
     private static final CFMetaData Keyspaces =
-        compile(KEYSPACES,
+        compile(SchemaKeyspaceTables.KEYSPACES,
                 "keyspace definitions",
                 "CREATE TABLE %s ("
                 + "keyspace_name text,"
@@ -122,7 +132,7 @@ public final class SchemaKeyspace
                 + "PRIMARY KEY ((keyspace_name)))");
 
     private static final CFMetaData Tables =
-        compile(TABLES,
+        compile(SchemaKeyspaceTables.TABLES,
                 "table definitions",
                 "CREATE TABLE %s ("
                 + "keyspace_name text,"
@@ -148,7 +158,7 @@ public final class SchemaKeyspace
                 + "PRIMARY KEY ((keyspace_name), table_name))");
 
     private static final CFMetaData Columns =
-        compile(COLUMNS,
+        compile(SchemaKeyspaceTables.COLUMNS,
                 "column definitions",
                 "CREATE TABLE %s ("
                 + "keyspace_name text,"
@@ -162,18 +172,19 @@ public final class SchemaKeyspace
                 + "PRIMARY KEY ((keyspace_name), table_name, column_name))");
 
     private static final CFMetaData DroppedColumns =
-        compile(DROPPED_COLUMNS,
+        compile(SchemaKeyspaceTables.DROPPED_COLUMNS,
                 "dropped column registry",
                 "CREATE TABLE %s ("
                 + "keyspace_name text,"
                 + "table_name text,"
                 + "column_name text,"
                 + "dropped_time timestamp,"
+                + "kind text,"
                 + "type text,"
                 + "PRIMARY KEY ((keyspace_name), table_name, column_name))");
 
     private static final CFMetaData Triggers =
-        compile(TRIGGERS,
+        compile(SchemaKeyspaceTables.TRIGGERS,
                 "trigger definitions",
                 "CREATE TABLE %s ("
                 + "keyspace_name text,"
@@ -183,7 +194,7 @@ public final class SchemaKeyspace
                 + "PRIMARY KEY ((keyspace_name), table_name, trigger_name))");
 
     private static final CFMetaData Views =
-        compile(VIEWS,
+        compile(SchemaKeyspaceTables.VIEWS,
                 "view definitions",
                 "CREATE TABLE %s ("
                 + "keyspace_name text,"
@@ -212,7 +223,7 @@ public final class SchemaKeyspace
                 + "PRIMARY KEY ((keyspace_name), view_name))");
 
     private static final CFMetaData Indexes =
-        compile(INDEXES,
+        compile(SchemaKeyspaceTables.INDEXES,
                 "secondary index definitions",
                 "CREATE TABLE %s ("
                 + "keyspace_name text,"
@@ -223,7 +234,7 @@ public final class SchemaKeyspace
                 + "PRIMARY KEY ((keyspace_name), table_name, index_name))");
 
     private static final CFMetaData Types =
-        compile(TYPES,
+        compile(SchemaKeyspaceTables.TYPES,
                 "user defined type definitions",
                 "CREATE TABLE %s ("
                 + "keyspace_name text,"
@@ -233,7 +244,7 @@ public final class SchemaKeyspace
                 + "PRIMARY KEY ((keyspace_name), type_name))");
 
     private static final CFMetaData Functions =
-        compile(FUNCTIONS,
+        compile(SchemaKeyspaceTables.FUNCTIONS,
                 "user defined function definitions",
                 "CREATE TABLE %s ("
                 + "keyspace_name text,"
@@ -247,7 +258,7 @@ public final class SchemaKeyspace
                 + "PRIMARY KEY ((keyspace_name), function_name, argument_types))");
 
     private static final CFMetaData Aggregates =
-        compile(AGGREGATES,
+        compile(SchemaKeyspaceTables.AGGREGATES,
                 "user defined aggregate definitions",
                 "CREATE TABLE %s ("
                 + "keyspace_name text,"
@@ -278,7 +289,7 @@ public final class SchemaKeyspace
     /**
      * Add entries to system_schema.* for the hardcoded system keyspaces
      */
-    public static void saveSystemKeyspacesSchema()
+    public static synchronized void saveSystemKeyspacesSchema()
     {
         KeyspaceMetadata system = Schema.instance.getKSMetaData(SchemaConstants.SYSTEM_KEYSPACE_NAME);
         KeyspaceMetadata schema = Schema.instance.getKSMetaData(SchemaConstants.SCHEMA_KEYSPACE_NAME);
@@ -286,7 +297,7 @@ public final class SchemaKeyspace
         long timestamp = FBUtilities.timestampMicros();
 
         // delete old, possibly obsolete entries in schema tables
-        for (String schemaTable : ALL)
+        for (String schemaTable : SchemaKeyspaceTables.ALL)
         {
             String query = String.format("DELETE FROM %s.%s USING TIMESTAMP ? WHERE keyspace_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, schemaTable);
             for (String systemKeyspace : SchemaConstants.LOCAL_SYSTEM_KEYSPACE_NAMES)
@@ -298,15 +309,15 @@ public final class SchemaKeyspace
         makeCreateKeyspaceMutation(schema, timestamp + 1).build().apply();
     }
 
-    public static void truncate()
+    public static synchronized void truncate()
     {
-        ALL.reverse().forEach(table -> getSchemaCFS(table).truncateBlocking());
+        SchemaKeyspaceTables.ALL.reverse().forEach(table -> getSchemaCFS(table).truncateBlocking());
     }
 
     static void flush()
     {
         if (!DatabaseDescriptor.isUnsafeSystem())
-            ALL.forEach(table -> FBUtilities.waitOnFuture(getSchemaCFS(table).forceFlush()));
+            SchemaKeyspaceTables.ALL.forEach(table -> FBUtilities.waitOnFuture(getSchemaCFS(table).forceFlush()));
     }
 
     /**
@@ -324,7 +335,7 @@ public final class SchemaKeyspace
     }
 
     @VisibleForTesting
-    static Pair<UUID, UUID> calculateSchemaDigest(Set<ByteBuffer> columnsToExclude)
+    static synchronized Pair<UUID, UUID> calculateSchemaDigest(Set<ByteBuffer> columnsToExclude)
     {
         MessageDigest digest;
         MessageDigest digest30;
@@ -338,7 +349,7 @@ public final class SchemaKeyspace
             throw new RuntimeException(e);
         }
 
-        for (String table : ALL_FOR_DIGEST)
+        for (String table : SchemaKeyspaceTables.ALL_FOR_DIGEST)
         {
             ReadCommand cmd = getReadCommandForTableSchema(table);
             try (ReadExecutionController executionController = cmd.executionController();
@@ -379,11 +390,11 @@ public final class SchemaKeyspace
         return PartitionRangeReadCommand.allDataRead(cfs.metadata, FBUtilities.nowInSeconds());
     }
 
-    public static Collection<Mutation> convertSchemaToMutations()
+    public static synchronized Collection<Mutation> convertSchemaToMutations()
     {
         Map<DecoratedKey, Mutation> mutationMap = new HashMap<>();
 
-        for (String table : ALL)
+        for (String table : SchemaKeyspaceTables.ALL)
             convertSchemaToMutations(mutationMap, table);
 
         return mutationMap.values();
@@ -418,8 +429,8 @@ public final class SchemaKeyspace
 
     /**
      * Creates a PartitionUpdate from a partition containing some schema table content.
-     * This is mainly calling {@code PartitionUpdate.fromIterator} except for the fact that it deals with
-     * the problem described in #12236.
+     * This is mainly calling {@code PartitionUpdate.fromIterator} except if cdc is not enabled to handle the problem
+     * in #12236/#16770.
      */
     private static PartitionUpdate makeUpdateForSchema(UnfilteredRowIterator partition, ColumnFilter filter)
     {
@@ -431,14 +442,14 @@ public final class SchemaKeyspace
 
         // We want to skip the 'cdc' column. A simple solution for that is based on the fact that
         // 'PartitionUpdate.fromIterator()' will ignore any columns that are marked as 'fetched' but not 'queried'.
-        ColumnFilter.Builder builder = ColumnFilter.allColumnsBuilder(partition.metadata());
+        ColumnFilter.Builder builder = ColumnFilter.selectionBuilder();
         for (ColumnDefinition column : filter.fetchedColumns())
         {
             if (!column.name.toString().equals("cdc"))
                 builder.add(column);
         }
 
-        return PartitionUpdate.fromIterator(partition, builder.build());
+        return PartitionUpdate.fromIteratorExplicitColumns(partition, builder.build());
     }
 
     private static boolean isSystemKeyspaceSchemaPartition(DecoratedKey partitionKey)
@@ -524,7 +535,7 @@ public final class SchemaKeyspace
         return builder;
     }
 
-    static void addTableToSchemaMutation(CFMetaData table, boolean withColumnsAndTriggers, Mutation.SimpleBuilder builder)
+    public static void addTableToSchemaMutation(CFMetaData table, boolean withColumnsAndTriggers, Mutation.SimpleBuilder builder)
     {
         Row.SimpleBuilder rowBuilder = builder.update(Tables)
                                               .row(table.cfName)
@@ -707,6 +718,7 @@ public final class SchemaKeyspace
         builder.update(DroppedColumns)
                .row(table.cfName, column.name)
                .add("dropped_time", new Date(TimeUnit.MICROSECONDS.toMillis(column.droppedTime)))
+               .add("kind", null != column.kind ? column.kind.toString().toLowerCase() : null)
                .add("type", expandUserTypes(column.type).asCQL3Type().toString());
     }
 
@@ -798,7 +810,7 @@ public final class SchemaKeyspace
 
         // dropped columns
         MapDifference<ByteBuffer, CFMetaData.DroppedColumn> droppedColumnDiff =
-        Maps.difference(oldView.metadata.getDroppedColumns(), oldView.metadata.getDroppedColumns());
+            Maps.difference(oldView.metadata.getDroppedColumns(), oldView.metadata.getDroppedColumns());
 
         // newly dropped columns
         for (CFMetaData.DroppedColumn column : droppedColumnDiff.entriesOnlyOnRight().values())
@@ -924,7 +936,7 @@ public final class SchemaKeyspace
 
     private static Keyspaces fetchKeyspacesWithout(Set<String> excludedKeyspaceNames)
     {
-        String query = format("SELECT keyspace_name FROM %s.%s", SchemaConstants.SCHEMA_KEYSPACE_NAME, KEYSPACES);
+        String query = format("SELECT keyspace_name FROM %s.%s", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.KEYSPACES);
 
         Keyspaces.Builder keyspaces = org.apache.cassandra.schema.Keyspaces.builder();
         for (UntypedResultSet.Row row : query(query))
@@ -942,7 +954,7 @@ public final class SchemaKeyspace
          * We know the keyspace names we are going to query, but we still want to run the SELECT IN
          * query, to filter out the keyspaces that had been dropped by the applied mutation set.
          */
-        String query = format("SELECT keyspace_name FROM %s.%s WHERE keyspace_name IN ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, KEYSPACES);
+        String query = format("SELECT keyspace_name FROM %s.%s WHERE keyspace_name IN ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.KEYSPACES);
 
         Keyspaces.Builder keyspaces = org.apache.cassandra.schema.Keyspaces.builder();
         for (UntypedResultSet.Row row : query(query, new ArrayList<>(includedKeyspaceNames)))
@@ -962,7 +974,7 @@ public final class SchemaKeyspace
 
     private static KeyspaceParams fetchKeyspaceParams(String keyspaceName)
     {
-        String query = format("SELECT * FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, KEYSPACES);
+        String query = format("SELECT * FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.KEYSPACES);
 
         UntypedResultSet.Row row = query(query, keyspaceName).one();
         boolean durableWrites = row.getBoolean(KeyspaceParams.Option.DURABLE_WRITES.toString());
@@ -972,7 +984,7 @@ public final class SchemaKeyspace
 
     private static Types fetchTypes(String keyspaceName)
     {
-        String query = format("SELECT * FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, TYPES);
+        String query = format("SELECT * FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.TYPES);
 
         Types.RawBuilder types = org.apache.cassandra.schema.Types.rawBuilder(keyspaceName);
         for (UntypedResultSet.Row row : query(query, keyspaceName))
@@ -987,7 +999,7 @@ public final class SchemaKeyspace
 
     private static Tables fetchTables(String keyspaceName, Types types)
     {
-        String query = format("SELECT table_name FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, TABLES);
+        String query = format("SELECT table_name FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.TABLES);
 
         Tables.Builder tables = org.apache.cassandra.schema.Tables.builder();
         for (UntypedResultSet.Row row : query(query, keyspaceName))
@@ -1005,10 +1017,10 @@ public final class SchemaKeyspace
                                                 "\"DELETE FROM %s.%s WHERE keyspace_name = '%s' AND table_name = '%s'; " +
                                                 "DELETE FROM %s.%s WHERE keyspace_name = '%s' AND table_name = '%s';\" " +
                                                 "If the table is not supposed to be dropped, restore %s.%s sstables from backups.",
-                                                keyspaceName, tableName, SchemaConstants.SCHEMA_KEYSPACE_NAME, COLUMNS,
-                                                SchemaConstants.SCHEMA_KEYSPACE_NAME, TABLES, keyspaceName, tableName,
-                                                SchemaConstants.SCHEMA_KEYSPACE_NAME, COLUMNS, keyspaceName, tableName,
-                                                SchemaConstants.SCHEMA_KEYSPACE_NAME, COLUMNS);
+                                                keyspaceName, tableName, SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.COLUMNS,
+                                                SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.TABLES, keyspaceName, tableName,
+                                                SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.COLUMNS, keyspaceName, tableName,
+                                                SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.COLUMNS);
 
                 if (IGNORE_CORRUPTED_SCHEMA_TABLES)
                 {
@@ -1026,7 +1038,7 @@ public final class SchemaKeyspace
 
     private static CFMetaData fetchTable(String keyspaceName, String tableName, Types types)
     {
-        String query = String.format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND table_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, TABLES);
+        String query = String.format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND table_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.TABLES);
         UntypedResultSet rows = query(query, keyspaceName, tableName);
         if (rows.isEmpty())
             throw new RuntimeException(String.format("%s:%s not found in the schema definitions keyspace.", keyspaceName, tableName));
@@ -1092,7 +1104,7 @@ public final class SchemaKeyspace
 
     private static List<ColumnDefinition> fetchColumns(String keyspace, String table, Types types)
     {
-        String query = format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND table_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, COLUMNS);
+        String query = format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND table_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.COLUMNS);
         UntypedResultSet columnRows = query(query, keyspace, table);
         if (columnRows.isEmpty())
             throw new MissingColumns("Columns not found in schema table for " + keyspace + "." + table);
@@ -1120,16 +1132,14 @@ public final class SchemaKeyspace
         if (order == ClusteringOrder.DESC)
             type = ReversedType.getInstance(type);
 
-        ColumnIdentifier name = ColumnIdentifier.getInterned(type,
-                                                             row.getBytes("column_name_bytes"),
-                                                             row.getString("column_name"));
+        ColumnIdentifier name = new ColumnIdentifier(row.getBytes("column_name_bytes"), row.getString("column_name"));
 
         return new ColumnDefinition(keyspace, table, name, type, position, kind);
     }
 
     private static Map<ByteBuffer, CFMetaData.DroppedColumn> fetchDroppedColumns(String keyspace, String table)
     {
-        String query = format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND table_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, DROPPED_COLUMNS);
+        String query = format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND table_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.DROPPED_COLUMNS);
         Map<ByteBuffer, CFMetaData.DroppedColumn> columns = new HashMap<>();
         for (UntypedResultSet.Row row : query(query, keyspace, table))
         {
@@ -1143,6 +1153,10 @@ public final class SchemaKeyspace
     {
         String keyspace = row.getString("keyspace_name");
         String name = row.getString("column_name");
+
+        ColumnDefinition.Kind kind =
+            row.has("kind") ? ColumnDefinition.Kind.valueOf(row.getString("kind").toUpperCase())
+                            : null;
         /*
          * we never store actual UDT names in dropped column types (so that we can safely drop types if nothing refers to
          * them anymore), so before storing dropped columns in schema we expand UDTs to tuples. See expandUserTypes method.
@@ -1150,12 +1164,12 @@ public final class SchemaKeyspace
          */
         AbstractType<?> type = parse(keyspace, row.getString("type"), org.apache.cassandra.schema.Types.none());
         long droppedTime = TimeUnit.MILLISECONDS.toMicros(row.getLong("dropped_time"));
-        return new CFMetaData.DroppedColumn(name, type, droppedTime);
+        return new CFMetaData.DroppedColumn(name, kind, type, droppedTime);
     }
 
     private static Indexes fetchIndexes(String keyspace, String table)
     {
-        String query = String.format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND table_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, INDEXES);
+        String query = String.format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND table_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.INDEXES);
         Indexes.Builder indexes = org.apache.cassandra.schema.Indexes.builder();
         query(query, keyspace, table).forEach(row -> indexes.add(createIndexMetadataFromRow(row)));
         return indexes.build();
@@ -1171,7 +1185,7 @@ public final class SchemaKeyspace
 
     private static Triggers fetchTriggers(String keyspace, String table)
     {
-        String query = String.format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND table_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, TRIGGERS);
+        String query = String.format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND table_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.TRIGGERS);
         Triggers.Builder triggers = org.apache.cassandra.schema.Triggers.builder();
         query(query, keyspace, table).forEach(row -> triggers.add(createTriggerFromRow(row)));
         return triggers.build();
@@ -1186,7 +1200,7 @@ public final class SchemaKeyspace
 
     private static Views fetchViews(String keyspaceName, Types types)
     {
-        String query = format("SELECT view_name FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, VIEWS);
+        String query = format("SELECT view_name FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.VIEWS);
 
         Views.Builder views = org.apache.cassandra.schema.Views.builder();
         for (UntypedResultSet.Row row : query(query, keyspaceName))
@@ -1196,7 +1210,7 @@ public final class SchemaKeyspace
 
     private static ViewDefinition fetchView(String keyspaceName, String viewName, Types types)
     {
-        String query = String.format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND view_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, VIEWS);
+        String query = String.format("SELECT * FROM %s.%s WHERE keyspace_name = ? AND view_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.VIEWS);
         UntypedResultSet rows = query(query, keyspaceName, viewName);
         if (rows.isEmpty())
             throw new RuntimeException(String.format("%s:%s not found in the schema definitions keyspace.", keyspaceName, viewName));
@@ -1244,7 +1258,7 @@ public final class SchemaKeyspace
 
     private static Functions fetchUDFs(String keyspaceName, Types types)
     {
-        String query = format("SELECT * FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, FUNCTIONS);
+        String query = format("SELECT * FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.FUNCTIONS);
 
         Functions.Builder functions = org.apache.cassandra.schema.Functions.builder();
         for (UntypedResultSet.Row row : query(query, keyspaceName))
@@ -1305,7 +1319,7 @@ public final class SchemaKeyspace
 
     private static Functions fetchUDAs(String keyspaceName, Functions udfs, Types types)
     {
-        String query = format("SELECT * FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, AGGREGATES);
+        String query = format("SELECT * FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SCHEMA_KEYSPACE_NAME, SchemaKeyspaceTables.AGGREGATES);
 
         Functions.Builder aggregates = org.apache.cassandra.schema.Functions.builder();
         for (UntypedResultSet.Row row : query(query, keyspaceName))
@@ -1423,6 +1437,13 @@ public final class SchemaKeyspace
             keyspace.views.forEach(Schema.instance::addView);
             keyspace.functions.udfs().forEach(Schema.instance::addFunction);
             keyspace.functions.udas().forEach(Schema.instance::addAggregate);
+
+            // If keyspace has been added, we need to recalculate pending ranges to make sure
+            // we send mutations to the correct set of bootstrapping nodes. Refer CASSANDRA-15433.
+            if (keyspace.params.replication.klass != LocalStrategy.class)
+            {
+                PendingRangeCalculatorService.calculatePendingRanges(Keyspace.open(keyspace.name).getReplicationStrategy(), keyspace.name);
+            }
         }
 
         // updated keyspaces
@@ -1489,7 +1510,8 @@ public final class SchemaKeyspace
      * We do it for dropped_columns, to allow safely dropping unused user types without retaining any references
      * in dropped_columns.
      */
-    private static AbstractType<?> expandUserTypes(AbstractType<?> original)
+    @VisibleForTesting
+    public static AbstractType<?> expandUserTypes(AbstractType<?> original)
     {
         if (original instanceof UserType)
             return new TupleType(expandUserTypes(((UserType) original).fieldTypes()));

@@ -714,7 +714,7 @@ public class BulkLoader {
                         AbstractType<?> type = parse(keyspace, row.getString("type"),
                                 org.apache.cassandra.schema.Types.none());
                         droppedColumns.put(UTF8Type.instance.decompose(name),
-                                new CFMetaData.DroppedColumn(name, type, droppedTime * 1000));
+                                new CFMetaData.DroppedColumn(name, null, type, droppedTime * 1000));
                     }
                 } catch (DriverException e) {
                     // ignore. Assume we're asking a v2 schema source.
@@ -727,7 +727,7 @@ public class BulkLoader {
                             if (c == null) {
                                 String name = UTF8Type.instance.compose((ByteBuffer) key);
                                 if (ignoreColumns.contains(name)) {
-                                    c = new DroppedColumn(name, BytesType.instance, FBUtilities.timestampMicros());
+                                    c = new DroppedColumn(name, null, BytesType.instance, FBUtilities.timestampMicros());
                                     put((ByteBuffer) key, c);
                                 }
                             }
