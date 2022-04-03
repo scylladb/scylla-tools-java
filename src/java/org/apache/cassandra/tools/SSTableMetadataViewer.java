@@ -161,7 +161,7 @@ public class SSTableMetadataViewer
                 // We could have just use the SSTableFormat.Values() method but here we add another layer of defence
                 // that will force someone to revisit this code whenever a new format is added.
                 SSTableFormat[] jklFormats = { SSTableFormat.JB, SSTableFormat.KA, SSTableFormat.LA, SSTableFormat.LB };
-                SSTableFormat[] mFormats = {SSTableFormat.MA, SSTableFormat.MB, SSTableFormat.MC, SSTableFormat.MD};
+                SSTableFormat[] mFormats = {SSTableFormat.MA, SSTableFormat.MB, SSTableFormat.MC, SSTableFormat.MD, SSTableFormat.ME};
                 SSTableFormat[] allFormats = new SSTableFormat[jklFormats.length + mFormats.length];
                 System.arraycopy(jklFormats, 0, allFormats, 0, jklFormats.length);
                 System.arraycopy(mFormats, 0, allFormats, jklFormats.length, mFormats.length);
@@ -231,6 +231,9 @@ public class SSTableMetadataViewer
                     printField(sstableFormat, mFormats, out, "Replay positions covered: %s%n", stats.commitLogIntervals);
                     printField(sstableFormat, mFormats, out, "totalColumnsSet: %s%n", stats.totalColumnsSet);
                     printField(sstableFormat, mFormats, out, "totalRows: %s%n", stats.totalRows);
+                    if (stats.originatingHostId != null) {
+                        printField(sstableFormat, mFormats, out, "originatingHostId: %s%n", stats.originatingHostId);
+                    }
                     printField(sstableFormat, allFormats, out, "Estimated tombstone drop times:");
 
                     for (Map.Entry<Number, long[]> entry : stats.estimatedTombstoneDropTime.getAsMap().entrySet())
