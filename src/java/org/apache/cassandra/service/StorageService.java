@@ -3786,6 +3786,13 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         {
             throw new IllegalArgumentException("the local data center must be part of the repair");
         }
+        Set<String> existingDatacenters = tokenMetadata.cloneOnlyTokenMap().getTopology().getDatacenterEndpoints().keys().elementSet();
+        List<String> datacenters = new ArrayList<>(options.getDataCenters());
+        if (!existingDatacenters.containsAll(datacenters))
+        {
+            datacenters.removeAll(existingDatacenters);
+            throw new IllegalArgumentException("data center(s) " + datacenters.toString() + " not found");
+        }
 
         RepairRunnable task = new RepairRunnable(this, cmd, options, keyspace);
         task.addProgressListener(progressSupport);
@@ -4646,10 +4653,12 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         ExecutorService counterMutationStage = StageManager.getStage(Stage.COUNTER_MUTATION);
         ExecutorService viewMutationStage = StageManager.getStage(Stage.VIEW_MUTATION);
         ExecutorService mutationStage = StageManager.getStage(Stage.MUTATION);
+        ExecutorService gossipStage = StageManager.getStage(Stage.GOSSIP);
 
         if (mutationStage.isTerminated()
             && counterMutationStage.isTerminated()
-            && viewMutationStage.isTerminated())
+            && viewMutationStage.isTerminated()
+            && gossipStage.isTerminated())
         {
             if (!isFinalShutdown)
                 logger.warn("Cannot drain node (did it already happen?)");
@@ -4696,9 +4705,11 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             viewMutationStage.shutdown();
             counterMutationStage.shutdown();
             mutationStage.shutdown();
+            gossipStage.shutdown();
             viewMutationStage.awaitTermination(3600, TimeUnit.SECONDS);
             counterMutationStage.awaitTermination(3600, TimeUnit.SECONDS);
             mutationStage.awaitTermination(3600, TimeUnit.SECONDS);
+            gossipStage.awaitTermination(3600, TimeUnit.SECONDS);
 
             StorageProxy.instance.verifyNoHintsInProgress();
 
