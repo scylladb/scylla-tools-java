@@ -471,8 +471,8 @@
           <dependency groupId="io.airlift" artifactId="airline" version="0.6">
             <exclusion groupId="com.google.code.findbugs" artifactId="jsr305" />
           </dependency>
-					<dependency groupId="io.netty" artifactId="netty-bom" version="4.1.58.Final" type="pom" scope="provided"/>
-          <dependency groupId="io.netty" artifactId="netty-all" version="4.0.44.Final" />
+          <dependency groupId="io.netty" artifactId="netty-bom" version="4.1.58.Final" type="pom" scope="provided"/>
+          <dependency groupId="io.netty" artifactId="netty-all" version="4.1.58.Final" />
           <dependency groupId="com.google.code.findbugs" artifactId="jsr305" version="2.0.2" scope="provided"/>
           <dependency groupId="com.clearspring.analytics" artifactId="stream" version="2.5.2">
             <exclusion groupId="it.unimi.dsi" artifactId="fastutil" />
