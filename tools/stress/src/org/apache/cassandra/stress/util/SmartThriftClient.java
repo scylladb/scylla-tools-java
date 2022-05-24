@@ -125,7 +125,7 @@ public class SmartThriftClient implements ThriftClient
 
     private Client get(ByteBuffer pk)
     {
-        Set<Host> hosts = metadata.getReplicas(metadata.quote(keyspace), pk);
+        Set<Host> hosts = metadata.getReplicas(metadata.quote(keyspace), null, pk);
         InetAddress address = null;
         if (hosts.size() > 0)
         {
