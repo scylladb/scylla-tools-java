@@ -73,7 +73,6 @@ rm -rf $RPM_BUILD_ROOT
 /opt/scylladb/share/cassandra/bin/cassandra.in.sh
 /opt/scylladb/share/cassandra/lib/*.jar
 /opt/scylladb/share/cassandra/lib/*.zip
-/opt/scylladb/share/cassandra/lib/licenses
 /opt/scylladb/share/cassandra/doc/cql3/CQL.css
 /opt/scylladb/share/cassandra/doc/cql3/CQL.html
 /opt/scylladb/share/cassandra/bin/scylla-sstableloader

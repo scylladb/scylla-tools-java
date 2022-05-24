@@ -100,7 +100,6 @@ exec -a \"\$0\" \"\$bindir/\$b\" \"\$@\""
 # scylla-tools-core
 install -d -m755 "$retc"/scylla/cassandra
 install -d -m755 "$rprefix"/share/cassandra/lib
-install -d -m755 "$rprefix"/share/cassandra/lib/licenses
 install -d -m755 "$rprefix"/share/cassandra/doc
 install -d -m755 "$rprefix"/share/cassandra/doc/cql3
 install -m644 conf/cassandra-env.sh "$retc"/scylla/cassandra
@@ -109,7 +108,6 @@ install -m644 conf/logback-tools.xml "$retc"/scylla/cassandra
 install -m644 conf/jvm*.options "$retc"/scylla/cassandra
 install -m644 lib/*.jar "$rprefix"/share/cassandra/lib
 install -m644 lib/*.zip "$rprefix"/share/cassandra/lib
-install -m644 lib/licenses/* "$rprefix"/share/cassandra/lib/licenses
 install -m644 doc/cql3/CQL.css doc/cql3/CQL.html "$rprefix"/share/cassandra/doc/cql3
 ln -srf "$rprefix"/share/cassandra/lib/apache-cassandra-$scylla_version-$scylla_release.jar "$rprefix"/share/cassandra/lib/apache-cassandra.jar
 install -m644 dist/common/cassandra.in.sh "$rprefix"/share/cassandra/bin
