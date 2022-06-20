@@ -54,6 +54,10 @@ public class EverywhereStrategy extends AbstractReplicationStrategy
     {
     }
 
+    public void maybeWarnOnOptions()
+    {
+    }
+
     public Collection<String> recognizedOptions()
     {
         return Collections.<String>emptyList();

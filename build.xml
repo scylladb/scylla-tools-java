@@ -18,13 +18,22 @@
          xmlns:artifact="antlib:org.apache.maven.artifact.ant"
          xmlns:if="ant:if"
          xmlns:unless="ant:unless">
+
+    <fail message="You need to use Ant of version at least 1.10 to continue.">
+      <condition>
+        <not>
+          <antversion atleast="1.10"/>
+        </not>
+      </condition>
+    </fail>
+
     <property environment="env"/>
     <property file="build.properties" />
     <property file="build.properties.default" />
     <property name="debuglevel" value="source,lines,vars"/>
 
     <!-- default version and SCM information -->
-    <property name="base.version" value="3.11.12"/>
+    <property name="base.version" value="3.11.13"/>
     <property name="scm.connection" value="scm:https://gitbox.apache.org/repos/asf/cassandra.git"/>
     <property name="scm.developerConnection" value="scm:https://gitbox.apache.org/repos/asf/cassandra.git"/>
     <property name="scm.url" value="https://gitbox.apache.org/repos/asf?p=cassandra.git;a=tree"/>
@@ -391,14 +400,14 @@
           <dependency groupId="org.antlr" artifactId="antlr-runtime" version="3.5.2">
             <exclusion groupId="org.antlr" artifactId="stringtemplate"/>
           </dependency>
-          <dependency groupId="org.slf4j" artifactId="slf4j-api" version="1.7.7"/>
-          <dependency groupId="org.slf4j" artifactId="log4j-over-slf4j" version="1.7.7"/>
-          <dependency groupId="org.slf4j" artifactId="jcl-over-slf4j" version="1.7.7" />
+          <dependency groupId="org.slf4j" artifactId="slf4j-api" version="1.7.25"/>
+          <dependency groupId="org.slf4j" artifactId="log4j-over-slf4j" version="1.7.25"/>
+          <dependency groupId="org.slf4j" artifactId="jcl-over-slf4j" version="1.7.25" />
           <dependency groupId="ch.qos.logback" artifactId="logback-core" version="1.2.9"/>
           <dependency groupId="ch.qos.logback" artifactId="logback-classic" version="1.2.9"/>
-          <dependency groupId="com.fasterxml.jackson.core" artifactId="jackson-core" version="2.12.5"/>
-          <dependency groupId="com.fasterxml.jackson.core" artifactId="jackson-databind" version="2.12.5"/>
-          <dependency groupId="com.fasterxml.jackson.core" artifactId="jackson-annotations" version="2.12.5"/>
+          <dependency groupId="com.fasterxml.jackson.core" artifactId="jackson-core" version="2.13.2"/>
+          <dependency groupId="com.fasterxml.jackson.core" artifactId="jackson-databind" version="2.13.2.2"/>
+          <dependency groupId="com.fasterxml.jackson.core" artifactId="jackson-annotations" version="2.13.2"/>
           <dependency groupId="com.googlecode.json-simple" artifactId="json-simple" version="1.1"/>
           <dependency groupId="com.boundary" artifactId="high-scale-lib" version="1.0.6"/>
           <dependency groupId="com.github.jbellis" artifactId="jamm" version="${jamm.version}"/>
@@ -416,7 +425,7 @@
             <exclusion groupId="org.hamcrest" artifactId="hamcrest-core"/>
           </dependency>
           <dependency groupId="org.mockito" artifactId="mockito-core" version="3.2.4" scope="test"/>
-          <dependency groupId="org.apache.cassandra" artifactId="dtest-api" version="0.0.11" scope="test"/>
+          <dependency groupId="org.apache.cassandra" artifactId="dtest-api" version="0.0.13" scope="test"/>
           <dependency groupId="org.reflections" artifactId="reflections" version="0.9.12" scope="test"/>
           <dependency groupId="org.quicktheories" artifactId="quicktheories" version="0.25" scope="test"/>
           <dependency groupId="org.apache.hadoop" artifactId="hadoop-core" version="1.0.3" scope="provided">
@@ -462,13 +471,13 @@
           <dependency groupId="io.airlift" artifactId="airline" version="0.6">
             <exclusion groupId="com.google.code.findbugs" artifactId="jsr305" />
           </dependency>
-					<dependency groupId="io.netty" artifactId="netty-bom" version="4.1.58.Final" type="pom" scope="provided"/>
-          <dependency groupId="io.netty" artifactId="netty-all" version="4.0.44.Final" />
+          <dependency groupId="io.netty" artifactId="netty-bom" version="4.1.58.Final" type="pom" scope="provided"/>
+          <dependency groupId="io.netty" artifactId="netty-all" version="4.1.58.Final" />
           <dependency groupId="com.google.code.findbugs" artifactId="jsr305" version="2.0.2" scope="provided"/>
           <dependency groupId="com.clearspring.analytics" artifactId="stream" version="2.5.2">
             <exclusion groupId="it.unimi.dsi" artifactId="fastutil" />
           </dependency>
-          <dependency groupId="com.scylladb" artifactId="scylla-driver-core" version="3.7.1-scylla-2" classifier="shaded" />
+          <dependency groupId="com.scylladb" artifactId="scylla-driver-core" version="3.11.2.0" classifier="shaded" />
 	  <!-- UPDATE AND UNCOMMENT ON THE DRIVER RELEASE, BEFORE 4.0 RELEASE
           <dependency groupId="com.datastax.cassandra" artifactId="cassandra-driver-core" version="3.0.1" classifier="shaded">
             <exclusion groupId="io.netty" artifactId="netty-buffer"/>
