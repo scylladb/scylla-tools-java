@@ -37,6 +37,7 @@ VERSION=$(./SCYLLA-VERSION-GEN ${VERSION_OVERRIDE:+ --version "$VERSION_OVERRIDE
 # the former command should generate build/SCYLLA-PRODUCT-FILE and some other version
 # related files
 PRODUCT=`cat build/SCYLLA-PRODUCT-FILE`
+DEST="build/$PRODUCT-tools-$VERSION.noarch.tar.gz"
 
 is_redhat_variant() {
     [ -f /etc/redhat-release ]
@@ -55,8 +56,8 @@ if [ "$CLEAN" = "yes" ]; then
     rm -rf build target
 fi
 
-if [ -f build/$PRODUCT-tools-package.tar.gz ]; then
-    rm build/$PRODUCT-tools-package.tar.gz
+if [ -f "$DEST" ]; then
+    rm "$DEST"
 fi
 
 if [ -z "$NODEPS" ]; then
@@ -79,4 +80,4 @@ fi
 
 ant jar
 dist/debian/debian_files_gen.py
-scripts/create-relocatable-package.py --version $VERSION build/$PRODUCT-tools-package.tar.gz
+scripts/create-relocatable-package.py --version $VERSION "$DEST"
