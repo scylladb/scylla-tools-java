@@ -51,7 +51,12 @@ public final class TableParams
         READ_REPAIR_CHANCE,
         SPECULATIVE_RETRY,
         CRC_CHECK_CHANCE,
-        CDC;
+        CDC,
+
+        // Scylla specific table options.
+        // It is used indirectly in BulkLoader validation.
+        SCYLLA_TAGS,
+        SCYLLA_ENCRYPTION_OPTIONS;
 
         @Override
         public String toString()
