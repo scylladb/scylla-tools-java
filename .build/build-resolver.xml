@@ -213,7 +213,7 @@
         <copy todir="${build.lib}" quiet="true">
             <file file="${local.repository}/org/apache/cassandra/deps/futures-2.1.6-py2.py3-none-any.zip"/>
             <file file="${local.repository}/org/apache/cassandra/deps/cassandra-driver-internal-only-3.11.0-bb96859b.zip"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/six-1.7.3-py2.py3-none-any.zip"/>
+            <file file="${local.repository}/org/apache/cassandra/deps/six-1.12.0-py2.py3-none-any.zip"/>
         </copy>
         <copy todir="${build.lib}/sigar-bin/" quiet="true">
             <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-amd64-freebsd-6.so"/>
