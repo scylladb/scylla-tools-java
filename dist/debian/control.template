@@ -17,6 +17,6 @@ Description: Scylla database tools
 
 Package: %{product}-tools-core
 Architecture: all
-Depends: openjdk-8-jre-headless | openjdk-8-jre | oracle-java8-set-default | adoptopenjdk-8-hotspot-jre | openjdk-11-jre-headless | openjdk-11-jre | oracle-java11-set-default, python (>=2.7) | python2 | python3, procps
+Depends: openjdk-8-jre-headless | openjdk-8-jre | oracle-java8-set-default | adoptopenjdk-8-hotspot-jre | openjdk-11-jre-headless | openjdk-11-jre | oracle-java11-set-default, python (>=2.7) | python2, procps
 Description: Scylla database tools core files
  Core files for scylla database tools
