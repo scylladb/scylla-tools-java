@@ -81,3 +81,6 @@ cassandra-dtest/
 doc/source/tools/nodetool
 
 audit
+
+pylib/
+bin/cqlsh.py

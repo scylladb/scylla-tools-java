@@ -267,6 +267,7 @@
     <target name="realclean" depends="clean" description="Remove the entire build directory and all downloaded artifacts">
 			  <delete dir="${build.lib}" />
         <delete dir="${build.dir}" />
+        <delete dir="${basedir}/pylib"/>
     </target>
 
     <!--
@@ -346,7 +347,7 @@
       <copy file="${build.dir}/maven-ant-tasks-${maven-ant-tasks.version}.jar"
             tofile="${maven-ant-tasks.local}/${maven-ant-tasks.version}/maven-ant-tasks-${maven-ant-tasks.version}.jar"/>
     </target>
-
+    
     <target name="maven-ant-tasks-init" depends="maven-ant-tasks-download,resolver-init" unless="maven-ant-tasks.initialized"
             description="Initialize Maven ANT Tasks">
       <typedef uri="antlib:org.apache.maven.artifact.ant" classpathref="maven-ant-tasks.classpath" />
@@ -1012,7 +1013,7 @@
       </jar>
     </target>
     <target name="jar"
-            depends="_main-jar, build-test, stress-build, write-poms"
+            depends="_main-jar, build-test, stress-build, write-poms, install-cqlsh"
             description="Assemble Cassandra JAR files">
       <!-- Stress jar -->
       <mkdir dir="${stress.build.classes}" />
@@ -1082,7 +1083,18 @@
         </fileset>
       </jar>
     </target>
-
+    <!-- move this to the resolver -->
+    <target name="install-cqlsh">
+      <mkdir dir="${basedir}/pylib" />
+      <exec executable="bash" failonerror="true">
+         <arg line="-c 'tar xvzf ${local.repository}/org/apache/cassandra/deps/scylla-cqlsh-6.0.2.tar.gz --strip-components 1 -C ${basedir}/pylib'"/>
+      </exec>
+      <copy todir="${basedir}/bin">
+        <fileset dir="${basedir}/pylib/cqlsh/">
+          <include name="cqlsh.py" />      
+        </fileset>
+      </copy>
+    </target>
     <!-- creates release tarballs -->
     <target name="artifacts" depends="jar,gen-doc,build-test,stress-build-test,sources-jar,javadoc-jar"
             unless="java.version.8"
