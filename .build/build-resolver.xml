@@ -182,8 +182,6 @@
         <get src="https://files.pythonhosted.org/packages/36/2b/61d51a2c4f25ef062ae3f74576b01638bebad5e045f747ff12643df63844/PyYAML-6.0.tar.gz" dest="${local.repository}/org/apache/cassandra/deps/PyYAML-6.0.tar.gz"  usetimestamp="true" quiet="true" skipexisting="true"/>
         <!-- python-driver -->
         <get src="https://files.pythonhosted.org/packages/ae/05/7cb27e35fc7c76fc2df845eb7509e540238067cc34888d57c93d787b2fe7/scylla-driver-3.25.5.tar.gz" dest="${local.repository}/org/apache/cassandra/deps/scylla-driver-3.25.5.tar.gz" usetimestamp="true" quiet="true" skipexisting="true"/>
-        <!-- scylla-cqlsh -->
-        <get src="https://files.pythonhosted.org/packages/76/6e/23f2b1d41b5acb0c5745d2fed6d3f2dc14ebce952d3d6e53787ee1b9da93/scylla-cqlsh-6.0.2.tar.gz" dest="${local.repository}/org/apache/cassandra/deps/scylla-cqlsh-6.0.2.tar.gz" usetimestamp="true" quiet="true" skipexisting="true"/>
         <!-- apache/cassandra/lib -->
         <get dest="${local.repository}/org/apache/cassandra/deps/sigar-bin/" quiet="true" usetimestamp="true" skipexisting="true">
             <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-amd64-freebsd-6.so"/>

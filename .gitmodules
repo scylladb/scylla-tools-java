@@ -1,0 +1,3 @@
+[submodule "scylla-cqlsh"]
+	path = scylla-cqlsh
+	url = git@github.com:fruch/scylla-cqlsh.git

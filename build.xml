@@ -1085,9 +1085,13 @@
     </target>
     <!-- move this to the resolver -->
     <target name="install-cqlsh">
+      <mkdir dir="${build.dir}/cqlsh_build" />
+      <exec executable="bash" failonerror="true">
+      	<arg line="-c 'pip install build -t ${build.dir}/cqlsh_build &amp;&amp; ${build.dir}/cqlsh_build/bin/pyproject-build ${basedir}/scylla-cqlsh -s' " />
+      </exec>
       <mkdir dir="${basedir}/pylib" />
       <exec executable="bash" failonerror="true">
-         <arg line="-c 'tar xvzf ${local.repository}/org/apache/cassandra/deps/scylla-cqlsh-6.0.2.tar.gz --strip-components 1 -C ${basedir}/pylib'"/>
+         <arg line="-c 'list=( ${basedir}/scylla-cqlsh/dist/scylla-cqlsh*.tar.gz ) &amp;&amp; tar xvzf ${list[-1]} --strip-components 1 -C ${basedir}/pylib'"/>
       </exec>
       <copy todir="${basedir}/bin">
         <fileset dir="${basedir}/pylib/cqlsh/">
