@@ -122,7 +122,7 @@ fi
 install -d -m755 "$rprefix"/share/cassandra/pylib
 install -d -m755 "$retc"/bash_completion.d
 install -m644 dist/common/nodetool-completion "$retc"/bash_completion.d
-cp -r pylib/cqlshlib "$rprefix"/share/cassandra/pylib
+cp -rp pylib/cqlshlib "$rprefix"/share/cassandra/pylib
 for i in bin/{nodetool,sstableloader,cqlsh,cqlsh.py,scylla-sstableloader} tools/bin/{cassandra-stress,cassandra-stressd,sstabledump,sstablelevelreset,sstablemetadata,sstablerepairedset}; do
     bn=$(basename $i)
     install -m755 $i "$rprefix"/share/cassandra/bin
