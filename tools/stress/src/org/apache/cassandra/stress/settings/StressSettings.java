@@ -56,6 +56,7 @@ public class StressSettings implements Serializable
     public final String sendToDaemon;
     public final SettingsGraph graph;
     public final SettingsTokenRange tokenRange;
+    public final SettingCloudConfig cloudConfig;
 
     public StressSettings(SettingsCommand command,
                           SettingsRate rate,
@@ -71,7 +72,8 @@ public class StressSettings implements Serializable
                           SettingsPort port,
                           String sendToDaemon,
                           SettingsGraph graph,
-                          SettingsTokenRange tokenRange)
+                          SettingsTokenRange tokenRange,
+                          SettingCloudConfig cloudConfig)
     {
         this.command = command;
         this.rate = rate;
@@ -88,6 +90,7 @@ public class StressSettings implements Serializable
         this.sendToDaemon = sendToDaemon;
         this.graph = graph;
         this.tokenRange = tokenRange;
+        this.cloudConfig = cloudConfig;
     }
 
     private SmartThriftClient tclient;
@@ -261,6 +264,18 @@ public class StressSettings implements Serializable
 
     public static StressSettings get(Map<String, String[]> clArgs)
     {
+        if (clArgs.containsKey("-cloudconf"))
+        {
+           for (String forbidden : SettingCloudConfig.FORBIDDENS)
+           {
+               if (clArgs.containsKey(forbidden))
+               {
+                   printHelp();
+                   System.out.println("Error processing command line arguments. Cannot use -cloudconf with " + forbidden.toString() + ".");
+                   System.exit(1);
+               }
+           }
+        }
         SettingsCommand command = SettingsCommand.get(clArgs);
         if (command == null)
             throw new IllegalArgumentException("No command specified");
@@ -278,6 +293,7 @@ public class StressSettings implements Serializable
         SettingsSchema schema = SettingsSchema.get(clArgs, command);
         SettingsTransport transport = SettingsTransport.get(clArgs);
         SettingsGraph graph = SettingsGraph.get(clArgs, command);
+        SettingCloudConfig cloudConfig = SettingCloudConfig.get(clArgs);
         if (!clArgs.isEmpty())
         {
             printHelp();
@@ -295,7 +311,7 @@ public class StressSettings implements Serializable
             System.exit(1);
         }
 
-        return new StressSettings(command, rate, generate, insert, columns, errors, log, mode, node, schema, transport, port, sendToDaemon, graph, tokenRange);
+        return new StressSettings(command, rate, generate, insert, columns, errors, log, mode, node, schema, transport, port, sendToDaemon, graph, tokenRange, cloudConfig);
     }
 
     private static Map<String, String[]> parseMap(String[] args)
@@ -375,6 +391,9 @@ public class StressSettings implements Serializable
         graph.printSettings(out);
         out.println("TokenRange:");
         tokenRange.printSettings(out);
+        out.println("CloudConf:");
+        cloudConfig.printSettings(out);
+
 
         if (command.type == Command.USER)
         {

@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.stress.util;
 
+import java.io.File;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -54,6 +55,8 @@ public class JavaDriverClient
     private Cluster cluster;
     private Session session;
     private final LoadBalancingPolicy loadBalancingPolicy;
+    private final File cloudConfigFile;
+
 
     private static final ConcurrentMap<String, PreparedStatement> stmts = new ConcurrentHashMap<>();
 
@@ -73,6 +76,7 @@ public class JavaDriverClient
         this.encryptionOptions = encryptionOptions;
         this.loadBalancingPolicy = loadBalancingPolicy(settings);
         this.connectionsPerHost = settings.mode.connectionsPerHost == null ? 8 : settings.mode.connectionsPerHost;
+        this.cloudConfigFile = settings.cloudConfig.file;
 
         int maxThreadCount = 0;
         if (settings.rate.auto)
@@ -124,20 +128,32 @@ public class JavaDriverClient
         PoolingOptions poolingOpts = new PoolingOptions()
                                      .setConnectionsPerHost(HostDistance.LOCAL, connectionsPerHost, connectionsPerHost)
                                      .setNewConnectionThreshold(HostDistance.LOCAL, 100);
-        if (maxPendingPerConnection != null) {
+
+        if (maxPendingPerConnection != null)
+        {
             poolingOpts.setMaxRequestsPerConnection(HostDistance.LOCAL, maxPendingPerConnection);
         }
 
-        Cluster.Builder clusterBuilder = Cluster.builder()
-                                                .addContactPoint(host)
-                                                .withPort(port)
-                                                .withPoolingOptions(poolingOpts)
-                                                .withoutJMXReporting()
-                                                .withProtocolVersion(protocolVersion)
-                                                .withoutMetrics(); // The driver uses metrics 3 with conflict with our version
+        Cluster.Builder clusterBuilder = Cluster.builder();
+
+        if (this.cloudConfigFile == null)
+        {
+            clusterBuilder.addContactPoint(host);
+        }
+
+        clusterBuilder.withPort(port)
+                .withPoolingOptions(poolingOpts)
+                .withoutJMXReporting()
+                .withProtocolVersion(protocolVersion)
+                .withoutMetrics(); // The driver uses metrics 3 with conflict with our version
+
         if (loadBalancingPolicy != null)
+        {
             clusterBuilder.withLoadBalancingPolicy(loadBalancingPolicy);
+        }
+
         clusterBuilder.withCompression(compression);
+
         if (encryptionOptions.enabled)
         {
             SSLContext sslContext;
@@ -155,6 +171,11 @@ public class JavaDriverClient
         else if (username != null)
         {
             clusterBuilder.withCredentials(username, password);
+        }
+
+        if (this.cloudConfigFile != null)
+        {
+            clusterBuilder.withScyllaCloudConnectionConfig(cloudConfigFile);
         }
 
         cluster = clusterBuilder.build();
