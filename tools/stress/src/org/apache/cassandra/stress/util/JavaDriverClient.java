@@ -42,7 +42,7 @@ public class JavaDriverClient
         InternalLoggerFactory.setDefaultFactory(new Slf4JLoggerFactory());
     }
 
-    public final String host;
+    public final List<String> hosts;
     public final int port;
     public final String username;
     public final String password;
@@ -60,15 +60,15 @@ public class JavaDriverClient
 
     private static final ConcurrentMap<String, PreparedStatement> stmts = new ConcurrentHashMap<>();
 
-    public JavaDriverClient(StressSettings settings, String host, int port)
+    public JavaDriverClient(StressSettings settings, List<String> hosts, int port)
     {
-        this(settings, host, port, new EncryptionOptions.ClientEncryptionOptions());
+        this(settings, hosts, port, new EncryptionOptions.ClientEncryptionOptions());
     }
 
-    public JavaDriverClient(StressSettings settings, String host, int port, EncryptionOptions.ClientEncryptionOptions encryptionOptions)
+    public JavaDriverClient(StressSettings settings, List<String> hosts, int port, EncryptionOptions.ClientEncryptionOptions encryptionOptions)
     {
         this.protocolVersion = settings.mode.protocolVersion;
-        this.host = host;
+        this.hosts = hosts;
         this.port = port;
         this.username = settings.mode.username;
         this.password = settings.mode.password;
@@ -138,7 +138,7 @@ public class JavaDriverClient
 
         if (this.cloudConfigFile == null)
         {
-            clusterBuilder.addContactPoint(host);
+            clusterBuilder.addContactPoints(hosts.toArray(new String[0]));
         }
 
         clusterBuilder.withPort(port)
