@@ -165,20 +165,6 @@
       <available file="${build.src.java}" type="dir" />
     </condition>
 
-    <!-- Check if all tests are being run or just one. If it's all tests don't spam the console with test output.
-         If it's an individual test print the output from the test under the assumption someone is debugging the test
-         and wants to know what is going on without having to context switch to the log file that is generated.
-         Debug level output still needs to be retrieved from the log file.  -->
-    <script language="javascript">
-        if (project.getProperty("cassandra.keepBriefBrief") == null)
-        {
-            if (project.getProperty("test.name").equals("*Test"))
-                project.setProperty("cassandra.keepBriefBrief", "true");
-            else
-                project.setProperty("cassandra.keepBriefBrief", "false");
-        }
-    </script>
-
     <!--
     Build instructions for release builds / builds that support both Java 8 and 11:
     - requires JDK 11 in JAVA_HOME
@@ -1296,25 +1282,6 @@
     </sequential>
   </macrodef>
 
-  <!-- Run a list of junit tasks but don't track errors or generate a report after
-       If a test fails the testfailed property will be set. All the tests are run using the testdelegate
-       macro that is specified as an attribute and they will be run sequentially in this ant process -->
-  <scriptdef name="testhelper_" language="javascript">
-    <attribute name="testdelegate"/>
-    <![CDATA[
-        sep = project.getProperty("path.separator");
-        all = project.getProperty("all-test-classes").split(sep);
-        var p = project.createTask('sequential');
-        for (i = 0; i < all.length; i++) {
-            if (all[i] == undefined) continue;
-            task = project.createTask( attributes.get("testdelegate") );
-            task.setDynamicAttribute( "test.file.list", "" + all[i]);
-            p.addTask(task);
-        }
-        p.perform();
-    ]]>
-  </scriptdef>
-
   <!-- Defines how to run a set of tests. If you change the defaults for attributes
        you should also update them in testmacro.,
        The two are split because the helper doesn't generate
@@ -1946,37 +1913,6 @@
      </fileset>
   	</path>
   	<property name="eclipse-project-libs" refid="eclipse-project-libs-path"/>
-       <script language="javascript">
-        <classpath>
-            <path refid="cassandra.classpath"/>
-            <path refid="cassandra.classpath.test"/>
-        </classpath>
-        <![CDATA[
-        var File = java.io.File;
-  		var FilenameUtils = Packages.org.apache.commons.io.FilenameUtils;
-  		jars = project.getProperty("eclipse-project-libs").split(project.getProperty("path.separator"));
-
-  		cp = "";
-  	    for (i=0; i< jars.length; i++) {
-  	       srcjar = FilenameUtils.getBaseName(jars[i]) + '-sources.jar';
-           srcdir = FilenameUtils.concat(project.getProperty("build.test.dir"), 'sources');
-  		   srcfile = new File(FilenameUtils.concat(srcdir, srcjar));
-
-  		   cp += ' <classpathentry kind="lib" path="' + jars[i] + '"';
-  		   if (srcfile.exists()) {
-  		      cp += ' sourcepath="' + srcfile.getAbsolutePath() + '"';
-  		   }
-  		   cp += '/>\n';
-  		}
-
-  		cp += '</classpath>';
-
-  		echo = project.createTask("echo");
-  	    echo.setMessage(cp);
-  		echo.setFile(new File(".classpath"));
-  		echo.setAppend(true);
-  	    echo.perform();
-  	]]> </script>
     <mkdir dir=".settings" />
   </target>
 
