@@ -22,7 +22,7 @@ Requires:       java-headless
 Summary:        Core files for Scylla tools
 Version:        %{version}
 Release:        %{release}%{?dist}
-Requires:       jre-1.8.0-headless python2
+Requires:       jre-1.8.0-headless
 
 %global __brp_python_bytecompile %{nil}
 %global __brp_mangle_shebangs %{nil}
@@ -44,8 +44,6 @@ rm -rf $RPM_BUILD_ROOT
 %{_sysconfdir}/bash_completion.d/nodetool-completion
 /opt/scylladb/share/cassandra/bin/nodetool
 /opt/scylladb/share/cassandra/bin/sstableloader
-/opt/scylladb/share/cassandra/bin/cqlsh
-/opt/scylladb/share/cassandra/bin/cqlsh.py
 /opt/scylladb/share/cassandra/bin/cassandra-stress
 /opt/scylladb/share/cassandra/bin/cassandra-stressd
 /opt/scylladb/share/cassandra/bin/sstabledump
@@ -54,15 +52,12 @@ rm -rf $RPM_BUILD_ROOT
 /opt/scylladb/share/cassandra/bin/sstablerepairedset
 %{_bindir}/nodetool
 %{_bindir}/sstableloader
-%{_bindir}/cqlsh
-%{_bindir}/cqlsh.py
 %{_bindir}/cassandra-stress
 %{_bindir}/cassandra-stressd
 %{_bindir}/sstabledump
 %{_bindir}/sstablelevelreset
 %{_bindir}/sstablemetadata
 %{_bindir}/sstablerepairedset
-/opt/scylladb/share/cassandra/pylib/*
 
 %files core
 %{_sysconfdir}/scylla/cassandra/cassandra-env.sh
@@ -72,7 +67,6 @@ rm -rf $RPM_BUILD_ROOT
 %{_bindir}/scylla-sstableloader
 /opt/scylladb/share/cassandra/bin/cassandra.in.sh
 /opt/scylladb/share/cassandra/lib/*.jar
-/opt/scylladb/share/cassandra/lib/*.zip
 /opt/scylladb/share/cassandra/doc/cql3/CQL.css
 /opt/scylladb/share/cassandra/doc/cql3/CQL.html
 /opt/scylladb/share/cassandra/bin/scylla-sstableloader

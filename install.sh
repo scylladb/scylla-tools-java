@@ -107,7 +107,6 @@ install -m644 conf/logback.xml "$retc"/scylla/cassandra
 install -m644 conf/logback-tools.xml "$retc"/scylla/cassandra
 install -m644 conf/jvm*.options "$retc"/scylla/cassandra
 install -m644 lib/*.jar "$rprefix"/share/cassandra/lib
-install -m644 lib/*.zip "$rprefix"/share/cassandra/lib
 install -m644 doc/cql3/CQL.css doc/cql3/CQL.html "$rprefix"/share/cassandra/doc/cql3
 ln -srf "$rprefix"/share/cassandra/lib/apache-cassandra-$scylla_version-$scylla_release.jar "$rprefix"/share/cassandra/lib/apache-cassandra.jar
 install -m644 dist/common/cassandra.in.sh "$rprefix"/share/cassandra/bin
@@ -119,11 +118,9 @@ if $nonroot; then
 fi
 
 # scylla-tools
-install -d -m755 "$rprefix"/share/cassandra/pylib
 install -d -m755 "$retc"/bash_completion.d
 install -m644 dist/common/nodetool-completion "$retc"/bash_completion.d
-cp -rp pylib/cqlshlib "$rprefix"/share/cassandra/pylib
-for i in bin/{nodetool,sstableloader,cqlsh,cqlsh.py,scylla-sstableloader} tools/bin/{cassandra-stress,cassandra-stressd,sstabledump,sstablelevelreset,sstablemetadata,sstablerepairedset}; do
+for i in bin/{nodetool,sstableloader,scylla-sstableloader} tools/bin/{cassandra-stress,cassandra-stressd,sstabledump,sstablelevelreset,sstablemetadata,sstablerepairedset}; do
     bn=$(basename $i)
     install -m755 $i "$rprefix"/share/cassandra/bin
     if ! $nonroot; then
