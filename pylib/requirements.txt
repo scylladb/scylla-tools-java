@@ -3,7 +3,7 @@
 # http://datastax.github.io/python-driver/installation.html#cython-based-extensions
 futures
 six
--e git+https://github.com/datastax/python-driver.git@cassandra-test#egg=cassandra-driver
+scylla-driver==3.25.8
 # Used ccm version is tracked by cassandra-test branch in ccm repo. Please create a PR there for fixes or upgrades to new releases.
 -e git+https://github.com/riptano/ccm.git@cassandra-test#egg=ccm
 cql
