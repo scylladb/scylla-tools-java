@@ -178,12 +178,11 @@
         <mkdir dir="${build.lib}/sigar-bin"/>
 
         <!-- files.pythonhosted.org -->
-        <get src="https://files.pythonhosted.org/packages/d4/ea/9d513529a89bcbcd07c8acbac9eecfad29e7562e0b9d69d14f475987ad70/futures-3.4.0-py2-none-any.whl" dest="${local.repository}/org/apache/cassandra/deps/futures-3.4.0-py2-none-any.zip" usetimestamp="true" quiet="true" skipexisting="true"/>
+        <get src="https://files.pythonhosted.org/packages/59/a0/cf4cd997e1750f0c2d91c6ea5abea218251c43c3581bcc2f118b00baf5cf/futures-2.1.6-py2.py3-none-any.whl" dest="${local.repository}/org/apache/cassandra/deps/futures-2.1.6-py2.py3-none-any.zip" usetimestamp="true" quiet="true" skipexisting="true"/>
         <get src="https://files.pythonhosted.org/packages/73/fb/00a976f728d0d1fecfe898238ce23f502a721c0ac0ecfedb80e0d88c64e9/six-1.12.0-py2.py3-none-any.whl" dest="${local.repository}/org/apache/cassandra/deps/six-1.12.0-py2.py3-none-any.zip" usetimestamp="true" quiet="true" skipexisting="true"/>
-        <get src="https://files.pythonhosted.org/packages/a0/a4/d63f2d7597e1a4b55aa3b4d6c5b029991d3b824b5bd331af8d4ab1ed687d/PyYAML-5.4.1.tar.gz" dest="${local.repository}/org/apache/cassandra/deps/PyYAML-5.4.1.tar.gz"  usetimestamp="true" quiet="true" skipexisting="true"/>
 
         <!-- python-driver -->
-        <get src="https://files.pythonhosted.org/packages/8c/2b/8274a5301f98f7afda0d58f54509628ba1670df7ed8e80d84f009b13aeed/scylla-driver-3.25.8.tar.gz" dest="${local.repository}/org/apache/cassandra/deps/scylla-driver-3.25.8.tar.gz" usetimestamp="true" quiet="true" skipexisting="true"/>
+        <get src="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/cassandra-driver-internal-only-3.11.0-bb96859b.zip" dest="${local.repository}/org/apache/cassandra/deps/cassandra-driver-internal-only-3.11.0-bb96859b.zip" usetimestamp="true" quiet="true" skipexisting="true"/>
 
         <!-- apache/cassandra/lib -->
         <get dest="${local.repository}/org/apache/cassandra/deps/sigar-bin/" quiet="true" usetimestamp="true" skipexisting="true">
@@ -210,19 +209,11 @@
             <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/sigar-x86-winnt.dll"/>
             <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/sigar-x86-winnt.lib"/>
         </get>
-
-        <untar src="${local.repository}/org/apache/cassandra/deps/scylla-driver-3.25.8.tar.gz" dest="${local.repository}/org/apache/cassandra/deps/" compression="gzip" />
-	    <zip destfile="${local.repository}/org/apache/cassandra/deps/scylla-driver-3.25.8.zip" basedir="${local.repository}/org/apache/cassandra/deps/scylla-driver-3.25.8"/>
-
-        <untar src="${local.repository}/org/apache/cassandra/deps/PyYAML-5.4.1.tar.gz" dest="${local.repository}/org/apache/cassandra/deps/" compression="gzip"/>
-        <!-- For some reason it doesn't work if I zip whole directory... -->
-        <zip destfile="${local.repository}/org/apache/cassandra/deps/PyYAML-5.4.1.zip" basedir="${local.repository}/org/apache/cassandra/deps/PyYAML-5.4.1/lib"/>
         
         <copy todir="${build.lib}" quiet="true">
-            <file file="${local.repository}/org/apache/cassandra/deps/futures-3.4.0-py2-none-any.zip"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/scylla-driver-3.25.8.zip"/>
+            <file file="${local.repository}/org/apache/cassandra/deps/futures-2.1.6-py2.py3-none-any.zip"/>
+            <file file="${local.repository}/org/apache/cassandra/deps/cassandra-driver-internal-only-3.11.0-bb96859b.zip"/>
             <file file="${local.repository}/org/apache/cassandra/deps/six-1.12.0-py2.py3-none-any.zip"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/PyYAML-5.4.1.zip"/>
         </copy>
         <copy todir="${build.lib}/sigar-bin/" quiet="true">
             <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-amd64-freebsd-6.so"/>
