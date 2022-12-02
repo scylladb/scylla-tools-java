@@ -50,6 +50,9 @@ nbproject/
 nb-configuration.xml
 nbactions.xml
 
+# VSCode
+.vscode/
+
 # Maven, etc.
 out/
 target/
