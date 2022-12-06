@@ -71,7 +71,7 @@ try:
 except ImportError:
     pass
 
-CQL_LIB_PREFIX = 'cassandra-driver-internal-only-'
+CQL_LIB_PREFIX = 'scylla-driver-'
 
 CASSANDRA_PATH = os.path.join(os.path.dirname(os.path.realpath(__file__)), '..')
 CASSANDRA_CQL_HTML_FALLBACK = 'https://cassandra.apache.org/doc/cql3/CQL-3.2.html'
@@ -131,9 +131,9 @@ def find_zip(libprefix):
 cql_zip = find_zip(CQL_LIB_PREFIX)
 if cql_zip:
     ver = os.path.splitext(os.path.basename(cql_zip))[0][len(CQL_LIB_PREFIX):]
-    sys.path.insert(0, os.path.join(cql_zip, 'cassandra-driver-' + ver))
+    sys.path.insert(0, cql_zip)
 
-third_parties = ('futures-', 'six-')
+third_parties = ('futures-', 'six-', 'PyYAML-')
 
 for lib in third_parties:
     lib_zip = find_zip(lib)
@@ -145,7 +145,7 @@ try:
     import cassandra
 except ImportError, e:
     sys.exit("\nPython Cassandra driver not installed, or not on PYTHONPATH.\n"
-             'You might try "pip install cassandra-driver".\n\n'
+             'You might try "pip install scylla-driver".\n\n'
              'Python: %s\n'
              'Module load path: %r\n\n'
              'Error: %s\n' % (sys.executable, sys.path, e))
@@ -236,6 +236,7 @@ parser.add_option("--request-timeout", default=DEFAULT_REQUEST_TIMEOUT_SECONDS, 
                   help='Specify the default request timeout in seconds (default: %default seconds).')
 parser.add_option("-t", "--tty", action='store_true', dest='tty',
                   help='Force tty mode (command prompt).')
+parser.add_option("--cloudconf", help='Configuration file for Scylla Cloud Serverless')
 
 optvalues = optparse.Values()
 (options, arguments) = parser.parse_args(sys.argv[1:], values=optvalues)
@@ -459,11 +460,13 @@ class Shell(cmd.Cmd):
                  single_statement=None,
                  request_timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
                  protocol_version=None,
-                 connect_timeout=DEFAULT_CONNECT_TIMEOUT_SECONDS):
+                 connect_timeout=DEFAULT_CONNECT_TIMEOUT_SECONDS,
+                 cloudconf=None):
         cmd.Cmd.__init__(self, completekey=completekey)
         self.hostname = hostname
         self.port = port
         self.auth_provider = None
+        self.cloudconf = cloudconf
         if username:
             if not password:
                 password = getpass.getpass()
@@ -480,13 +483,18 @@ class Shell(cmd.Cmd):
             kwargs = {}
             if protocol_version is not None:
                 kwargs['protocol_version'] = protocol_version
-            self.conn = Cluster(contact_points=(self.hostname,), port=self.port, cql_version=cqlver,
+            
+            if cloudconf is None:
+                kwargs['contact_points'] = (self.hostname,)
+                kwargs['port'] = self.port
+                kwargs['ssl_options'] = sslhandling.ssl_settings(hostname, CONFIG_FILE) if ssl else None
+                kwargs['load_balancing_policy'] = WhiteListRoundRobinPolicy([self.hostname])
+            self.conn = Cluster(cql_version=cqlver,
                                 auth_provider=self.auth_provider,
                                 no_compact=no_compact,
-                                ssl_options=sslhandling.ssl_settings(hostname, CONFIG_FILE) if ssl else None,
-                                load_balancing_policy=WhiteListRoundRobinPolicy([self.hostname]),
                                 control_connection_timeout=connect_timeout,
                                 connect_timeout=connect_timeout,
+                                scylla_cloud=cloudconf,
                                 **kwargs)
         self.owns_connection = not use_conn
 
@@ -608,10 +616,14 @@ class Shell(cmd.Cmd):
         self.show_version()
 
     def show_host(self):
-        print "Connected to %s at %s:%d." % \
-            (self.applycolor(self.get_cluster_name(), BLUE),
-              self.hostname,
-              self.port)
+        if self.cloudconf is not None:
+            print "Connected to %s at Scylla Cloud." % \
+                (self.applycolor(self.get_cluster_name(), BLUE))
+        else:
+            print "Connected to %s at %s:%d." % \
+                (self.applycolor(self.get_cluster_name(), BLUE),
+                self.hostname,
+                self.port)
 
     def show_version(self):
         vers = self.connection_versions.copy()
@@ -1787,7 +1799,8 @@ class Shell(cmd.Cmd):
                          display_timezone=self.display_timezone,
                          max_trace_wait=self.max_trace_wait, ssl=self.ssl,
                          request_timeout=self.session.default_timeout,
-                         connect_timeout=self.conn.connect_timeout)
+                         connect_timeout=self.conn.connect_timeout,
+                         cloudconf=self.cloudconf)
         subshell.cmdloop()
         f.close()
 
@@ -1968,13 +1981,19 @@ class Shell(cmd.Cmd):
 
         auth_provider = PlainTextAuthProvider(username=username, password=password)
 
-        conn = Cluster(contact_points=(self.hostname,), port=self.port, cql_version=self.conn.cql_version,
+        kwargs = {}
+        if self.cloudconf is None:
+                kwargs['contact_points'] = (self.hostname,)
+                kwargs['port'] = self.port
+                kwargs['ssl_options'] = self.conn.ssl_options
+                kwargs['load_balancing_policy'] = WhiteListRoundRobinPolicy([self.hostname])
+        conn = Cluster(cql_version=self.conn.cql_version,
                        protocol_version=self.conn.protocol_version,
                        auth_provider=auth_provider,
-                       ssl_options=self.conn.ssl_options,
-                       load_balancing_policy=WhiteListRoundRobinPolicy([self.hostname]),
                        control_connection_timeout=self.conn.connect_timeout,
-                       connect_timeout=self.conn.connect_timeout)
+                       connect_timeout=self.conn.connect_timeout,
+                       scylla_cloud=self.cloudconf,
+                       **kwargs)
 
         if self.current_keyspace:
             session = conn.connect(self.current_keyspace)
@@ -2272,8 +2291,16 @@ def read_options(cmdlineargs, environment):
     optvalues.connect_timeout = option_with_default(configs.getint, 'connection', 'timeout', DEFAULT_CONNECT_TIMEOUT_SECONDS)
     optvalues.request_timeout = option_with_default(configs.getint, 'connection', 'request_timeout', DEFAULT_REQUEST_TIMEOUT_SECONDS)
     optvalues.execute = None
+    optvalues.cloudconf = option_with_default(configs.getboolean, 'connection', 'cloudconf', None)
 
     (options, arguments) = parser.parse_args(cmdlineargs, values=optvalues)
+
+    if options.cloudconf is not None:
+        if len(arguments) > 0:
+            parser.error("Cannot use --cloudconf with hostname or port")
+        if options.ssl:
+            parser.error("Cannot use --cloudconf with --ssl. Cloud connection encryption parameters are provided by cloud config bundle.")
+            
 
     hostname = option_with_default(configs.get, 'connection', 'hostname', DEFAULT_HOST)
     port = option_with_default(configs.get, 'connection', 'port', DEFAULT_PORT)
@@ -2380,6 +2407,7 @@ def main(options, hostname, port):
         sys.stderr.write("Using connect timeout: %s seconds\n" % (options.connect_timeout,))
         sys.stderr.write("Using '%s' encoding\n" % (options.encoding,))
         sys.stderr.write("Using ssl: %s\n" % (options.ssl,))
+        sys.stderr.write("Using cloudconf: %s\n" % (options.cloudconf,))
 
     # create timezone based on settings, environment or auto-detection
     timezone = None
@@ -2436,7 +2464,8 @@ def main(options, hostname, port):
                       single_statement=options.execute,
                       request_timeout=options.request_timeout,
                       connect_timeout=options.connect_timeout,
-                      encoding=options.encoding)
+                      encoding=options.encoding,
+                      cloudconf=options.cloudconf)
     except KeyboardInterrupt:
         sys.exit('Connection aborted.')
     except CQL_ERRORS, e:
