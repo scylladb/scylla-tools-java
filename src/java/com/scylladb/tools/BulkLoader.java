@@ -330,7 +330,8 @@ public class BulkLoader {
             this.codecRegistry = new CodecRegistry();
             this.blob = codecRegistry.codecFor(ByteBuffer.allocate(1));
             
-            Cluster.Builder builder = builder().addContactPoints(options.hosts).withProtocolVersion(PROTOCOL_VERSION)
+            Cluster.Builder builder = builder().addContactPoints(options.hosts).withPort(options.port)
+                    .withProtocolVersion(PROTOCOL_VERSION)
                     .withCompression(Compression.LZ4).withPoolingOptions(poolingOptions)
                     .withLoadBalancingPolicy(new TokenAwarePolicy(DCAwareRoundRobinPolicy.builder().build()))
                     .withCodecRegistry(codecRegistry)
@@ -1063,10 +1064,6 @@ public class BulkLoader {
                 opts.noProgress = cmd.hasOption(NOPROGRESS_OPTION);
                 opts.infiniteRetry = !cmd.hasOption(NO_INFINITE_RETRY_OPTION);
 
-                if (cmd.hasOption(PORT_OPTION)) {
-                    opts.port = Integer.parseInt(cmd.getOptionValue(PORT_OPTION));
-                }
-
                 if (cmd.hasOption(THREADS_COUNT_OPTION)) {
                     opts.threadCount = Integer.parseInt(cmd.getOptionValue(THREADS_COUNT_OPTION));
                 }
@@ -1156,7 +1153,12 @@ public class BulkLoader {
                 } else {
                     config = new Config();
                 }
+
                 opts.port = config.native_transport_port;
+                if (cmd.hasOption(PORT_OPTION)) {
+                    opts.port = Integer.parseInt(cmd.getOptionValue(PORT_OPTION));
+                }
+
                 opts.throttle = config.stream_throughput_outbound_megabits_per_sec;
                 opts.encOptions = config.client_encryption_options;
 
