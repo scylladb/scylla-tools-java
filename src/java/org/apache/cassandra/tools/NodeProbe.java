@@ -1248,9 +1248,9 @@ public class NodeProbe implements AutoCloseable
         return msProxy.getDroppedMessages();
     }
 
-    public void loadNewSSTables(String ksName, String cfName, boolean isLoadAndStream)
+    public void loadNewSSTables(String ksName, String cfName, boolean isLoadAndStream, boolean isPrimaryReplicaOnly)
     {
-        ssProxy.loadNewSSTables(ksName, cfName, isLoadAndStream);
+        ssProxy.loadNewSSTables(ksName, cfName, isLoadAndStream, isPrimaryReplicaOnly);
     }
 
     public void rebuildIndex(String ksName, String cfName, String... idxNames)

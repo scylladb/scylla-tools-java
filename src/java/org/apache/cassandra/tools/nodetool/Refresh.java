@@ -39,10 +39,15 @@ public class Refresh extends NodeToolCmd
     description = "Allows loading sstables that do not belong to this node, in which case they are automatically streamed to the owning nodes.")
     private boolean isLoadAndStream = false;
 
+    @Option(title = "primary-replica-only",
+    name = {"-pro", "--primary-replica-only"},
+    description = "Load the sstables and stream to primary replica node that owns the data. Repair is needed after the load and stream process.")
+    private boolean isPrimaryReplicaOnly= false;
+
     @Override
     public void execute(NodeProbe probe)
     {
         checkArgument(args.size() == 2, "refresh requires ks and cf args");
-        probe.loadNewSSTables(args.get(0), args.get(1), isLoadAndStream);
+        probe.loadNewSSTables(args.get(0), args.get(1), isLoadAndStream, isPrimaryReplicaOnly);
     }
 }
