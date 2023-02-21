@@ -5302,7 +5302,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     /**
      * #{@inheritDoc}
      */
-    public void loadNewSSTables(String ksName, String cfName, boolean isLoadAndStream)
+    public void loadNewSSTables(String ksName, String cfName, boolean isLoadAndStream, boolean isPrimaryReplicaOnly)
     {
         if (!isInitialized())
             throw new RuntimeException("Not yet initialized, can't load new sstables");
