@@ -101,6 +101,7 @@ import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.Uninterruptibles;
 import org.apache.cassandra.tools.nodetool.GetTimeout;
+import org.apache.cassandra.utils.EstimatedHistogram;
 
 /**
  * JMX client operations for Cassandra.
@@ -1594,15 +1595,15 @@ public class NodeProbe implements AutoCloseable
 
     public double[] metricPercentilesAsArray(CassandraMetricsRegistry.JmxHistogramMBean metric)
     {
-        BufferSamples bs = new BufferSamples(metric.values());
+        EstimatedHistogram eh = new EstimatedHistogram(metric.values());
 
-        return new double[]{ bs.getValue(0.5),
-                bs.getValue(0.75),
-                bs.getValue(0.95),
-                bs.getValue(0.98),
-                bs.getValue(0.99),
-                bs.getMin(),
-                bs.getMax()};
+        return new double[]{ eh.percentile(0.5),
+                eh.percentile(0.75),
+                eh.percentile(0.95),
+                eh.percentile(0.98),
+                eh.percentile(0.99),
+                eh.min(),
+                eh.max()};
     }
 
     public double[] metricPercentilesAsArray(CassandraMetricsRegistry.JmxTimerMBean metric)
