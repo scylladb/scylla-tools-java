@@ -19,7 +19,7 @@ calculate_heap_sizes()
     case "`uname`" in
         Linux)
             system_memory_in_mb=`free -m | awk '/:/ {print $2;exit}'`
-            system_cpu_cores=`egrep -c 'processor([[:space:]]+):.*' /proc/cpuinfo`
+            system_cpu_cores=`grep -E -c 'processor([[:space:]]+):.*' /proc/cpuinfo`
         ;;
         FreeBSD)
             system_memory_in_bytes=`sysctl hw.physmem | awk '{print $2}'`
