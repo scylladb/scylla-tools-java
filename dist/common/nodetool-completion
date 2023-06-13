@@ -9,7 +9,7 @@ have nodetool && have cqlsh &&
 
     get_keyspaces()
     {
-        [ -z "$keyspaces" ] && keyspaces=$(echo "DESCRIBE KEYSPACES" | cqlsh | egrep -v '^$')
+        [ -z "$keyspaces" ] && keyspaces=$(echo "DESCRIBE KEYSPACES" | cqlsh | grep -E -v '^$')
         echo $keyspaces
     }
 
@@ -33,7 +33,7 @@ have nodetool && have cqlsh &&
     {
         local prev
         prev=$1
-        [ -z "${cf[$prev]}" ] && cf[$prev]=$(echo "DESCRIBE COLUMNFAMILIES" | cqlsh -k ${prev} | egrep -v '^$')
+        [ -z "${cf[$prev]}" ] && cf[$prev]=$(echo "DESCRIBE COLUMNFAMILIES" | cqlsh -k ${prev} | grep -E -v '^$')
         echo ${cf[$prev]}
     }
 
@@ -193,7 +193,7 @@ have nodetool && have cqlsh &&
 
         if [[ $COMP_CWORD -eq 1 ]] ; then
             COMPREPLY=( $(compgen -W "${lngopt} ${shopt}" -- "${cur}") )
-        elif [[ $(echo "${lngopt}"|egrep -c "\b${prev}\b") -gt 0 ]] ; then
+        elif [[ $(echo "${lngopt}"|grep -E -c "\b${prev}\b") -gt 0 ]] ; then
             if echo $optwks|grep -q "\b$prev\b" ; then
                 show_keyspaces "${cur}"
             else
