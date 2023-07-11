@@ -24,7 +24,7 @@ import java.util.concurrent.ConcurrentMap;
 import javax.net.ssl.SSLContext;
 
 import com.datastax.driver.core.*;
-import com.datastax.driver.core.policies.DCAwareRoundRobinPolicy;
+import com.datastax.driver.core.policies.RackAwareRoundRobinPolicy;
 import com.datastax.driver.core.policies.LoadBalancingPolicy;
 import com.datastax.driver.core.policies.TokenAwarePolicy;
 import com.datastax.driver.core.policies.WhiteListPolicy;
@@ -93,9 +93,12 @@ public class JavaDriverClient
 
     private LoadBalancingPolicy loadBalancingPolicy(StressSettings settings)
     {
-        DCAwareRoundRobinPolicy.Builder policyBuilder = DCAwareRoundRobinPolicy.builder();
+        RackAwareRoundRobinPolicy.Builder policyBuilder = RackAwareRoundRobinPolicy.builder();
+
         if (settings.node.datacenter != null)
             policyBuilder.withLocalDc(settings.node.datacenter);
+        if (settings.node.rack != null)
+            policyBuilder.withLocalRack(settings.node.rack);
 
         LoadBalancingPolicy ret = null;
         if (settings.node.datacenter != null)
