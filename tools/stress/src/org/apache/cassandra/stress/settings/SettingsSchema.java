@@ -39,6 +39,9 @@ public class SettingsSchema implements Serializable
     private final String replicationStrategy;
     private final Map<String, String> replicationStrategyOptions;
 
+    private final String storage;
+    private final Map<String, String> storageOptions;
+
     private final String compression;
     private final String compactionStrategy;
     private final Map<String, String> compactionStrategyOptions;
@@ -53,6 +56,8 @@ public class SettingsSchema implements Serializable
 
         replicationStrategy = options.replication.getStrategy();
         replicationStrategyOptions = options.replication.getOptions();
+        storage = options.storage.getType();
+        storageOptions = options.storage.getOptions();
         compression = options.compression.value();
         compactionStrategy = options.compaction.getStrategy();
         compactionStrategyOptions = options.compaction.getOptions();
@@ -123,6 +128,16 @@ public class SettingsSchema implements Serializable
                 b.append(", '").append(entry.getKey()).append("' : '").append(entry.getValue()).append("'");
             }
 
+            b.append("}");
+        }
+
+        if (storage != null) {
+            b.append(" AND storage = {");
+            b.append("'type': '").append(storage).append("'");
+            for (Map.Entry<String, String> entry : storageOptions.entrySet())
+            {
+                b.append(", '").append(entry.getKey()).append("' : '").append(entry.getValue()).append("'");
+            }
             b.append("}");
         }
 
@@ -287,6 +302,7 @@ public class SettingsSchema implements Serializable
     private static final class Options extends GroupedOptions
     {
         final OptionReplication replication = new OptionReplication();
+        final OptionStorage storage = new OptionStorage();
         final OptionCompaction compaction = new OptionCompaction();
         final OptionSimple keyspace = new OptionSimple("keyspace=", ".*", "keyspace1", "The keyspace name to use", false);
         final OptionSimple compression = new OptionSimple("compression=", ".*", null, "Specify the compression to use for sstable, default:no compression", false);
@@ -294,7 +310,7 @@ public class SettingsSchema implements Serializable
         @Override
         public List<? extends Option> options()
         {
-            return Arrays.asList(replication, keyspace, compaction, compression);
+            return Arrays.asList(replication, storage, keyspace, compaction, compression);
         }
     }
 
@@ -304,6 +320,7 @@ public class SettingsSchema implements Serializable
         out.println("  Keyspace: " + keyspace);
         out.println("  Replication Strategy: " + replicationStrategy);
         out.println("  Replication Strategy Options: " + replicationStrategyOptions);
+        out.println("  Storage Options: " + storageOptions);
 
         out.println("  Table Compression: " + compression);
         out.println("  Table Compaction Strategy: " + compactionStrategy);

@@ -32,7 +32,7 @@ public enum CliOption
     RATE("Thread count, rate limit or automatic mode (default is auto)", SettingsRate.helpPrinter()),
     MODE("Thrift or CQL with options", SettingsMode.helpPrinter()),
     ERRORS("How to handle errors when encountered during stress", SettingsErrors.helpPrinter()),
-    SCHEMA("Replication settings, compression, compaction, etc.", SettingsSchema.helpPrinter()),
+    SCHEMA("Replication settings, compression, compaction, storage etc.", SettingsSchema.helpPrinter()),
     NODE("Nodes to connect to", SettingsNode.helpPrinter()),
     LOG("Where to log progress to, and the interval at which to do it", SettingsLog.helpPrinter()),
     TRANSPORT("Custom transport factories", SettingsTransport.helpPrinter()),
