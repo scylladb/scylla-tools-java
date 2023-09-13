@@ -57,6 +57,7 @@ fi
 ARGS=""
 JVM_ARGS=""
 SSL_FILE=$HOME/.cassandra/nodetool-ssl.properties
+JMX_HOST="127.0.0.1"
 while true
 do
   if [ ! $1 ]; then break; fi
@@ -70,6 +71,17 @@ do
       ;;
     --port)
       JMX_PORT=$2
+      shift
+      ;;
+    -h)
+      JMX_HOST=$2
+      shift
+      ;;
+    --host=*)
+      JMX_HOST=$(echo $1 | cut -d '=' -f 2)
+      ;;
+    --host)
+      JMX_HOST=$2
       shift
       ;;
     --ssl)
@@ -100,6 +112,6 @@ fi
         -Dlogback.configurationFile=logback-tools.xml \
         $JVM_ARGS \
         $CONFIGURATION_FILE_OPT \
-        org.apache.cassandra.tools.NodeTool -p $JMX_PORT $ARGS
+        org.apache.cassandra.tools.NodeTool -p $JMX_PORT -h $JMX_HOST $ARGS
 
 # vi:ai sw=4 ts=4 tw=0 et
