@@ -179,53 +179,11 @@
 
         <!-- apache/cassandra/lib -->
         <get dest="${local.repository}/org/apache/cassandra/deps/sigar-bin/" quiet="true" usetimestamp="true" skipexisting="true">
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-amd64-freebsd-6.so"/>
             <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-amd64-linux.so"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-amd64-solaris.so"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-ia64-hpux-11.sl"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-ia64-linux.so"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-pa-hpux-11.sl"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-ppc-aix-5.so"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-ppc-linux.so"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-ppc64-aix-5.so"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-ppc64-linux.so"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-s390x-linux.so"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-sparc-solaris.so"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-sparc64-solaris.so"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-universal-macosx.dylib"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-universal64-macosx.dylib"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-x86-freebsd-5.so"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-x86-freebsd-6.so"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-x86-linux.so"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/libsigar-x86-solaris.so"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/sigar-amd64-winnt.dll"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/sigar-x86-winnt.dll"/>
-            <url url="https://raw.githubusercontent.com/apache/cassandra/${lib.download.sha}/lib/sigar-bin/sigar-x86-winnt.lib"/>
         </get>
 
         <copy todir="${build.lib}/sigar-bin/" quiet="true">
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-amd64-freebsd-6.so"/>
             <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-amd64-linux.so"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-amd64-solaris.so"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-ia64-hpux-11.sl"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-ia64-linux.so"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-pa-hpux-11.sl"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-ppc-aix-5.so"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-ppc-linux.so"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-ppc64-aix-5.so"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-ppc64-linux.so"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-s390x-linux.so"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-sparc-solaris.so"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-sparc64-solaris.so"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-universal-macosx.dylib"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-universal64-macosx.dylib"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-x86-freebsd-5.so"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-x86-freebsd-6.so"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-x86-linux.so"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/libsigar-x86-solaris.so"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/sigar-amd64-winnt.dll"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/sigar-x86-winnt.dll"/>
-            <file file="${local.repository}/org/apache/cassandra/deps/sigar-bin/sigar-x86-winnt.lib"/>
         </copy>
     </target>
 </project>
