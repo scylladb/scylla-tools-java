@@ -836,10 +836,11 @@
                 <path refid="cassandra.classpath"/>
             </classpath>
         </javac>
-        <echo message="Compiling for current java version ..."/>
+        <echo message="Compiling for Java 11 (using ${env.JAVA11_HOME}/bin/javac) ..."/>
         <javac fork="true"
                debug="true" debuglevel="${debuglevel}" encoding="utf-8"
                destdir="${build.classes.main}/META-INF/versions/11" includeantruntime="false"
+               executable="${env.JAVA11_HOME}/bin/javac"
                memorymaximumsize="512M">
             <src path="${build.src.java11}"/>
             <compilerarg value="--release"/>

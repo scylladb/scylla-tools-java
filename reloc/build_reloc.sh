@@ -77,6 +77,15 @@ if [ -z "$JAVA8_HOME" ]; then
         fi
     done
 fi
+if [ -z "$JAVA11_HOME" ]; then
+    for i in /usr/lib/jvm/java-11
+    do
+        if [ -e "$i" ]; then
+            export JAVA11_HOME="$i"
+            break
+        fi
+    done
+fi
 
 ant jar
 dist/debian/debian_files_gen.py
