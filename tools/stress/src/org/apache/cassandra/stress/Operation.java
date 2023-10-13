@@ -21,6 +21,8 @@ package org.apache.cassandra.stress;
 import java.io.IOException;
 import java.util.NoSuchElementException;
 
+import com.datastax.driver.core.exceptions.OverloadedException;
+
 import org.apache.cassandra.stress.report.Timer;
 import org.apache.cassandra.stress.settings.SettingsLog;
 import org.apache.cassandra.stress.settings.StressSettings;
@@ -89,6 +91,19 @@ public abstract class Operation
             catch (NoSuchElementException e) {
                 // Pass thru iterator exhaustion exception
                 throw e;
+            }
+            catch (OverloadedException e) {
+                // The number of in-flight hints currently being written on the
+                // coordinator exceeds the limit, so we need to back off
+                try
+                {
+                    if (settings.log.level.compareTo(SettingsLog.Level.MINIMAL) > 0) {
+                        System.err.println(String.format("Server is overloaded, retry %d/%d times",
+                                                         tries, settings.errors.tries));
+                    }
+                    Thread.sleep(settings.errors.nextDelay(tries).toMillis());
+                }
+                catch (InterruptedException ie) { }
             }
             catch (Exception e)
             {
