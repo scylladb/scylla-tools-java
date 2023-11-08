@@ -391,9 +391,9 @@
           <dependency groupId="org.slf4j" artifactId="jcl-over-slf4j" version="1.7.25" />
           <dependency groupId="ch.qos.logback" artifactId="logback-core" version="1.2.9"/>
           <dependency groupId="ch.qos.logback" artifactId="logback-classic" version="1.2.9"/>
-          <dependency groupId="com.fasterxml.jackson.core" artifactId="jackson-core" version="2.13.2"/>
-          <dependency groupId="com.fasterxml.jackson.core" artifactId="jackson-databind" version="2.13.2.2"/>
-          <dependency groupId="com.fasterxml.jackson.core" artifactId="jackson-annotations" version="2.13.2"/>
+          <dependency groupId="com.fasterxml.jackson.core" artifactId="jackson-core" version="2.15.2"/>
+          <dependency groupId="com.fasterxml.jackson.core" artifactId="jackson-databind" version="2.15.2"/>
+          <dependency groupId="com.fasterxml.jackson.core" artifactId="jackson-annotations" version="2.15.2"/>
           <dependency groupId="com.googlecode.json-simple" artifactId="json-simple" version="1.1"/>
           <dependency groupId="com.boundary" artifactId="high-scale-lib" version="1.0.6"/>
           <dependency groupId="com.github.jbellis" artifactId="jamm" version="${jamm.version}"/>
@@ -463,7 +463,7 @@
           <dependency groupId="com.clearspring.analytics" artifactId="stream" version="2.5.2">
             <exclusion groupId="it.unimi.dsi" artifactId="fastutil" />
           </dependency>
-          <dependency groupId="com.scylladb" artifactId="scylla-driver-core" version="3.11.2.5" classifier="shaded" />
+          <dependency groupId="com.scylladb" artifactId="scylla-driver-core" version="3.11.5.0" classifier="shaded" />
 	  <!-- UPDATE AND UNCOMMENT ON THE DRIVER RELEASE, BEFORE 4.0 RELEASE
           <dependency groupId="com.datastax.cassandra" artifactId="cassandra-driver-core" version="3.0.1" classifier="shaded">
             <exclusion groupId="io.netty" artifactId="netty-buffer"/>
