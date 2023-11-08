@@ -740,7 +740,7 @@
             description="Generate Thrift Java artifacts">
       <echo>Generating Thrift Java code from ${basedir}/interface/cassandra.thrift...</echo>
       <exec executable="thrift" dir="${basedir}/interface" failonerror="true">
-        <arg line="--gen java:hashcode" />
+        <arg line="--gen java" />
         <arg line="-o ${interface.thrift.dir}" />
         <arg line="cassandra.thrift" />
       </exec>
