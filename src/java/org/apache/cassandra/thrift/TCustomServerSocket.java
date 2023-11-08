@@ -28,6 +28,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.thrift.transport.TServerTransport;
+import org.apache.thrift.transport.TTransport;
 import org.apache.thrift.transport.TTransportException;
 
 /**
@@ -88,7 +89,11 @@ public class TCustomServerSocket extends TServerTransport
         this.recvBufferSize = recvBufferSize;
     }
 
-    @Override
+    public TTransport accept()
+    {
+        throw new UnsupportedOperationException("Thrift is not supported in scylla-tools-java");
+    }
+
     @SuppressWarnings("resource")
     protected TCustomSocket acceptImpl() throws TTransportException
     {

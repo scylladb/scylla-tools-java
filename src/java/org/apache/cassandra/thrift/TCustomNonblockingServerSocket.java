@@ -42,46 +42,9 @@ public class TCustomNonblockingServerSocket extends TNonblockingServerSocket
         this.recvBufferSize = recvBufferSize;
     }
 
-    @Override
     @SuppressWarnings("resource")
     protected TNonblockingSocket acceptImpl() throws TTransportException
     {
-        TNonblockingSocket tsocket = super.acceptImpl();
-        if (tsocket == null || tsocket.getSocketChannel() == null)
-            return tsocket;
-        Socket socket = tsocket.getSocketChannel().socket();
-        try
-        {
-            socket.setKeepAlive(this.keepAlive);
-        }
-        catch (SocketException se)
-        {
-            logger.warn("Failed to set keep-alive on Thrift socket.", se);
-        }
-
-        if (this.sendBufferSize != null)
-        {
-            try
-            {
-                socket.setSendBufferSize(this.sendBufferSize.intValue());
-            }
-            catch (SocketException se)
-            {
-                logger.warn("Failed to set send buffer size on Thrift socket.", se);
-            }
-        }
-
-        if (this.recvBufferSize != null)
-        {
-            try
-            {
-                socket.setReceiveBufferSize(this.recvBufferSize.intValue());
-            }
-            catch (SocketException se)
-            {
-                logger.warn("Failed to set receive buffer size on Thrift socket.", se);
-            }
-        }
-        return tsocket;
+        throw new UnsupportedOperationException("Thrift is not supported in scylla-tools-java");
     }
 }

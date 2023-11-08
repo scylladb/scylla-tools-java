@@ -186,51 +186,7 @@ public class CustomTThreadPoolServer extends TServer
          */
         public void run()
         {
-            TProcessor processor = null;
-            TProtocol inputProtocol = null;
-            TProtocol outputProtocol = null;
-            SocketAddress socket = null;
-            try (TTransport inputTransport = inputTransportFactory_.getTransport(client_);
-                 TTransport outputTransport = outputTransportFactory_.getTransport(client_))
-            {
-                socket = ((TCustomSocket) client_).getSocket().getRemoteSocketAddress();
-                ThriftSessionManager.instance.setCurrentSocket(socket);
-                processor = processorFactory_.getProcessor(client_);
-
-                inputProtocol = inputProtocolFactory_.getProtocol(inputTransport);
-                outputProtocol = outputProtocolFactory_.getProtocol(outputTransport);
-                // we check stopped first to make sure we're not supposed to be shutting
-                // down. this is necessary for graceful shutdown.  (but not sufficient,
-                // since process() can take arbitrarily long waiting for client input.
-                // See comments at the end of serve().)
-                while (!stopped && processor.process(inputProtocol, outputProtocol))
-                {
-                    inputProtocol = inputProtocolFactory_.getProtocol(inputTransport);
-                    outputProtocol = outputProtocolFactory_.getProtocol(outputTransport);
-                }
-            }
-            catch (TTransportException ttx)
-            {
-                // Assume the client died and continue silently
-                // Log at debug to allow debugging of "frame too large" errors (see CASSANDRA-3142).
-                logger.trace("Thrift transport error occurred during processing of message.", ttx);
-            }
-            catch (TException tx)
-            {
-                logger.error("Thrift error occurred during processing of message.", tx);
-            }
-            catch (Exception e)
-            {
-                JVMStabilityInspector.inspectThrowable(e);
-                logger.error("Error occurred during processing of message.", e);
-            }
-            finally
-            {
-                if (socket != null)
-                    ThriftSessionManager.instance.connectionComplete(socket);
-
-                activeClients.decrementAndGet();
-            }
+            throw new UnsupportedOperationException("Thrift is not supported in scylla-tools-java");
         }
     }
 
