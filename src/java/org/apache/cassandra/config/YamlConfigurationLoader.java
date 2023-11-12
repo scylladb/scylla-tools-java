@@ -41,6 +41,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.exceptions.ConfigurationException;
+import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.TypeDescription;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.composer.Composer;
@@ -149,7 +150,7 @@ public class YamlConfigurationLoader implements ConfigurationLoader
         constructor.setPropertyUtils(propertiesChecker);
         Yaml yaml = new Yaml(constructor);
         Node node = yaml.represent(map);
-        constructor.setComposer(new Composer(null, null)
+        constructor.setComposer(new Composer(null, null, new LoaderOptions())
         {
             @Override
             public Node getSingleNode()
@@ -167,7 +168,7 @@ public class YamlConfigurationLoader implements ConfigurationLoader
     {
         CustomConstructor(Class<?> theRoot, ClassLoader classLoader)
         {
-            super(theRoot, classLoader);
+            super(theRoot, classLoader, new LoaderOptions());
 
             TypeDescription seedDesc = new TypeDescription(ParameterizedClass.class);
             seedDesc.putMapPropertyType("parameters", String.class, String.class);
