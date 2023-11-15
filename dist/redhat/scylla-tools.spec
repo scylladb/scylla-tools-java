@@ -21,7 +21,7 @@ BuildArch:      noarch
 Summary:        Core files for Scylla tools
 Version:        %{version}
 Release:        %{release}%{?dist}
-Requires:       jre-1.8.0-headless
+Requires:       jre-11-headless
 
 %global __brp_python_bytecompile %{nil}
 %global __brp_mangle_shebangs %{nil}
