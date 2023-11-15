@@ -18,7 +18,6 @@ Conflicts:      cassandra
 License:        Apache
 URL:            http://www.scylladb.com/
 BuildArch:      noarch
-Requires:       java-headless
 Summary:        Core files for Scylla tools
 Version:        %{version}
 Release:        %{release}%{?dist}
