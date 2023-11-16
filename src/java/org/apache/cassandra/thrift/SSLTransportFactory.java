@@ -18,7 +18,7 @@
 package org.apache.cassandra.thrift;
 
 import com.google.common.collect.Sets;
-import org.apache.thrift.transport.TFramedTransport;
+import org.apache.thrift.transport.layered.TFramedTransport;
 import org.apache.thrift.transport.TSSLTransportFactory;
 import org.apache.thrift.transport.TTransport;
 
