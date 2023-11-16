@@ -102,7 +102,7 @@ public class TCustomSocket extends TIOStreamTransport
    * @param host Remote host
    * @param port Remote port
    */
-  public TCustomSocket(String host, int port)
+  public TCustomSocket(String host, int port) throws TTransportException
   {
     this(host, port, 0);
   }
@@ -115,7 +115,7 @@ public class TCustomSocket extends TIOStreamTransport
    * @param port    Remote port
    * @param timeout Socket timeout
    */
-  public TCustomSocket(String host, int port, int timeout)
+  public TCustomSocket(String host, int port, int timeout) throws TTransportException
   {
     this.host = host;
     this.port = port;

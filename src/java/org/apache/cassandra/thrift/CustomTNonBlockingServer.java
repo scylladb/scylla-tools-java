@@ -80,7 +80,7 @@ public class CustomTNonBlockingServer extends TNonblockingServer
     {
         public CustomFrameBuffer(final TNonblockingTransport trans,
           final SelectionKey selectionKey,
-          final AbstractSelectThread selectThread)
+          final AbstractSelectThread selectThread) throws TTransportException
         {
 			super(trans, selectionKey, selectThread);
         }
