@@ -1460,6 +1460,13 @@ public class NodeProbe implements AutoCloseable
                 // Do we need some other way to address indexes?
                 //String type = cf.contains(".") ? "IndexTable" : "Table";
                 String type = "Table";
+                if (cf.contains(":")) {
+                    // If cf name contains a colon (as happens in Alternator
+                    // GSI) it needs to be quoted otherwise it can't be stored
+                    // in an ObjectName. Only Scylla's fork of the JMX knows
+                    // how to unquote it later, so only quote if necessary.
+                    cf = ObjectName.quote(cf);
+                }
                 oName = new ObjectName(String.format("org.apache.cassandra.metrics:type=%s,keyspace=%s,scope=%s,name=%s", type, ks, cf, metricName));
             }
             else if (!Strings.isNullOrEmpty(ks))
