@@ -87,9 +87,7 @@ public class SettingsSchema implements Serializable
         {
             //Keyspace
             client.execute(createKeyspaceStatementCQL3(), org.apache.cassandra.db.ConsistencyLevel.LOCAL_ONE);
-
-            client.execute("USE \""+keyspace+"\"", org.apache.cassandra.db.ConsistencyLevel.LOCAL_ONE);
-
+            
             //Add standard1
             client.execute(createStandard1StatementCQL3(settings), org.apache.cassandra.db.ConsistencyLevel.LOCAL_ONE);
 
@@ -152,7 +150,7 @@ public class SettingsSchema implements Serializable
         StringBuilder b = new StringBuilder();
 
         b.append("CREATE TABLE IF NOT EXISTS ")
-         .append("standard1 (key blob PRIMARY KEY ");
+         .append("\""+keyspace+"\"".standard1 (key blob PRIMARY KEY ");
 
         try
         {
