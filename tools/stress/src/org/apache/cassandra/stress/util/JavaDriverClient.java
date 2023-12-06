@@ -101,13 +101,16 @@ public class JavaDriverClient
             policyBuilder.withLocalRack(settings.node.rack);
 
         LoadBalancingPolicy ret = null;
-        if (settings.node.datacenter != null)
+        if (settings.node.datacenter != null || settings.node.rack != null)
             ret = policyBuilder.build();
 
         if (settings.node.isWhiteList)
             ret = new WhiteListPolicy(ret == null ? policyBuilder.build() : ret, settings.node.resolveAll(settings.port.nativePort));
 
-        return new TokenAwarePolicy(ret == null ? policyBuilder.build() : ret);
+        if (ret != null) {
+            return ret;
+        }
+        return new TokenAwarePolicy(policyBuilder.build());
     }
 
     public PreparedStatement prepare(String query)
