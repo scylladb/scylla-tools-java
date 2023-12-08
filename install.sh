@@ -119,11 +119,15 @@ fi
 
 install_tool_bin () {
     bin_src=$1
-    bn=$(basename "$bin_src")
-    install -m755 "$bin_src" "$rprefix"/share/cassandra/bin
+    if [ $# -eq 1 ]; then
+        bin_dest=$(basename "$bin_src")
+    else
+        bin_dest=$2
+    fi
+    install -m755 "$bin_src" "$rprefix"/share/cassandra/bin/"$bin_dest"
     if ! $nonroot; then
-        echo "$thunk" > "$rusr"/bin/$bn
-        chmod 755 "$rusr"/bin/$bn
+        echo "$thunk" > "$rusr"/bin/"$bin_dest"
+        chmod 755 "$rusr"/bin/"$bin_dest"
     fi
 }
 
