@@ -117,14 +117,19 @@ if $nonroot; then
     sed -i -e "s#/opt/scylladb/#$rprefix/#g" "$rprefix"/share/cassandra/bin/cassandra.in.sh
 fi
 
-# scylla-tools
-install -d -m755 "$retc"/bash_completion.d
-install -m644 dist/common/nodetool-completion "$retc"/bash_completion.d
-for i in bin/{nodetool,sstableloader,scylla-sstableloader} tools/bin/{cassandra-stress,cassandra-stressd,sstabledump,sstablelevelreset,sstablemetadata,sstablerepairedset}; do
-    bn=$(basename $i)
-    install -m755 $i "$rprefix"/share/cassandra/bin
+install_tool_bin () {
+    bin_src=$1
+    bn=$(basename "$bin_src")
+    install -m755 "$bin_src" "$rprefix"/share/cassandra/bin
     if ! $nonroot; then
         echo "$thunk" > "$rusr"/bin/$bn
         chmod 755 "$rusr"/bin/$bn
     fi
+}
+
+# scylla-tools
+install -d -m755 "$retc"/bash_completion.d
+install -m644 dist/common/nodetool-completion "$retc"/bash_completion.d
+for i in bin/{nodetool,sstableloader,scylla-sstableloader} tools/bin/{cassandra-stress,cassandra-stressd,sstabledump,sstablelevelreset,sstablemetadata,sstablerepairedset}; do
+    install_tool_bin "$i"
 done
