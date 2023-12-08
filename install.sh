@@ -134,6 +134,9 @@ install_tool_bin () {
 # scylla-tools
 install -d -m755 "$retc"/bash_completion.d
 install -m644 dist/common/nodetool-completion "$retc"/bash_completion.d
-for i in bin/{nodetool,sstableloader,scylla-sstableloader} tools/bin/{cassandra-stress,cassandra-stressd,sstabledump,sstablelevelreset,sstablemetadata,sstablerepairedset}; do
+for i in bin/{sstableloader,scylla-sstableloader} tools/bin/{cassandra-stress,cassandra-stressd,sstabledump,sstablelevelreset,sstablemetadata,sstablerepairedset}; do
     install_tool_bin "$i"
 done
+
+install_tool_bin bin/nodetool-wrapper nodetool
+install_tool_bin bin/nodetool nodetool-java
