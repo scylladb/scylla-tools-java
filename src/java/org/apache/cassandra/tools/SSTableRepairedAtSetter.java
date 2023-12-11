@@ -81,7 +81,16 @@ public class SSTableRepairedAtSetter
 
         for (String fname: fileNames)
         {
-            Descriptor descriptor = Descriptor.fromFilename(fname);
+            Descriptor descriptor;
+            try {
+                descriptor = Descriptor.fromFilename(fname);
+            }
+            catch (UnsupportedOperationException e)
+            {
+                System.err.println(e.getMessage());
+                continue;
+            }
+
             if (descriptor.version.hasRepairedAt())
             {
                 if (setIsRepaired)
