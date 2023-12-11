@@ -150,6 +150,9 @@ public class SSTableMetadataViewer
                 out.println("No such file: " + fname);
                 continue;
             }
+
+            try
+            {
                 Descriptor descriptor = Descriptor.fromFilename(fname);
                 Map<MetadataType, MetadataComponent> metadata = descriptor.getMetadataSerializer().deserialize(descriptor, EnumSet.allOf(MetadataType.class));
                 ValidationMetadata validation = (ValidationMetadata) metadata.get(MetadataType.VALIDATION);
@@ -273,7 +276,11 @@ public class SSTableMetadataViewer
                     printField(sstableFormat, mFormats, out, "StaticColumns: {%s}%n", FBUtilities.toString(statics));
                     printField(sstableFormat, mFormats, out, "RegularColumns: {%s}%n", FBUtilities.toString(regulars));
                 }
-            // TODO: reindent
+            }
+            catch (UnsupportedOperationException e)
+            {
+                System.err.println(e.getMessage());
+            }
         }
     }
 

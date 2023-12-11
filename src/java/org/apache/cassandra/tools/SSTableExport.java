@@ -185,9 +185,9 @@ public class SSTableExport
             System.err.println("Cannot find file " + ssTableFileName);
             System.exit(1);
         }
-        Descriptor desc = Descriptor.fromFilename(ssTableFileName);
         try
         {
+            Descriptor desc = Descriptor.fromFilename(ssTableFileName);
             CFMetaData metadata = metadataFromSSTable(desc);
             if (cmd.hasOption(ENUMERATE_KEYS_OPTION))
             {
@@ -253,6 +253,10 @@ public class SSTableExport
                     JsonTransformer.toJson(currentScanner, partitions, cmd.hasOption(RAW_TIMESTAMPS), metadata, System.out);
                 }
             }
+        }
+        catch (UnsupportedOperationException e)
+        {
+            System.err.println(e.getMessage());
         }
         catch (IOException e)
         {
