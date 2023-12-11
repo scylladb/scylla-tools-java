@@ -145,8 +145,11 @@ public class SSTableMetadataViewer
 
         for (String fname : cmd.getArgs())
         {
-            if (new File(fname).exists())
+            if (!new File(fname).exists())
             {
+                out.println("No such file: " + fname);
+                continue;
+            }
                 Descriptor descriptor = Descriptor.fromFilename(fname);
                 Map<MetadataType, MetadataComponent> metadata = descriptor.getMetadataSerializer().deserialize(descriptor, EnumSet.allOf(MetadataType.class));
                 ValidationMetadata validation = (ValidationMetadata) metadata.get(MetadataType.VALIDATION);
@@ -270,11 +273,7 @@ public class SSTableMetadataViewer
                     printField(sstableFormat, mFormats, out, "StaticColumns: {%s}%n", FBUtilities.toString(statics));
                     printField(sstableFormat, mFormats, out, "RegularColumns: {%s}%n", FBUtilities.toString(regulars));
                 }
-            }
-            else
-            {
-                out.println("No such file: " + fname);
-            }
+            // TODO: reindent
         }
     }
 
