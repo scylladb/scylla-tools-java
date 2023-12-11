@@ -277,7 +277,21 @@ public class Descriptor
         }
 
         // generation
-        int generation = Integer.parseInt(nexttok);
+        int generation;
+        try
+        {
+            // since Scylla 5.4, the SStable started using UUID v1 identifier
+            // instead of sequence of integers. but C* 3.x does not support the
+            // former. let's direct user to use the native tools of
+            // `scylla sstable` which is builtin in the scylla executable,
+            generation = Integer.parseInt(nexttok);
+        }
+        catch (NumberFormatException e)
+        {
+            throw new UnsupportedOperationException("SSTable '" + name
+                                                    + "' uses UUID-based identifier. "
+                                                    + "Please use 'scylla sstable' commands.");
+        }
 
         // version
         nexttok = tokenStack.pop();
