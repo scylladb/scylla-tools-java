@@ -16,8 +16,8 @@ function select_java_home() {
 
     for expected_java_version in $expected_java_versions; do
         for java_home in /usr/lib/jvm/*; do
-            java=$java_home/bin/java
-            javaver=$($java -XshowSettings:properties -version 2>&1 | awk -F' = ' '/java.specification.version/ {print $NF}')
+            javac=$java_home/bin/javac
+            javaver=$($javac -version 2>&1 | awk -F'[ .]' '/javac/ {print $2}')
             if [ "$javaver" = $expected_java_version ]; then
                 echo $java_home
                 return
@@ -86,6 +86,14 @@ printf "version=%s" $VERSION > build.properties
 # dbuild sets it), let's try some common possibilities
 if [ -z "$JAVA8_HOME" ]; then
     export JAVA8_HOME=$(select_java_home 1.8)
+fi
+
+if [ -z "$JAVA_HOME" ]; then
+    export JAVA_HOME=$(select_java_home 11)
+    if [ -z "$JAVA_HOME" ]; then
+        echo "unable to find jdk-11" 2>&1
+        exit 1
+    fi
 fi
 
 ant jar
