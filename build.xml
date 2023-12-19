@@ -82,13 +82,8 @@
 
     <property name="doc.dir" value="${basedir}/doc"/>
 
-    <!--
-    We specify '8' instead of '1.8' in source.version to indicate that that this build requires Java 11 _and_ Java 8.
-    Builds that only run against Java 8, _have to_ specify '1.8' for source version. This makes it possible to let
-    CI scripts distinguish between "pure Java 8" releases and "hybrid" releases.
-    -->
-    <property name="source.version" value="8"/>
-    <property name="target.version" value="8"/>
+    <property name="source.version" value="11"/>
+    <property name="target.version" value="11"/>
     <property name="release.version" value="10"/>
 
     <condition property="version" value="${base.version}">
@@ -181,6 +176,8 @@
     </condition>
     <property name="java11-jvmargs" value=""/>
 
+    <property name="jdk11plus-javac-exports" value="--add-exports java.rmi/sun.rmi.registry=ALL-UNNAMED --add-exports java.rmi/sun.rmi.transport.tcp=ALL-UNNAMED --add-exports java.base/jdk.internal.ref=ALL-UNNAMED --add-exports java.base/sun.nio.ch=ALL-UNNAMED" />
+
     <!--
          Add all the dependencies.
     -->
@@ -228,7 +225,6 @@
             message="Not a source artifact, stopping here." />
         <mkdir dir="${build.classes.main}"/>
         <mkdir dir="${build.classes.thrift}"/>
-        <mkdir dir="${build.classes.main}/META-INF/versions/11"/>
         <mkdir dir="${test.lib}"/>
         <mkdir dir="${test.classes}"/>
         <mkdir dir="${stress.test.classes}"/>
@@ -790,32 +786,19 @@
     <target name="codecoverage" depends="jacoco-run,jacoco-report" description="Create code coverage report"/>
 
     <target name="_build_multi_java">
-        <!-- Note: we cannot use javac's 'release' option, as that does not allow accessing sun.misc.Unsafe nor
-        Nashorn's ClassFilter class as any javac modules option is invalid for relase 8. -->
-        <echo message="Compiling for Java 8 (using ${env.JAVA8_HOME}/bin/javac) ..."/>
-        <javac fork="true"
-               debug="true" debuglevel="${debuglevel}" encoding="utf-8"
-               destdir="${build.classes.main}" includeantruntime="false" source="8" target="8"
-               executable="${env.JAVA8_HOME}/bin/javac"
-               memorymaximumsize="512M">
-            <src path="${build.src.java}"/>
-            <src path="${build.src.java8}"/>
-            <src path="${build.src.gen-java}"/>
-            <src path="${interface.thrift.gen-java}"/>
-            <compilerarg value="-XDignore.symbol.file"/>
-            <classpath>
-                <path refid="cassandra.classpath"/>
-            </classpath>
-        </javac>
         <echo message="Compiling for Java (using ${ant.java.version}) ..."/>
         <javac fork="true"
                debug="true" debuglevel="${debuglevel}" encoding="utf-8"
-               destdir="${build.classes.main}/META-INF/versions/11" includeantruntime="false"
+               destdir="${build.classes.main}" includeantruntime="false"
+               source="${ant.java.version}"
+               target="${ant.java.version}"
                memorymaximumsize="512M">
+            <src path="${build.src.java}"/>
             <src path="${build.src.java11}"/>
-            <compilerarg value="--release"/>
-            <compilerarg value="${release.version}"/>
+            <src path="${build.src.gen-java}"/>
+            <src path="${interface.thrift.gen-java}"/>
             <compilerarg value="-XDignore.symbol.file"/>
+            <compilerarg line="${jdk11plus-javac-exports}"/>
             <classpath>
                 <path refid="cassandra.classpath"/>
             </classpath>
