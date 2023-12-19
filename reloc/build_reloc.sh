@@ -10,6 +10,22 @@ print_usage() {
     exit 1
 }
 
+function select_java_home() {
+    local expected_java_versions
+    expected_java_versions=$@
+
+    for expected_java_version in $expected_java_versions; do
+        for java_home in /usr/lib/jvm/*; do
+            java=$java_home/bin/java
+            javaver=$($java -XshowSettings:properties -version 2>&1 | awk -F' = ' '/java.specification.version/ {print $NF}')
+            if [ "$javaver" = $expected_java_version ]; then
+                echo $java_home
+                return
+            fi
+        done
+    done
+}
+
 CLEAN=
 NODEPS=
 VERSION_OVERRIDE=
@@ -69,13 +85,7 @@ printf "version=%s" $VERSION > build.properties
 # Our ant build.xml requires JAVA8_HOME to be set. In case it wasn't (e.g.,
 # dbuild sets it), let's try some common possibilities
 if [ -z "$JAVA8_HOME" ]; then
-    for i in /usr/lib/jvm/java-1.8.0
-    do
-        if [ -e "$i" ]; then
-            export JAVA8_HOME="$i"
-            break
-        fi
-    done
+    export JAVA8_HOME=$(select_java_home 1.8)
 fi
 
 ant jar
