@@ -41,6 +41,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
 import com.google.common.collect.*;
 import com.google.common.util.concurrent.*;
+import com.google.common.util.concurrent.MoreExecutors;
 
 import org.apache.commons.lang3.StringUtils;
 
@@ -1726,7 +1727,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                     progressSupport.progress("bootstrap", new ProgressEvent(ProgressEventType.ERROR, 1, 1, message));
                     progressSupport.progress("bootstrap", new ProgressEvent(ProgressEventType.COMPLETE, 1, 1, "Resume bootstrap complete"));
                 }
-            });
+            }, MoreExecutors.directExecutor());
             return true;
         }
         else
@@ -2847,7 +2848,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                 // We still want to send the notification
                 sendReplicationNotification(notifyEndpoint);
             }
-        });
+        }, MoreExecutors.directExecutor());
     }
 
     // needs to be modified to accept either a keyspace or ARS.
