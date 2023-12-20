@@ -60,7 +60,7 @@ public interface SSTableFormat
         {
             //Since format comes right after generation
             //we disallow formats with numeric names
-            assert !CharMatcher.DIGIT.matchesAllOf(name);
+            assert !CharMatcher.inRange('0', '9').matchesAllOf(name);
 
             this.name = name;
             this.info = info;
