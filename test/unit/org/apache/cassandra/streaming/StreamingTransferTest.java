@@ -25,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 import com.google.common.collect.Iterables;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.MoreExecutors;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -125,7 +126,7 @@ public class StreamingTransferTest
             {
                 fail();
             }
-        });
+        }, MoreExecutors.directExecutor());
         // should be complete immediately
         futureResult.get(100, TimeUnit.MILLISECONDS);
     }
