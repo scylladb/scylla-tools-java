@@ -22,6 +22,14 @@ fi
 
 SCYLLA_PATH=$(realpath "$SCYLLA_PATH")
 
+# Until the native nodetool catches up with all commands, we always redirect
+# `help` commands to the java-nodetool, otherwise, users invoking help will get
+# the incomplete scylla-native help output.
+if [[ "$1" == "help" ]]
+then
+    exec "$NODETOOL_PATH" "$@"
+fi
+
 # Requesting the help for a command will fail with a distinct error code (100)
 # if the command doesn't exist. Thus we can use the exit code to check whether
 # scylla-nodetool implements a given command or not, and therefore, dispatch
