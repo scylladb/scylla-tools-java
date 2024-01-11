@@ -18,8 +18,8 @@ import javax.management.openmbean.TabularData;
 import org.apache.cassandra.tools.NodeProbe;
 import org.apache.cassandra.tools.NodeTool.NodeToolCmd;
 
-import io.airlift.command.Arguments;
-import io.airlift.command.Command;
+import io.airlift.airline.Arguments;
+import io.airlift.airline.Command;
 
 @Command(name = "sstableinfo", description = "Information about sstables per keyspace/table")
 public class SSTableInfo extends NodeToolCmd {
