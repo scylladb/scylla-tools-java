@@ -426,7 +426,7 @@
 		    <exclusion groupId="asm" artifactId="asm"/> <!-- this is the outdated version 3.1 -->
             <exclusion groupId="org.codehaus.jackson" artifactId="jackson-mapper-asl"/>
           </dependency>
-          <dependency groupId="net.java.dev.jna" artifactId="jna" version="4.2.2"/>
+          <dependency groupId="net.java.dev.jna" artifactId="jna" version="5.14.0"/>
 
           <dependency groupId="org.jacoco" artifactId="org.jacoco.agent" version="${jacoco.version}"/>
           <dependency groupId="org.jacoco" artifactId="org.jacoco.ant" version="${jacoco.version}"/>
