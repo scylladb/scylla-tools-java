@@ -453,7 +453,7 @@
             <exclusion groupId="org.hibernate" artifactId="hibernate-validator" />
           </dependency>
           <dependency groupId="org.mindrot" artifactId="jbcrypt" version="0.4" />
-          <dependency groupId="io.airlift" artifactId="airline" version="0.6">
+          <dependency groupId="io.airlift" artifactId="airline" version="0.9">
             <exclusion groupId="com.google.code.findbugs" artifactId="jsr305" />
           </dependency>
           <dependency groupId="io.netty" artifactId="netty-bom" version="4.1.100.Final" type="pom" scope="provided"/>

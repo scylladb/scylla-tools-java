@@ -5,7 +5,7 @@ import java.io.PrintStream;
 import org.apache.cassandra.tools.NodeProbe;
 import org.apache.cassandra.tools.NodeTool.NodeToolCmd;
 
-import io.airlift.command.Command;
+import io.airlift.airline.Command;
 
 @Command(name = "checkAndRepairCdcStreams",
         description = "Checks that CDC streams reflect current cluster topology and regenerates them if not.\n"
