@@ -26,7 +26,19 @@ SCYLLA_PATH=$(realpath "$SCYLLA_PATH")
 # if the command doesn't exist. Thus we can use the exit code to check whether
 # scylla-nodetool implements a given command or not, and therefore, dispatch
 # the request to the appropriate nodetool variant.
-"$SCYLLA_PATH" nodetool "$1" --help &>/dev/null
+
+help_opt="--help"
+for opt in "$@"; do
+    # if "--help" is already in the command line, no need to added it for
+    # checking scylla-nodetool implements the given command.
+    if [ "$opt" = "$help_opt" ]; then
+        help_opt=""
+        break
+    fi
+done
+
+"$SCYLLA_PATH" nodetool "$@" $help_opt &>/dev/null
+
 if [[ $? -eq 100 ]]
 then
     exec "$NODETOOL_PATH" "$@"
