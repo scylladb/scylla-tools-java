@@ -28,8 +28,8 @@ import java.net.URL;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import com.google.common.base.Charsets;
 import com.google.common.io.Resources;
@@ -132,7 +132,7 @@ class SettingsMisc implements Serializable
             try
             {
                 URL url = Resources.getResource("org/apache/cassandra/config/version.properties");
-                System.out.println(parseVersionFile(Resources.toString(url, Charsets.UTF_8)));
+                System.out.println(parseVersionFile(Resources.toString(url, Charsets.UTF_8)).trim());
             }
             catch (IOException e)
             {
@@ -145,15 +145,22 @@ class SettingsMisc implements Serializable
 
     static String parseVersionFile(String versionFileContents)
     {
-        Matcher matcher = Pattern.compile(".*?CassandraVersion=(.*?)$").matcher(versionFileContents);
-        if (matcher.find())
-        {
-            return "Version: " + matcher.group(1);
+        Map<String, String> translatedStrings = Stream.of(new String[][] {
+            {"CassandraVersion", "Version: "},
+            {"JavaDriverVersion", "scylla-java-driver: "},
+        }).collect(Collectors.toMap(data -> data[0], data->data[1]));
+
+        StringBuilder versionInfo = new StringBuilder();
+        for (String line : versionFileContents.split("\n")) {
+            if (line.contains("=")) {
+                String[] version = line.split("=");
+                String message = translatedStrings.get(version[0].trim());
+                versionInfo.append(message != null ? message : (version[0].trim() + ": "));
+                versionInfo.append(version[1].trim());
+                versionInfo.append("\n");
+            }
         }
-        else
-        {
-            return "Unable to find version information";
-        }
+        return versionInfo.toString();
     }
 
     public static void printHelp()

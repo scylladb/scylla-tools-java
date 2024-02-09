@@ -34,6 +34,7 @@
 
     <!-- default version and SCM information -->
     <property name="base.version" value="3.11.13"/>
+    <property name="base.javaDriverVersion" value="3.11.5.1"/>
     <property name="scm.connection" value="scm:https://gitbox.apache.org/repos/asf/cassandra.git"/>
     <property name="scm.developerConnection" value="scm:https://gitbox.apache.org/repos/asf/cassandra.git"/>
     <property name="scm.url" value="https://gitbox.apache.org/repos/asf?p=cassandra.git;a=tree"/>
@@ -462,7 +463,7 @@
           <dependency groupId="com.clearspring.analytics" artifactId="stream" version="2.5.2">
             <exclusion groupId="it.unimi.dsi" artifactId="fastutil" />
           </dependency>
-          <dependency groupId="com.scylladb" artifactId="scylla-driver-core" version="3.11.5.1" classifier="shaded" />
+          <dependency groupId="com.scylladb" artifactId="scylla-driver-core" version="${base.javaDriverVersion}" classifier="shaded" />
 	  <!-- UPDATE AND UNCOMMENT ON THE DRIVER RELEASE, BEFORE 4.0 RELEASE
           <dependency groupId="com.datastax.cassandra" artifactId="cassandra-driver-core" version="3.0.1" classifier="shaded">
             <exclusion groupId="io.netty" artifactId="netty-buffer"/>
@@ -766,6 +767,7 @@
       <mkdir dir="${version.properties.dir}"/>
       <propertyfile file="${version.properties.dir}/version.properties">
         <entry key="CassandraVersion" value="${version}"/>
+        <entry key="JavaDriverVersion" value="${base.javaDriverVersion}" />
       </propertyfile>
     </target>
 
