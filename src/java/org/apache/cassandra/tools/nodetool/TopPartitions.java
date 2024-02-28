@@ -65,7 +65,7 @@ public class TopPartitions extends NodeToolCmd
     @Override
     public void execute(NodeProbe probe)
     {
-        checkArgument(topCount < size, "TopK count (-k) option must be smaller then the summary capacity (-s)");
+        checkArgument(topCount < size, "TopK count (-k) option must be smaller than the summary capacity (-s)");
         PrintStream out = probe.output().out;
         // generate the list of samplers
         List<Sampler> targets = Lists.newArrayList();
