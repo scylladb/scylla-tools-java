@@ -1,16 +1,17 @@
-Name:           %{product}-tools
+Name:           %{product}-cassandra-stress
 Version:        %{version}
 Release:        %{release}%{?dist}
-Summary:        Scylla Tools
+Summary:        Scylla Cassandra Stress
 Group:          Applications/Databases
 
 License:        Apache
 URL:            http://www.scylladb.com/
 Source0:        %{reloc_pkg}
 BuildArch:      noarch
-Requires:       %{product}-conf %{product}-tools-core
+Requires:       %{product}-conf %{product}-cassandra-stress-core
 AutoReqProv:    no
 Conflicts:      cassandra
+Obsoletes:      %{product}-tools < 6.1
 
 %description
 
@@ -18,19 +19,20 @@ Conflicts:      cassandra
 License:        Apache
 URL:            http://www.scylladb.com/
 BuildArch:      noarch
-Summary:        Core files for Scylla tools
+Summary:        Core files for Scylla Cassandra Stress
 Version:        %{version}
 Release:        %{release}%{?dist}
 Requires:       jre-11-headless
+Obsoletes:      %{product}-tools-core < 6.1
 
 %global __brp_python_bytecompile %{nil}
 %global __brp_mangle_shebangs %{nil}
 
 %description core
-Core files for scylla tools.
+Core files for scylla casssandra stress.
 
 %prep
-%setup -q -n scylla-tools
+%setup -q -n scylla-cassandra-stress
 
 
 %build
@@ -40,33 +42,20 @@ rm -rf $RPM_BUILD_ROOT
 ./install.sh --root "$RPM_BUILD_ROOT"
 
 %files
-/opt/scylladb/share/cassandra/bin/nodetool
-/opt/scylladb/share/cassandra/bin/sstableloader
 /opt/scylladb/share/cassandra/bin/cassandra-stress
 /opt/scylladb/share/cassandra/bin/cassandra-stressd
-/opt/scylladb/share/cassandra/bin/sstabledump
-/opt/scylladb/share/cassandra/bin/sstablelevelreset
-/opt/scylladb/share/cassandra/bin/sstablemetadata
-/opt/scylladb/share/cassandra/bin/sstablerepairedset
-%{_bindir}/sstableloader
 %{_bindir}/cassandra-stress
 %{_bindir}/cassandra-stressd
-%{_bindir}/sstabledump
-%{_bindir}/sstablelevelreset
-%{_bindir}/sstablemetadata
-%{_bindir}/sstablerepairedset
 
 %files core
 %{_sysconfdir}/scylla/cassandra/cassandra-env.sh
 %{_sysconfdir}/scylla/cassandra/logback.xml
 %{_sysconfdir}/scylla/cassandra/logback-tools.xml
 %{_sysconfdir}/scylla/cassandra/jvm*.options
-%{_bindir}/scylla-sstableloader
 /opt/scylladb/share/cassandra/bin/cassandra.in.sh
 /opt/scylladb/share/cassandra/lib/*.jar
 /opt/scylladb/share/cassandra/doc/cql3/CQL.css
 /opt/scylladb/share/cassandra/doc/cql3/CQL.html
-/opt/scylladb/share/cassandra/bin/scylla-sstableloader
 
 %changelog
 * Fri Aug  7 2015 Takuya ASADA Takuya ASADA <syuu@cloudius-systems.com>

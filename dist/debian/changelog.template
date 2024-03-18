@@ -1,4 +1,4 @@
-%{product}-tools (%{version}-%{release}-%{revision}) %{codename}; urgency=medium
+%{product}-cassandra-stress (%{version}-%{release}-%{revision}) %{codename}; urgency=medium
 
   * New release 
 
