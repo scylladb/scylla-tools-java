@@ -2,13 +2,13 @@
 
 . /etc/os-release
 print_usage() {
-    echo "build_deb.sh --reloc-pkg build/scylla-tools-package.tar.gz"
+    echo "build_deb.sh --reloc-pkg build/scylla-cassandra-stress-package.tar.gz"
     echo "  --reloc-pkg specify relocatable package path"
     echo "  --builddir specify Debian package build path"
     exit 1
 }
 
-RELOC_PKG=build/scylla-tools-package.tar.gz
+RELOC_PKG=build/scylla-cassandra-stress-package.tar.gz
 BUILDDIR=build/debian
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -32,7 +32,7 @@ mkdir -p "$BUILDDIR"/scylla-package
 tar -C "$BUILDDIR"/scylla-package -xpf $RELOC_PKG
 cd "$BUILDDIR"/scylla-package
 
-mv scylla-tools/debian debian
+mv scylla-cassandra-stress/debian debian
 PKG_NAME=$(dpkg-parsechangelog --show-field Source)
 # XXX: Drop revision number from version string.
 #      Since it always '1', this should be okay for now.

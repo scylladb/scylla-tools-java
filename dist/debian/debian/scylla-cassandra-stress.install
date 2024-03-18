@@ -1,0 +1,4 @@
+opt/scylladb/share/cassandra/bin/cassandra-stress
+opt/scylladb/share/cassandra/bin/cassandra-stressd
+usr/bin/cassandra-stress
+usr/bin/cassandra-stressd
