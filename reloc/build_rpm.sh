@@ -2,12 +2,12 @@
 
 . /etc/os-release
 print_usage() {
-    echo "build_rpm.sh --reloc-pkg build/scylla-tools-package.tar.gz"
+    echo "build_rpm.sh --reloc-pkg build/scylla-cassandra-stress-package.tar.gz"
     echo "  --reloc-pkg specify relocatable package path"
     echo "  --builddir specify rpmbuild directory"
     exit 1
 }
-RELOC_PKG=build/scylla-tools-package.tar.gz
+RELOC_PKG=build/scylla-cassadra-stress-package.tar.gz
 BUILDDIR=build/redhat
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -28,8 +28,8 @@ done
 RELOC_PKG=$(readlink -f $RELOC_PKG)
 RPMBUILD=$(readlink -f $BUILDDIR)
 mkdir -p "$BUILDDIR"
-tar -C "$BUILDDIR" -xpf $RELOC_PKG scylla-tools/SCYLLA-RELEASE-FILE scylla-tools/SCYLLA-RELOCATABLE-FILE scylla-tools/SCYLLA-VERSION-FILE scylla-tools/SCYLLA-PRODUCT-FILE scylla-tools/dist/redhat
-cd "$BUILDDIR"/scylla-tools
+tar -C "$BUILDDIR" -xpf $RELOC_PKG scylla-cassandra-stress/SCYLLA-RELEASE-FILE scylla-cassandra-stress/SCYLLA-RELOCATABLE-FILE scylla-cassandra-stress/SCYLLA-VERSION-FILE scylla-cassandra-stress/SCYLLA-PRODUCT-FILE scylla-cassandra-stress/dist/redhat
+cd "$BUILDDIR"/scylla-cassandra-stress
 
 RELOC_PKG_BASENAME=$(basename "$RELOC_PKG")
 SCYLLA_VERSION=$(cat SCYLLA-VERSION-FILE)
@@ -48,6 +48,6 @@ parameters=(
     -D"reloc_pkg $RELOC_PKG_BASENAME"
 )
 
-cp dist/redhat/scylla-tools.spec $RPMBUILD/SPECS
+cp dist/redhat/scylla-cassandra-stress.spec $RPMBUILD/SPECS
 # this rpm can be install on both fedora / centos7, so drop distribution name from the file name
-rpmbuild -ba "${parameters[@]}" --define '_binary_payload w2.xzdio' --define "_topdir $RPMBUILD" --undefine "dist" $RPMBUILD/SPECS/scylla-tools.spec
+rpmbuild -ba "${parameters[@]}" --define '_binary_payload w2.xzdio' --define "_topdir $RPMBUILD" --undefine "dist" $RPMBUILD/SPECS/scylla-cassandra-stress.spec
