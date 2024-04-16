@@ -11,6 +11,7 @@ Architecture: all
 Depends: %{product}-conf, %{product}-tools-core, ${misc:Depends}
 Recommends: ntp | time-daemon
 Conflicts: cassandra
+Breaks: %{product}-server (<< 5.5)
 Description: Scylla database tools
  Scylla is a highly scalable, eventually consistent, distributed,
  partitioned row DB.

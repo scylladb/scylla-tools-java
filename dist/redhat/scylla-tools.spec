@@ -40,9 +40,7 @@ rm -rf $RPM_BUILD_ROOT
 ./install.sh --root "$RPM_BUILD_ROOT"
 
 %files
-%{_sysconfdir}/bash_completion.d/nodetool-completion
 /opt/scylladb/share/cassandra/bin/nodetool
-/opt/scylladb/share/cassandra/bin/nodetool-java
 /opt/scylladb/share/cassandra/bin/sstableloader
 /opt/scylladb/share/cassandra/bin/cassandra-stress
 /opt/scylladb/share/cassandra/bin/cassandra-stressd
@@ -50,8 +48,6 @@ rm -rf $RPM_BUILD_ROOT
 /opt/scylladb/share/cassandra/bin/sstablelevelreset
 /opt/scylladb/share/cassandra/bin/sstablemetadata
 /opt/scylladb/share/cassandra/bin/sstablerepairedset
-%{_bindir}/nodetool
-%{_bindir}/nodetool-java
 %{_bindir}/sstableloader
 %{_bindir}/cassandra-stress
 %{_bindir}/cassandra-stressd
