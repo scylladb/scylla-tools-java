@@ -1,6 +1,4 @@
-etc/bash_completion.d/nodetool-completion
 opt/scylladb/share/cassandra/bin/nodetool
-opt/scylladb/share/cassandra/bin/nodetool-java
 opt/scylladb/share/cassandra/bin/sstableloader
 opt/scylladb/share/cassandra/bin/cassandra-stress
 opt/scylladb/share/cassandra/bin/cassandra-stressd
@@ -8,8 +6,6 @@ opt/scylladb/share/cassandra/bin/sstabledump
 opt/scylladb/share/cassandra/bin/sstablelevelreset
 opt/scylladb/share/cassandra/bin/sstablemetadata
 opt/scylladb/share/cassandra/bin/sstablerepairedset
-usr/bin/nodetool
-usr/bin/nodetool-java
 usr/bin/sstableloader
 usr/bin/cassandra-stress
 usr/bin/cassandra-stressd

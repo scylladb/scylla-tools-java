@@ -132,11 +132,11 @@ install_tool_bin () {
 }
 
 # scylla-tools
-install -d -m755 "$retc"/bash_completion.d
-install -m644 dist/common/nodetool-completion "$retc"/bash_completion.d
 for i in bin/{sstableloader,scylla-sstableloader} tools/bin/{cassandra-stress,cassandra-stressd,sstabledump,sstablelevelreset,sstablemetadata,sstablerepairedset}; do
     install_tool_bin "$i"
 done
 
-install_tool_bin bin/nodetool-wrapper nodetool
-install_tool_bin bin/nodetool nodetool-java
+# Don't create the thunk in $rusr/bin for nodetool, this command is now only
+# available as a backup in $rprefix/share/cassandra/bin/nodetool, in case the
+# native nodetool doesn't work.
+install -m755 bin/nodetool "$rprefix"/share/cassandra/bin/nodetool
