@@ -272,6 +272,7 @@
       <echo>Building Grammar ${build.src.antlr}/Cql.g  ...</echo>
       <java classname="org.antlr.Tool"
             classpathref="cql3-grammar.classpath"
+            fork="true"
             failonerror="true">
          <arg value="-Xconversiontimeout" />
          <arg value="10000" />
