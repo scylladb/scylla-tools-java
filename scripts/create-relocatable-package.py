@@ -48,9 +48,9 @@ version = args.version
 output = args.dest
 
 ar = tarfile.open(output, mode='w|gz')
-# relocatable package format version = 2
+# relocatable package format version = 3.0
 with open('build/.relocatable_package_version', 'w') as f:
-    f.write('2\n')
+    f.write('3.0\n')
 ar.add('build/.relocatable_package_version', arcname='.relocatable_package_version')
 
 pathlib.Path('build/SCYLLA-RELOCATABLE-FILE').touch()
