@@ -47,6 +47,8 @@ public class Compact extends NodeToolCmd
     @Option(title = "end_token", name = {"-et", "--end-token"}, description = "Use -et to specify a token at which compaction range ends")
     private String endToken = EMPTY;
 
+    @Option(title = "offstrategy", name = {"--offstrategy"}, description = "Use --offstrategy to trigger offstrategy compaction")
+    private boolean offStrategy = false;
 
     @Override
     public void execute(NodeProbe probe)
@@ -86,7 +88,7 @@ public class Compact extends NodeToolCmd
                 }
                 else
                 {
-                    probe.forceKeyspaceCompaction(splitOutput, keyspace, tableNames);
+                    probe.forceKeyspaceCompaction(splitOutput, offStrategy, keyspace, tableNames);
                 }
             } catch (Exception e)
             {
