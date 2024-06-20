@@ -97,7 +97,7 @@ b=\"\$(basename \"\$0\")\"
 bindir=\"$prefix/share/cassandra/bin\"
 exec -a \"\$0\" \"\$bindir/\$b\" \"\$@\""
 
-# scylla-tools-core
+# scylla-cassandra-stress-core
 install -d -m755 "$retc"/scylla/cassandra
 install -d -m755 "$rprefix"/share/cassandra/lib
 install -d -m755 "$rprefix"/share/cassandra/doc
@@ -131,12 +131,7 @@ install_tool_bin () {
     fi
 }
 
-# scylla-tools
-for i in bin/{sstableloader,scylla-sstableloader} tools/bin/{cassandra-stress,cassandra-stressd,sstabledump,sstablelevelreset,sstablemetadata,sstablerepairedset}; do
+# scylla-cassandra-stress
+for i in tools/bin/{cassandra-stress,cassandra-stressd}; do
     install_tool_bin "$i"
 done
-
-# Don't create the thunk in $rusr/bin for nodetool, this command is now only
-# available as a backup in $rprefix/share/cassandra/bin/nodetool, in case the
-# native nodetool doesn't work.
-install -m755 bin/nodetool "$rprefix"/share/cassandra/bin/nodetool

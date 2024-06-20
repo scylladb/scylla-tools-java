@@ -27,7 +27,7 @@ import os
 import tarfile
 import pathlib
 
-RELOC_PREFIX='scylla-tools'
+RELOC_PREFIX='scylla-cassandra-stress'
 def reloc_add(self, name, arcname=None, recursive=True, *, filter=None):
     if arcname:
         return self.add(name, arcname="{}/{}".format(RELOC_PREFIX, arcname))
