@@ -72,22 +72,19 @@ public class Status extends NodeToolCmd
 
         Map<InetAddress, Float> ownerships = null;
         boolean hasEffectiveOwns = false;
-        try
-        {
-            ownerships = probe.effectiveOwnership(keyspace);
-            hasEffectiveOwns = true;
-        }
-        catch (IllegalStateException e)
-        {
+        if (keyspace != null && !keyspace.equals(""))
+            try
+            {
+                ownerships = probe.effectiveOwnership(keyspace);
+                hasEffectiveOwns = true;
+            }
+            catch (IllegalStateException ex)
+            {
+                out.printf("%nError: %s%n", ex.getMessage());
+                System.exit(1);
+            }
+        else
             ownerships = probe.getOwnership();
-            errors.append("Note: ").append(e.getMessage()).append("%n");
-        }
-        catch (IllegalArgumentException ex)
-        {
-            out.printf("%nError: %s%n", ex.getMessage());
-            System.exit(1);
-        }
-
         SortedMap<String, SetHostStat> dcs = NodeTool.getOwnershipByDc(probe, resolveIp, tokensToEndpoints, ownerships);
 
         // More tokens than nodes (aka vnodes)?
