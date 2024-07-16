@@ -34,8 +34,9 @@ import org.apache.cassandra.locator.AbstractReplicationStrategy;
  */
 class OptionReplication extends OptionMulti
 {
+    private static final String DEFAULT_STRATEGY = "org.apache.cassandra.locator.NetworkTopologyStrategy";
 
-    private final OptionSimple strategy = new OptionSimple("strategy=", new StrategyAdapter(), "org.apache.cassandra.locator.SimpleStrategy", "The replication strategy to use", false);
+    private final OptionSimple strategy = new OptionSimple("strategy=", new StrategyAdapter(), DEFAULT_STRATEGY, "The replication strategy to use", false);
     private final OptionSimple factor = new OptionSimple("factor=", "[0-9]+", "1", "The number of replicas", false);
 
     public OptionReplication()
@@ -51,7 +52,7 @@ class OptionReplication extends OptionMulti
     public Map<String, String> getOptions()
     {
         Map<String, String> options = extraOptions();
-        if (!options.containsKey("replication_factor") && (strategy.value().equals("org.apache.cassandra.locator.SimpleStrategy") || factor.setByUser()))
+        if (!options.containsKey("replication_factor") && (strategy.value().equals(DEFAULT_STRATEGY) || factor.setByUser()))
             options.put("replication_factor", factor.value());
         return options;
     }
