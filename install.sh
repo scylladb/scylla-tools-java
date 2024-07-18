@@ -76,6 +76,10 @@ if [ -z "$prefix" ]; then
     fi
 fi
 
+install() {
+    command install -Z "$@"
+}
+
 scylla_version=$(cat SCYLLA-VERSION-FILE)
 scylla_release=$(cat SCYLLA-RELEASE-FILE)
 
