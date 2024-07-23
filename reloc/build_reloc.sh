@@ -37,7 +37,7 @@ VERSION=$(./SCYLLA-VERSION-GEN ${VERSION_OVERRIDE:+ --version "$VERSION_OVERRIDE
 # the former command should generate build/SCYLLA-PRODUCT-FILE and some other version
 # related files
 PRODUCT=`cat build/SCYLLA-PRODUCT-FILE`
-DEST="build/$PRODUCT-tools-$VERSION.noarch.tar.gz"
+DEST="build/$PRODUCT-cassandra-stress-$VERSION.noarch.tar.gz"
 
 is_redhat_variant() {
     [ -f /etc/redhat-release ]

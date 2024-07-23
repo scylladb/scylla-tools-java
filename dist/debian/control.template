@@ -1,4 +1,4 @@
-Source: %{product}-tools
+Source: %{product}-cassandra-stress
 Section: misc
 Priority: extra
 Maintainer: Takuya ASADA <syuu@scylladb.com>
@@ -7,17 +7,37 @@ Standards-Version: 3.9.5
 Rules-Requires-Root: no
 
 Package: %{product}-tools
+Depends: %{product}-cassandra-stress, ${misc:Depends}
 Architecture: all
-Depends: %{product}-conf, %{product}-tools-core, ${misc:Depends}
+Priority: optional
+Section: oldlibs
+Description: transitional package
+ This is a transitional package. It can safely be removed.
+
+Package: %{product}-tools-core
+Depends: %{product}-cassandra-stress-core, ${misc:Depends}
+Architecture: all
+Priority: optional
+Section: oldlibs
+Description: transitional package
+ This is a transitional package. It can safely be removed.
+
+Package: %{product}-cassandra-stress
+Architecture: all
+Priority: optional
+Depends: %{product}-conf, %{product}-cassandra-stress-core, ${misc:Depends}
 Recommends: ntp | time-daemon
-Conflicts: cassandra
-Breaks: %{product}-server (<< 5.5)
-Description: Scylla database tools
+Replaces: %{product}-tools (<< 6.1)
+Breaks: %{product}-tools (<< 6.1)
+Description: Scylla Cassandra Stress
  Scylla is a highly scalable, eventually consistent, distributed,
  partitioned row DB.
 
-Package: %{product}-tools-core
+Package: %{product}-cassandra-stress-core
 Architecture: all
+Priority: optional
 Depends: openjdk-8-jre-headless | openjdk-8-jre | oracle-java8-set-default | adoptopenjdk-8-hotspot-jre | openjdk-11-jre-headless | openjdk-11-jre | oracle-java11-set-default, procps
-Description: Scylla database tools core files
- Core files for scylla database tools
+Replaces: %{product}-tools-core (<< 6.1)
+Breaks: %{product}-tools-core (<< 6.1)
+Description: Scylla Cassadra Stress core files
+ Core files for Scylla Cassadra Stress
