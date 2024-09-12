@@ -25,6 +25,7 @@ import javax.net.ssl.SSLContext;
 
 import com.datastax.driver.core.*;
 import com.datastax.driver.core.policies.RackAwareRoundRobinPolicy;
+import com.datastax.driver.core.policies.DCAwareRoundRobinPolicy;
 import com.datastax.driver.core.policies.LoadBalancingPolicy;
 import com.datastax.driver.core.policies.TokenAwarePolicy;
 import com.datastax.driver.core.policies.TokenAwarePolicy.ReplicaOrdering;
@@ -94,21 +95,23 @@ public class JavaDriverClient
 
     private LoadBalancingPolicy loadBalancingPolicy(StressSettings settings)
     {
-        RackAwareRoundRobinPolicy.Builder policyBuilder = RackAwareRoundRobinPolicy.builder();
-
-        if (settings.node.datacenter != null)
-            policyBuilder.withLocalDc(settings.node.datacenter);
-        if (settings.node.rack != null)
-            policyBuilder.withLocalRack(settings.node.rack);
-
         LoadBalancingPolicy ret = null;
-        if (settings.node.datacenter != null)
+
+        if (settings.node.rack != null) {
+            RackAwareRoundRobinPolicy.Builder policyBuilder = RackAwareRoundRobinPolicy.builder();
+            if (settings.node.datacenter != null)
+                policyBuilder.withLocalDc(settings.node.datacenter);
+            policyBuilder = policyBuilder.withLocalRack(settings.node.rack);
             ret = policyBuilder.build();
-
+        } else {
+            DCAwareRoundRobinPolicy.Builder policyBuilder = DCAwareRoundRobinPolicy.builder();
+            if (settings.node.datacenter != null)
+                policyBuilder.withLocalDc(settings.node.datacenter);
+            ret = policyBuilder.build();
+        }
         if (settings.node.isWhiteList)
-            ret = new WhiteListPolicy(ret == null ? policyBuilder.build() : ret, settings.node.resolveAll(settings.port.nativePort));
-
-        return new TokenAwarePolicy(ret == null ? policyBuilder.build() : ret, ReplicaOrdering.NEUTRAL);
+            ret = new WhiteListPolicy(ret, settings.node.resolveAll(settings.port.nativePort));
+        return new TokenAwarePolicy(ret, ReplicaOrdering.NEUTRAL);
     }
 
     public PreparedStatement prepare(String query)
