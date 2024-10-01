@@ -924,6 +924,12 @@
           <exclude name="org/apache/**"/>
         </fileset>
         <manifest>
+          <attribute name="Bundle-DocURL" value="http://www.scylladb.com"/>
+          <attribute name="Bundle-License" value="Apache-2.0"/>
+          <attribute name="Bundle-ManifestVersion" value="2"/>
+          <attribute name="Bundle-Name" value="Scylla-Tools"/>
+          <attribute name="Bundle-Vendor" value="ScyllaDB"/>
+          <attribute name="Bundle-Version" value="${version}"/>
           <attribute name="Implementation-Title" value="Scylla-Tools"/>
           <attribute name="Implementation-Version" value="${version}"/>
           <attribute name="Implementation-Vendor" value="ScyllaDB"/>
