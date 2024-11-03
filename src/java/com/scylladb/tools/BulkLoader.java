@@ -1525,7 +1525,7 @@ public class BulkLoader {
             // number of keys for each endpoint. See CASSANDRA-5555 for
             // details.
             return openForBatch(p.left, p.right, cfm);
-        } catch (IOException e) {
+        } catch (Exception e) {
             logger.warn("Skipping file {}, error opening it: {}", p.left.baseFilename(), e.getMessage());
         }
         return null;        
