@@ -21,7 +21,7 @@ usage() {
 }
 
 OVERRIDE=
-while [[ $# > 0 ]]; do
+while [ $# > 0 ]; do
     case "$1" in
 	--version)
 	    OVERRIDE="$2"
@@ -33,7 +33,7 @@ while [[ $# > 0 ]]; do
     esac
 done
 
-if [[ -n "$OVERRIDE" ]]; then
+if [ -n "$OVERRIDE" ]; then
     # regular expression for p-v-r: alphabetic+dashes for product, trailing non-dashes
     # for release, everything else for version
     RE='^([-a-z]+)-(.+)-([^-]+)$'
