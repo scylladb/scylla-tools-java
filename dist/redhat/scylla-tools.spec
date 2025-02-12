@@ -11,6 +11,8 @@ BuildArch:      noarch
 Requires:       %{product}-conf %{product}-tools-core
 AutoReqProv:    no
 Conflicts:      cassandra
+Provides:       scylla-enterprise-tools = %{version}-%{release}
+Obsoletes:      scylla-enterprise-tools < 2025.1.0
 
 %description
 
@@ -22,6 +24,9 @@ Summary:        Core files for Scylla tools
 Version:        %{version}
 Release:        %{release}%{?dist}
 Requires:       jre-11-headless
+Provides:       scylla-enterprise-tools-core = %{version}-%{release}
+Obsoletes:      scylla-enterprise-tools-core < 2025.1.0
+
 
 %global __brp_python_bytecompile %{nil}
 %global __brp_mangle_shebangs %{nil}

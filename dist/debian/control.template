@@ -11,7 +11,8 @@ Architecture: all
 Depends: %{product}-conf, %{product}-tools-core, ${misc:Depends}
 Recommends: ntp | time-daemon
 Conflicts: cassandra
-Breaks: %{product}-server (<< 5.5)
+Replaces: scylla-enterprise-tools (<< 2025.1.0~)
+Breaks: %{product}-server (<< 5.5), scylla-enterprise-server (<< 2024.2.0~), scylla-enterprise-tools (<< 2025.1.0~)
 Description: Scylla database tools
  Scylla is a highly scalable, eventually consistent, distributed,
  partitioned row DB.
@@ -19,5 +20,24 @@ Description: Scylla database tools
 Package: %{product}-tools-core
 Architecture: all
 Depends: openjdk-8-jre-headless | openjdk-8-jre | oracle-java8-set-default | adoptopenjdk-8-hotspot-jre | openjdk-11-jre-headless | openjdk-11-jre | oracle-java11-set-default, procps
+Replaces: scylla-enterprise-tools-core (<< 2025.1.0~)
+Breaks: scylla-enterprise-tools-core (<< 2025.1.0~)
 Description: Scylla database tools core files
  Core files for scylla database tools
+
+
+Package: scylla-enterprise-tools
+Depends: %{product}-tools (= ${binary:Version})
+Architecture: all
+Priority: optional
+Section: oldlibs
+Description: transitional package
+ This is a transitional package. It can safely be removed.
+
+Package: scylla-enterprise-tools-core
+Depends: %{product}-tools-core (= ${binary:Version})
+Architecture: all
+Priority: optional
+Section: oldlibs
+Description: transitional package
+ This is a transitional package. It can safely be removed.
