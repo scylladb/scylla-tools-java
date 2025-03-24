@@ -31,6 +31,7 @@ Options:
   --prefix /prefix         directory prefix (default /usr)
   --etcdir /etc            specify etc directory path (default /etc)
   --nonroot                install Scylla without required root priviledge
+  --packaging              use install.sh for packaging
   --help                   this helpful message
 EOF
     exit 1
@@ -39,6 +40,7 @@ EOF
 root=/
 etcdir=/etc
 nonroot=false
+packaging=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -58,6 +60,10 @@ while [ $# -gt 0 ]; do
             nonroot=true
             shift 1
             ;;
+        "--packaging")
+            packaging=true
+            shift 1
+            ;;
         "--help")
             shift 1
 	    print_usage
@@ -67,6 +73,24 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+if ! $packaging; then
+    if [ -n "$JAVA_HOME" ]; then
+        for java in "$JAVA_HOME"/bin/amd64/java "$JAVA_HOME"/bin/java; do
+            if [ -x "$java" ]; then
+                JAVA="$java"
+                break
+            fi
+        done
+    else
+        JAVA=java
+    fi
+
+    if ! builtin command -v $JAVA > /dev/null; then
+        echo "Please install openjdk-11 before running install.sh."
+        exit 1
+    fi
+fi
 
 if [ -z "$prefix" ]; then
     if $nonroot; then
